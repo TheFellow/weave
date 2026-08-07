@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="FSharpIndexer.fs" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Weave.Adapter.Model/Weave.Adapter.Model.csproj" />
+    <PackageReference Include="Buildalyzer" />
+    <PackageReference Include="FSharp.Compiler.Service" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <PackAsTool>true</PackAsTool>
+    <ToolCommandName>weave-dotnet</ToolCommandName>
+    <PackageId>Weave.Adapter.DotNet</PackageId>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Weave.Adapter.Model/Weave.Adapter.Model.csproj" />
+    <ProjectReference Include="../Weave.Adapter.FSharp/Weave.Adapter.FSharp.fsproj" />
+    <PackageReference Include="Microsoft.Build.Locator" />
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp.Workspaces" />
+    <PackageReference Include="Microsoft.CodeAnalysis.Workspaces.MSBuild" />
+  </ItemGroup>
+</Project>
