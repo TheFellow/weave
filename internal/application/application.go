@@ -32,23 +32,26 @@ const QuerySchema = "weave.query/v1"
 
 // Invocation is a validated operation from a delivery surface.
 type Invocation struct {
-	Command      string
-	Arguments    []string
-	JSON         bool
-	Limit        int
-	MaxDepth     int
-	Kinds        []graph.EdgeKind
-	SCIPPath     string
-	AdapterPath  string
-	AdapterArgs  []string
-	Timeout      time.Duration
-	Permissions  adapter.Permissions
-	CatalogPath  string
-	Scope        string
-	Repositories []string
-	Format       string
-	ConfigPath   string
-	MaxRepos     int
+	Command        string
+	Arguments      []string
+	JSON           bool
+	Limit          int
+	MaxDepth       int
+	Kinds          []graph.EdgeKind
+	SCIPPath       string
+	AdapterPath    string
+	AdapterArgs    []string
+	Timeout        time.Duration
+	Permissions    adapter.Permissions
+	CatalogPath    string
+	Scope          string
+	Repositories   []string
+	Format         string
+	ConfigPath     string
+	MaxRepos       int
+	ImpactFiles    []string
+	ImpactPackages []string
+	DiffRevision   string
 }
 
 // Response is the stable application result consumed by text and JSON renderers.
@@ -61,6 +64,7 @@ type Response struct {
 	Occurrences  []graph.Occurrence     `json:"occurrences,omitempty"`
 	Edges        []graph.Edge           `json:"edges,omitempty"`
 	Nodes        []string               `json:"nodes,omitempty"`
+	Tests        []graph.Symbol         `json:"tests,omitempty"`
 	Export       *graph.Snapshot        `json:"export,omitempty"`
 	Issues       []storage.Issue        `json:"issues,omitempty"`
 	Freshness    *freshness.Status      `json:"freshness,omitempty"`
@@ -226,17 +230,50 @@ func (app Local) Execute(ctx context.Context, invocation Invocation) (Response, 
 		traversal, err = query.Path(ctx, db, from.ID, to.ID, invocation.Kinds, bounds(invocation))
 		response.Truncated, response.Edges, response.Nodes = traversal.Truncated, traversal.Edges, traversal.Nodes
 	case "impact":
-		var symbol graph.Symbol
-		if symbol, err = query.Resolve(ctx, db, invocation.Arguments[0]); err != nil {
-			break
-		}
 		kinds := invocation.Kinds
 		if len(kinds) == 0 {
 			kinds = []graph.EdgeKind{graph.EdgeCalls, graph.EdgeReferences, graph.EdgeDependsOn, graph.EdgeImplements, graph.EdgeImports, graph.EdgeTests}
 		}
+		var roots []string
+		var snapshot graph.Snapshot
+		if len(invocation.ImpactFiles) == 0 && len(invocation.ImpactPackages) == 0 && invocation.DiffRevision == "" {
+			var symbol graph.Symbol
+			if symbol, err = query.Resolve(ctx, db, invocation.Arguments[0]); err != nil {
+				break
+			}
+			roots = []string{symbol.ID}
+		} else {
+			if snapshot, err = db.Export(ctx); err != nil {
+				break
+			}
+			files := append([]string(nil), invocation.ImpactFiles...)
+			if invocation.DiffRevision != "" {
+				var repo repository.Repository
+				if repo, err = app.repository(ctx); err != nil {
+					break
+				}
+				var changed []string
+				if changed, err = repo.DiffPaths(ctx, invocation.DiffRevision); err != nil {
+					break
+				}
+				files = append(files, changed...)
+			}
+			roots, response.Diagnostics, err = impactRoots(snapshot, files, invocation.ImpactPackages)
+			if err != nil {
+				break
+			}
+		}
 		var traversal query.Traversal
-		traversal, err = query.Impact(ctx, db, symbol.ID, kinds, bounds(invocation))
+		traversal, err = query.ImpactMany(ctx, db, roots, kinds, bounds(invocation))
 		response.Truncated, response.Edges, response.Nodes = traversal.Truncated, traversal.Edges, traversal.Nodes
+		if err == nil && (len(invocation.ImpactFiles) != 0 || len(invocation.ImpactPackages) != 0 || invocation.DiffRevision != "") {
+			if len(snapshot.Units) == 0 {
+				snapshot, err = db.Export(ctx)
+			}
+			if err == nil {
+				response.Tests = affectedTests(snapshot, traversal.Nodes)
+			}
+		}
 	case "export":
 		var snapshot graph.Snapshot
 		snapshot, err = db.Export(ctx)

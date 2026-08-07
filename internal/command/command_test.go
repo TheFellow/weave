@@ -529,6 +529,40 @@ func TestNativeGoProviderRefreshesBeforeEndToEndQuery(t *testing.T) {
 	}
 }
 
+func TestGitDiffImpactFindsAffectedGoTestThroughExecutableCLI(t *testing.T) {
+	ctx := context.Background()
+	root := commandRepository(t)
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.test/impactfixture\n\ngo 1.24.0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package fixture\n\nfunc Handle() string { return \"ok\" }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "main_test.go"), []byte("package fixture\n\nimport \"testing\"\nfunc TestHandle(t *testing.T) { if Handle() == \"\" { t.Fatal(\"empty\") } }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"add", "."}, {"commit", "-m", "impact baseline"}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = root
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, output)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package fixture\n\nfunc Handle() string { return \"changed\" }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	manager := &freshness.Manager{Directory: root, Provider: goindex.Provider{}, Command: "weave test"}
+	app := application.Local{Freshness: manager}
+	var stdout, stderr bytes.Buffer
+	rootCommand := command.New(app, command.Streams{Stdin: strings.NewReader(""), Stdout: &stdout, Stderr: &stderr})
+	if err := rootCommand.Run(ctx, []string{"weave", "impact", "--git-diff", "HEAD", "--limit", "100"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stdout.String(), "test\t") || !strings.Contains(stdout.String(), "TestHandle") {
+		t.Fatalf("impact stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+}
+
 func TestSCIPImportIsQueryableAndMalformedReplacementIsAtomic(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

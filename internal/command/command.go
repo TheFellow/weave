@@ -36,7 +36,7 @@ func New(app application.Service, streams Streams) *cli.Command {
 		lookup(app, streams, "callers", "find callers of a symbol"),
 		lookup(app, streams, "callees", "find symbols called by a symbol"),
 		traversal(app, streams, "path", "find a bounded path between symbols", 2),
-		traversal(app, streams, "impact", "find code affected by a symbol", 1),
+		impactCommand(app, streams),
 		lookup(app, streams, "dependencies", "find direct semantic dependencies"),
 		architectureCommand(app, streams),
 		repositoryCommands(app, streams),
@@ -191,6 +191,51 @@ func traversal(app application.Service, streams Streams, name, usage string, arg
 	}, Action: invoke(app, streams, name, arguments, arguments)}
 }
 
+func impactCommand(app application.Service, streams Streams) *cli.Command {
+	return &cli.Command{Name: "impact", Usage: "find code and tests affected by symbols, files, packages, or a Git diff", Flags: []cli.Flag{
+		jsonFlag(), limitFlag(), &cli.IntFlag{Name: "max-depth", Value: 8, Usage: "maximum traversal depth", Validator: func(v int) error {
+			if v < 1 || v > 100 {
+				return fmt.Errorf("must be between 1 and 100")
+			}
+			return nil
+		}},
+		&cli.StringSliceFlag{Name: "kind", Usage: "edge kind to traverse (repeatable)"},
+		&cli.StringSliceFlag{Name: "file", Usage: "repository-relative changed file root (repeatable)"},
+		&cli.StringSliceFlag{Name: "package", Usage: "semantic package root (repeatable)"},
+		&cli.StringFlag{Name: "git-diff", Usage: "Git revision to compare with the current working tree"},
+		&cli.StringFlag{Name: "scope", Value: "local", Usage: "query scope: local or catalog", Validator: validateScope},
+		&cli.StringSliceFlag{Name: "repo", Usage: "catalog repository identity, key, or root (repeatable)"},
+		&cli.StringFlag{Name: "catalog", Usage: "absolute catalog database path"},
+		&cli.IntFlag{Name: "max-repos", Value: 32, Usage: "maximum catalog fan-out", Validator: validateMaxRepos},
+	}, Action: func(ctx context.Context, cmd *cli.Command) error {
+		files, packages, revision := cmd.StringSlice("file"), cmd.StringSlice("package"), cmd.String("git-diff")
+		rooted := len(files) != 0 || len(packages) != 0 || revision != ""
+		if rooted && cmd.Args().Len() != 0 {
+			return cli.Exit("impact accepts either one symbol or file/package/Git roots, not both", 2)
+		}
+		if !rooted && cmd.Args().Len() != 1 {
+			return cli.Exit("impact expects one symbol or at least one --file, --package, or --git-diff root", 2)
+		}
+		if rooted && queryScope(cmd) == "catalog" {
+			return cli.Exit("file, package, and Git-diff impact roots require --scope local", 2)
+		}
+		kinds, err := parseEdgeKinds(cmd.StringSlice("kind"))
+		if err != nil {
+			return cli.Exit(err.Error(), 2)
+		}
+		response, err := app.Execute(ctx, application.Invocation{
+			Command: "impact", Arguments: append([]string(nil), cmd.Args().Slice()...), JSON: cmd.Bool("json"),
+			Limit: cmd.Int("limit"), MaxDepth: cmd.Int("max-depth"), Kinds: kinds,
+			Scope: queryScope(cmd), Repositories: cmd.StringSlice("repo"), CatalogPath: cmd.String("catalog"), MaxRepos: cmd.Int("max-repos"),
+			ImpactFiles: files, ImpactPackages: packages, DiffRevision: revision,
+		})
+		if err != nil {
+			return err
+		}
+		return renderInvocation(streams, response, cmd.Bool("json"))
+	}}
+}
+
 func federationFlags() []cli.Flag {
 	return []cli.Flag{
 		&cli.StringFlag{Name: "scope", Value: "local", Usage: "query scope: local or catalog", Validator: validateScope},
@@ -302,13 +347,9 @@ func invoke(app application.Service, streams Streams, path string, minArgs, maxA
 		if count := cmd.Args().Len(); count < minArgs || count > maxArgs {
 			return cli.Exit(fmt.Sprintf("%s expects %s", path, arity(minArgs, maxArgs)), 2)
 		}
-		var kinds []graph.EdgeKind
-		for _, value := range cmd.StringSlice("kind") {
-			kind := graph.EdgeKind(value)
-			if !graph.IsEdgeKind(kind) {
-				return cli.Exit(fmt.Sprintf("unknown edge kind %q", value), 2)
-			}
-			kinds = append(kinds, kind)
+		kinds, parseErr := parseEdgeKinds(cmd.StringSlice("kind"))
+		if parseErr != nil {
+			return cli.Exit(parseErr.Error(), 2)
 		}
 		response, err := app.Execute(ctx, application.Invocation{
 			Command: path, Arguments: append([]string(nil), cmd.Args().Slice()...), JSON: cmd.Bool("json"),
@@ -320,6 +361,18 @@ func invoke(app application.Service, streams Streams, path string, minArgs, maxA
 		}
 		return renderInvocation(streams, response, cmd.Bool("json"))
 	}
+}
+
+func parseEdgeKinds(values []string) ([]graph.EdgeKind, error) {
+	var kinds []graph.EdgeKind
+	for _, value := range values {
+		kind := graph.EdgeKind(value)
+		if !graph.IsEdgeKind(kind) {
+			return nil, fmt.Errorf("unknown edge kind %q", value)
+		}
+		kinds = append(kinds, kind)
+	}
+	return kinds, nil
 }
 
 func queryScope(cmd *cli.Command) string {
@@ -421,6 +474,11 @@ func render(writer io.Writer, response application.Response, jsonOutput bool) er
 	}
 	for _, edge := range response.Edges {
 		if _, err := fmt.Fprintf(writer, "%s\t%s\t%s\n", edge.From, edge.Kind, edge.To); err != nil {
+			return err
+		}
+	}
+	for _, test := range response.Tests {
+		if _, err := fmt.Fprintf(writer, "test\t%s\t%s\t%s:%d:%d\n", test.ID, test.DisplayName, test.DocumentID, test.Definition.Start.Line+1, test.Definition.Start.Column+1); err != nil {
 			return err
 		}
 	}

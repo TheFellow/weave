@@ -111,6 +111,31 @@ func TestLinkedWorktreeUsesPrivateGitPathAndSharedIdentity(t *testing.T) {
 	}
 }
 
+func TestDiffPathsIncludesWorkingTreeAndUntrackedChanges(t *testing.T) {
+	t.Parallel()
+	root := newRepository(t)
+	writeFile(t, root, "main.go", "package main\n")
+	git(t, root, "add", ".")
+	git(t, root, "commit", "-m", "initial")
+	base := git(t, root, "rev-parse", "HEAD")
+	writeFile(t, root, "main.go", "package changed\n")
+	writeFile(t, root, "untracked name.go", "package changed\n")
+	repo, err := Discover(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths, err := repo.DiffPaths(context.Background(), base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(paths, ","); got != "main.go,untracked name.go" {
+		t.Fatalf("DiffPaths = %q", got)
+	}
+	if _, err := repo.DiffPaths(context.Background(), "--output=/tmp/nope"); err == nil {
+		t.Fatal("option-like revision accepted")
+	}
+}
+
 func TestLocalIdentityFallsBackToRootCommitThenLocalDirectory(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

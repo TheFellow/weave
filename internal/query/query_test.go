@@ -2,6 +2,7 @@ package query_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/TheFellow/weave/internal/graph"
@@ -36,6 +37,21 @@ func TestImpactReportsNodeBoundTruncation(t *testing.T) {
 	}
 	if !got.Truncated || len(got.Nodes) != 2 {
 		t.Fatalf("Impact() = %#v, want two nodes and truncation", got)
+	}
+}
+
+func TestImpactManySortsAndSharesTraversalBounds(t *testing.T) {
+	t.Parallel()
+	store := fakeStore{reverse: map[string][]graph.Edge{
+		"a": {{ID: "ca", From: "caller", To: "a"}},
+		"b": {{ID: "cb", From: "caller", To: "b"}},
+	}}
+	got, err := query.ImpactMany(context.Background(), store, []string{"b", "a", "b"}, nil, query.Bounds{MaxDepth: 4, MaxNodes: 10, MaxEdges: 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(got.Nodes, ",") != "a,b,caller" || len(got.Edges) != 1 || got.Edges[0].ID != "ca" {
+		t.Fatalf("ImpactMany() = %#v", got)
 	}
 }
 

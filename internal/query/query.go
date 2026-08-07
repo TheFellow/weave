@@ -123,16 +123,34 @@ func buildPath(from, to string, predecessor map[string]graph.Edge, truncated boo
 
 // Impact walks reverse adjacency in breadth-first discovery order.
 func Impact(ctx context.Context, store Store, root string, kinds []graph.EdgeKind, bounds Bounds) (Traversal, error) {
+	return ImpactMany(ctx, store, []string{root}, kinds, bounds)
+}
+
+// ImpactMany walks reverse adjacency from deterministic, de-duplicated roots.
+func ImpactMany(ctx context.Context, store Store, roots []string, kinds []graph.EdgeKind, bounds Bounds) (Traversal, error) {
 	if err := bounds.validate(); err != nil {
 		return Traversal{}, err
+	}
+	roots = append([]string(nil), roots...)
+	slices.Sort(roots)
+	roots = slices.Compact(roots)
+	if len(roots) == 0 {
+		return Traversal{}, errors.New("impact requires at least one graph root")
+	}
+	if len(roots) > bounds.MaxNodes {
+		return Traversal{Nodes: roots[:bounds.MaxNodes], Truncated: true}, nil
 	}
 	type queued struct {
 		id    string
 		depth int
 	}
-	queue := []queued{{root, 0}}
-	seen := map[string]bool{root: true}
-	result := Traversal{Nodes: []string{root}}
+	queue := make([]queued, 0, len(roots))
+	seen := make(map[string]bool, len(roots))
+	for _, root := range roots {
+		queue = append(queue, queued{root, 0})
+		seen[root] = true
+	}
+	result := Traversal{Nodes: append([]string(nil), roots...)}
 	examined := 0
 	for len(queue) > 0 {
 		current := queue[0]

@@ -71,6 +71,35 @@ type State struct {
 	Changes  []Change
 }
 
+// DiffPaths returns repository-relative paths changed between revision and the
+// current working tree, including current untracked overlay paths.
+func (r Repository) DiffPaths(ctx context.Context, revision string) ([]string, error) {
+	if revision == "" || strings.HasPrefix(revision, "-") || strings.IndexByte(revision, 0) >= 0 {
+		return nil, fmt.Errorf("invalid Git diff revision %q", revision)
+	}
+	raw, err := (gitRunner{directory: r.Root}).run(ctx, "diff", "--name-only", "-z", "--no-ext-diff", revision, "--")
+	if err != nil {
+		return nil, fmt.Errorf("resolve Git diff from %q: %w", revision, err)
+	}
+	var paths []string
+	for _, value := range bytes.Split(raw, []byte{0}) {
+		if len(value) != 0 {
+			paths = append(paths, filepath.ToSlash(string(value)))
+		}
+	}
+	state, err := r.Inspect(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, change := range state.Changes {
+		if change.Kind == '?' {
+			paths = append(paths, filepath.ToSlash(change.Path))
+		}
+	}
+	slices.Sort(paths)
+	return slices.Compact(paths), nil
+}
+
 // Discover asks Git to resolve the repository containing directory.
 func Discover(ctx context.Context, directory string) (Repository, error) {
 	if directory == "" {
