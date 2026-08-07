@@ -50,7 +50,7 @@ the useful-first-release definition has been achieved.
 | Go toolchain/network safety | **Implemented** | `GOPROXY=off`, `-mod=readonly`, preserved user toolchain selection, regression test; executable smoke found and fixed older-base-toolchain failure | The selected compatible Go toolchain must already be installed/cached. |
 | SCIP ingest | **Implemented** | bounded protobuf importer, path/symlink containment, selective producer replacement, atomic malformed-input tests | No automatic discovery/invocation of arbitrary SCIP producers. |
 | Versioned external adapter protocol | **Partial** | strict one-shot `weave.adapter/v0`, describe negotiation, literal argv, permissions, cancellation, partial diagnostics, fuzzing | Protocol remains newline JSON v0 rather than promised stable framed protobuf; no third-party compatibility promise. |
-| Adapter discovery and doctor | **Partial** | PATH/environment discovery for `weave-dotnet` and `scip-dotnet`; runtime visibility; command tests | Doctor reports executable presence but does not probe native protocol compatibility or offer installation/repair. |
+| Adapter discovery and doctor | **Implemented** initial slice | PATH/environment discovery for `weave-dotnet` and `scip-dotnet`; executable validation; bounded native protocol/capability handshake; runtime visibility; tests | Doctor does not install or repair adapters, and SCIP producers do not share the native protocol handshake. |
 | C# precision | **Implemented** as explicit adapter | Roslyn/MSBuild implementation and mixed-solution compiler fixture | Full adapter run is explicit and full-refresh, not transparently freshness-managed. Visual Basic absent. |
 | F# precision | **Partial** | FCS typed definitions/references, ordered-file/project fingerprint, mixed solution tests | Calls and a formal binary-compatible API fingerprint are deferred. |
 | Cross-language bridges | **Gap** | — | Declared/generated schema, route, config, or project bridges are not normalized beyond .NET project dependencies. |
@@ -72,7 +72,7 @@ the useful-first-release definition has been achieved.
 | `path`, `impact` | **Partial** | Bounded graph path and symbol-rooted reverse impact work | Git-diff/file/package roots and affected-test summaries are absent. |
 | `architecture check` | **Implemented** | Text/JSON/SARIF and policy exit status. |
 | `repos add/remove/list/status/sync` | **Implemented** | Explicit platform-data catalog with worktree identity and locking. |
-| `adapters list/doctor` | **Partial** | Discovery diagnostics work; compatibility probing does not. |
+| `adapters list/doctor` | **Implemented** initial slice | Side-effect-free listing plus bounded native compatibility negotiation and actionable missing/incompatible status; installation/repair remains manual. |
 | `export`, `verify`, `gc` | **Implemented** | Deterministic export, severity-aware logical verification, physical compaction. |
 | `version` | **Implemented** | Release-injected or Go-embedded version/commit/date/dirty/runtime/platform metadata; text and versioned JSON. |
 | Silent production stubs | **None found** | The command-level `noop` was removed; every command in the real `Local` application implements behavior. `application.Noop` remains only as an injected-service/test fallback and for lifecycle calls deliberately constructed without a freshness manager. |
@@ -101,8 +101,8 @@ vision through a conscious product decision rather than silently declared done.
 
 ## Deferred work in priority order
 
-1. Integrate discovered native adapters into query-driven freshness, persist
-   their inventories/fingerprints, and probe protocol compatibility in doctor.
+1. Integrate discovered native adapters into query-driven freshness and persist
+   their inventories/fingerprints.
 2. Run and fix the first prerelease publication; then add core three-OS CI,
    provenance/SBOM/signing, and package-manager channels based on demand.
 3. Refresh selected catalog repositories before federated reads or explicitly
@@ -111,8 +111,8 @@ vision through a conscious product decision rather than silently declared done.
 5. Add declared/generated cross-language and cross-repository bridges.
 6. Measure incremental refresh and database size on the four named real
    repositories; optimize compiler loading and prefix allocations from data.
-7. Add protocol probing/recovery to doctor, stable adapter protobuf only when
-   third-party compatibility is ready, and an actual schema migration when
-   schema 2 exists.
+7. Add installation/recovery guidance to doctor, stable adapter protobuf only
+   when third-party compatibility is ready, and an actual schema migration
+   when schema 2 exists.
 8. Exclude ignored/untrusted source explicitly where compiler project systems
    would otherwise include it, and add OS-level adapter memory/process limits.

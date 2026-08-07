@@ -67,8 +67,9 @@ weave index \
 On Windows, use the generated `.exe`. The target repository must already be
 restored. `--allow-build-tool` is an explicit trust decision because MSBuild may
 execute imported targets; network, restore, and generators remain denied unless
-separately enabled. `weave adapters doctor` reports discoverable adapter/runtime
-capabilities without executing or installing anything. See the [adapter
+separately enabled. `weave adapters doctor` runs a bounded native `describe`
+handshake and reports adapter/runtime capabilities; it does not index, build,
+restore, or install anything. See the [adapter
 guide](adapters/dotnet/README.md) for coverage and current limitations.
 
 ## Derived data and recovery

@@ -75,14 +75,20 @@ type Response struct {
 	Version      *buildinfo.Info        `json:"version,omitempty"`
 }
 
-// AdapterStatus is a side-effect-free executable discovery result. Discovery
-// never installs, restores, builds, or invokes the reported tool.
+// AdapterStatus is an executable discovery result. List is side-effect free;
+// doctor may run a bounded native describe handshake but never indexes,
+// installs, restores, or builds.
 type AdapterStatus struct {
-	Name      string `json:"name"`
-	Kind      string `json:"kind"`
-	Available bool   `json:"available"`
-	Path      string `json:"path,omitempty"`
-	Detail    string `json:"detail,omitempty"`
+	Name       string   `json:"name"`
+	Kind       string   `json:"kind"`
+	Available  bool     `json:"available"`
+	Checked    bool     `json:"checked,omitempty"`
+	Compatible bool     `json:"compatible,omitempty"`
+	Path       string   `json:"path,omitempty"`
+	Provider   string   `json:"provider,omitempty"`
+	Version    string   `json:"version,omitempty"`
+	Languages  []string `json:"languages,omitempty"`
+	Detail     string   `json:"detail,omitempty"`
 }
 
 // Service executes Weave use cases.
@@ -129,7 +135,7 @@ func (app Local) Execute(ctx context.Context, invocation Invocation) (Response, 
 		return app.federated(ctx, response, invocation)
 	}
 	if invocation.Command == "adapters list" || invocation.Command == "adapters doctor" {
-		response.Adapters = inspectAdapters(invocation.Command == "adapters doctor")
+		response.Adapters = inspectAdapters(ctx, invocation.Command == "adapters doctor", app.AdapterRunner)
 		return response, nil
 	}
 	if invocation.Command == "index" && invocation.SCIPPath != "" {
@@ -525,13 +531,13 @@ func firstNonempty(values ...string) string {
 	return ""
 }
 
-func inspectAdapters(includeRuntime bool) []AdapterStatus {
+func inspectAdapters(ctx context.Context, doctor bool, runner adapter.Runner) []AdapterStatus {
 	type candidate struct{ name, kind, configured string }
 	candidates := []candidate{
 		{"weave-dotnet", "native", os.Getenv("WEAVE_DOTNET_ADAPTER")},
 		{"scip-dotnet", "scip-producer", os.Getenv("WEAVE_SCIP_DOTNET")},
 	}
-	if includeRuntime {
+	if doctor {
 		candidates = append(candidates, candidate{"dotnet", "runtime", ""})
 	}
 	statuses := make([]AdapterStatus, 0, len(candidates))
@@ -551,6 +557,24 @@ func inspectAdapters(includeRuntime bool) []AdapterStatus {
 			}
 		} else if candidate.configured != "" {
 			status.Detail = "configured path unavailable: " + err.Error()
+		}
+		if doctor && status.Available && candidate.kind == "native" {
+			probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			capabilities, stderr, probeErr := runner.Describe(probeCtx, adapter.Executable{Path: path, Env: adapterEnvironment()})
+			cancel()
+			status.Checked = true
+			if probeErr != nil {
+				status.Detail = "protocol check failed: " + probeErr.Error()
+				if stderr != "" {
+					status.Detail += ": " + stderr
+				}
+			} else {
+				status.Compatible = true
+				status.Provider, status.Version = capabilities.Provider.Name, capabilities.Provider.Version
+				status.Languages = append([]string(nil), capabilities.Languages...)
+				slices.Sort(status.Languages)
+				status.Detail = "compatible with " + adapter.Protocol
+			}
 		}
 		statuses = append(statuses, status)
 	}
@@ -662,7 +686,11 @@ func resolveExecutable(value string) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("resolve adapter executable: %w", err)
 		}
-		return absolute, nil
+		path, err := exec.LookPath(absolute)
+		if err != nil {
+			return "", fmt.Errorf("find adapter executable %q: %w", value, err)
+		}
+		return path, nil
 	}
 	path, err := exec.LookPath(value)
 	if err != nil {

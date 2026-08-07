@@ -441,6 +441,9 @@ func render(writer io.Writer, response application.Response, jsonOutput bool) er
 		if adapter.Available {
 			status = "available"
 		}
+		if adapter.Checked && !adapter.Compatible {
+			status = "incompatible"
+		}
 		if _, err := fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%s\n", adapter.Name, adapter.Kind, status, adapter.Path, adapter.Detail); err != nil {
 			return err
 		}
