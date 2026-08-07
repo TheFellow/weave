@@ -59,14 +59,7 @@ func parseFrames(reader io.Reader, requestID string, capabilities Capabilities, 
 	frames, facts := 0, 0
 	begun, ended := false, false
 	for {
-		line, readErr := buffered.ReadBytes('\n')
-		total += int64(len(line))
-		if total > limits.MaxTotalBytes {
-			return Result{}, errors.New("adapter stdout exceeds total byte limit")
-		}
-		if int64(len(line)) > limits.MaxFrameBytes {
-			return Result{}, errors.New("adapter frame exceeds byte limit")
-		}
+		line, readErr := readFrame(buffered, &total, limits)
 		if len(line) > 0 {
 			frames++
 			if frames > limits.MaxFrames {
@@ -200,6 +193,25 @@ func parseFrames(reader io.Reader, requestID string, capabilities Capabilities, 
 		return Result{}, err
 	}
 	return result, nil
+}
+
+func readFrame(reader *bufio.Reader, total *int64, limits Limits) ([]byte, error) {
+	var line []byte
+	for {
+		fragment, err := reader.ReadSlice('\n')
+		*total += int64(len(fragment))
+		if *total > limits.MaxTotalBytes {
+			return nil, errors.New("adapter stdout exceeds total byte limit")
+		}
+		if int64(len(line)+len(fragment)) > limits.MaxFrameBytes {
+			return nil, errors.New("adapter frame exceeds byte limit")
+		}
+		line = append(line, fragment...)
+		if errors.Is(err, bufio.ErrBufferFull) {
+			continue
+		}
+		return line, err
+	}
 }
 
 func validateRunIDs(units []graph.UnitFacts) error {

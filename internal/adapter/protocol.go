@@ -302,6 +302,9 @@ func decodeStrict(value []byte, target any) error {
 	if len(bytes.TrimSpace(value)) == 0 || !utf8.Valid(value) {
 		return errors.New("expected one UTF-8 JSON object")
 	}
+	if err := validateJSONDepth(value, 100); err != nil {
+		return err
+	}
 	decoder := json.NewDecoder(bytes.NewReader(value))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
@@ -314,6 +317,33 @@ func decodeStrict(value []byte, target any) error {
 		return err
 	}
 	return nil
+}
+
+func validateJSONDepth(value []byte, maximum int) error {
+	decoder := json.NewDecoder(bytes.NewReader(value))
+	depth := 0
+	for {
+		token, err := decoder.Token()
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		delimiter, ok := token.(json.Delim)
+		if !ok {
+			continue
+		}
+		switch delimiter {
+		case '{', '[':
+			depth++
+			if depth > maximum {
+				return fmt.Errorf("JSON nesting exceeds depth limit %d", maximum)
+			}
+		case '}', ']':
+			depth--
+		}
+	}
 }
 
 func stderrSuffix(value string) string {

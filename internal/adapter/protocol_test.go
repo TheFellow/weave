@@ -46,6 +46,7 @@ func TestRunnerRejectsMalformedOrIncompleteRuns(t *testing.T) {
 		{"invalid json", "invalid-json", Limits{}, "invalid character"},
 		{"duplicate record", "duplicate", Limits{}, "duplicate id"},
 		{"unknown frame", "unknown", Limits{}, "unknown frame kind"},
+		{"deep json", "deep-json", Limits{}, "nesting exceeds"},
 		{"nonzero exit", "nonzero", Limits{}, "exit status"},
 		{"oversized frame", "oversized", Limits{MaxFrameBytes: 512, MaxTotalBytes: 4096}, "frame exceeds"},
 		{"oversized stderr", "stderr-overflow", Limits{MaxStderrBytes: 16}, "read stderr"},
@@ -152,6 +153,9 @@ func TestAdapterHelperProcess(t *testing.T) {
 	case "unknown":
 		writeFrame(Protocol, request.RequestID, "run.begin", runBegin{fixtureCapabilities().Provider, FactEncoding})
 		writeFrame(Protocol, request.RequestID, "mystery", struct{}{})
+		os.Exit(0)
+	case "deep-json":
+		fmt.Fprintf(os.Stdout, "{\"protocol\":\"%s\",\"request_id\":\"%s\",\"kind\":\"run.begin\",\"payload\":%s}\n", Protocol, request.RequestID, strings.Repeat("[", 101)+strings.Repeat("]", 101))
 		os.Exit(0)
 	case "duplicate":
 		writeDuplicateRun(request.RequestID)
