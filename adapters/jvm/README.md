@@ -60,21 +60,23 @@ the build can resolve dependencies and execute plugins, annotation processors,
 or generators. If any grant is absent, `weave-jvm` fails before it resolves or
 runs the producer. It never downloads Java or `scip-java` on the user's behalf.
 
-Select an upstream executable, expected version, or build tool with literal
-adapter arguments:
+Select an upstream executable, distribution version, embedded metadata version,
+or build tool with literal adapter arguments:
 
 ```console
 weave index \
   --adapter "$(command -v weave-jvm)" \
   --adapter-arg=--scip-java=/opt/scip-java/bin/scip-java \
   --adapter-arg=--producer-version=0.13.1 \
+  --adapter-arg=--metadata-version=0.0.0-SNAPSHOT \
   --adapter-arg=--build-tool=gradle \
   --allow-build-tool --allow-restore --allow-network --allow-generators
 ```
 
-`WEAVE_SCIP_JAVA` and `WEAVE_SCIP_JAVA_VERSION` are the equivalent producer
-settings. Supported build-tool selectors are `auto`, `gradle`, `maven`, and
-`bazel`. Omitting the selector lets upstream perform its normal detection.
+`WEAVE_SCIP_JAVA`, `WEAVE_SCIP_JAVA_VERSION`, and
+`WEAVE_SCIP_JAVA_METADATA_VERSION` are the equivalent producer settings.
+Supported build-tool selectors are `auto`, `gradle`, `maven`, and `bazel`.
+Omitting the selector lets upstream perform its normal detection.
 
 ### Explicit automatic freshness
 
@@ -129,10 +131,14 @@ the original error remains available for intentional manual reproduction.
 
 ## Correctness boundary
 
-The wrapper advertises the pinned producer version without executing it, then
-requires the imported SCIP metadata to be exactly `scip-java` at that version.
-Use `--producer-version` only when intentionally selecting another upstream
-release. A mismatch emits no partial graph facts.
+The wrapper advertises the pinned producer distribution without executing it.
+The official v0.13.1 launcher currently embeds `0.0.0-SNAPSHOT` in its SCIP
+metadata, so the wrapper validates that known value and rewrites it to the
+selected distribution version before normalization. Stable unit IDs and visible
+provider provenance therefore retain `0.13.1` instead of an ambiguous snapshot
+label. Use `--producer-version` and `--metadata-version` together when
+intentionally selecting another upstream release. A mismatch emits no partial
+graph facts.
 
 `scip-java` 0.13.1 emits the legacy SCIP document shape without a per-document
 position encoding. Its javac and Kotlin compiler integrations calculate columns

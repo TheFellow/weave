@@ -56,6 +56,11 @@ Why it fits:
   compute columns from JVM/Kotlin string offsets, which are UTF-16 code units.
   The wrapper must supply that producer-specific legacy contract rather than
   guessing from the top-level source-byte encoding.
+- The official v0.13.1 launcher also embeds `0.0.0-SNAPSHOT` as its SCIP
+  `ToolInfo.version`. The wrapper validates this observed embedded value, then
+  normalizes it to the independently pinned distribution version before facts
+  and stable IDs are created. Keeping both values explicit avoids treating a
+  non-unique snapshot label as durable producer identity.
 
 Important boundary conditions:
 
@@ -145,8 +150,9 @@ marked inferred, not a replacement for compiler-backed exact facts.
    for `weave.adapter/v0` frames.
 5. The producer writes `index.scip` beneath a private OS temporary directory.
 6. Weave's shared SCIP importer validates paths, ranges, fact limits, metadata,
-   and exact evidence. The wrapper additionally rejects a producer name/version
-   that differs from the negotiated contract.
+   and exact evidence. The wrapper additionally rejects producer name,
+   distribution-version, or embedded-version drift from the negotiated
+   contract.
 7. Java and Kotlin fixtures exercise normalization without making the Go suite
    depend on Java. A separate opt-in end-to-end test can run the real producer
    where JDK 17+, Gradle, and dependency access are intentionally provisioned.

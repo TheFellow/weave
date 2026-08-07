@@ -886,7 +886,7 @@ func resolveExecutable(value string) (string, error) {
 func adapterEnvironment() []string {
 	allowed := []string{
 		"PATH", "HOME", "USERPROFILE", "JAVA_HOME", "CARGO_HOME", "RUSTUP_HOME", "RUSTUP_TOOLCHAIN",
-		"WEAVE_RUST_ANALYZER", "WEAVE_SCIP_CLANG", "WEAVE_SCIP_TYPESCRIPT", "WEAVE_SCIP_JAVA", "WEAVE_SCIP_JAVA_VERSION",
+		"WEAVE_RUST_ANALYZER", "WEAVE_SCIP_CLANG", "WEAVE_SCIP_TYPESCRIPT", "WEAVE_SCIP_JAVA", "WEAVE_SCIP_JAVA_VERSION", "WEAVE_SCIP_JAVA_METADATA_VERSION",
 		"TMPDIR", "TMP", "TEMP", "SystemRoot", "WINDIR",
 	}
 	var environment []string

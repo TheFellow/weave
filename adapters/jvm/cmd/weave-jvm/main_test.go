@@ -46,7 +46,7 @@ func (fake *fakeProducer) run(_ context.Context, _ string, arguments []string, d
 	}
 	version := fake.version
 	if version == "" {
-		version = defaultVersion
+		version = defaultMetadataVersion
 	}
 	encoded, err := proto.Marshal(fixtureIndex(version))
 	if err != nil {
@@ -173,6 +173,7 @@ func TestAdapterLifecycleUsesLiteralArgumentsAndLegacyUTF16Ranges(t *testing.T) 
 	for _, fragment := range []string{
 		`"kind":"run.begin"`, `"kind":"run.end"`,
 		`"language":"java"`, `"language":"kotlin"`,
+		`"provider_version":"0.13.1"`,
 		`"display_name":"Greeter"`, `"display_name":"FriendlyGreeter"`,
 		`"kind":"implements"`, `"evidence":"exact"`,
 	} {
@@ -217,7 +218,7 @@ func TestEveryRepositoryBuildCapabilityIsDeniedBeforeProducerDiscovery(t *testin
 	}
 }
 
-func TestProducerMetadataMustMatchNegotiatedContract(t *testing.T) {
+func TestEmbeddedProducerMetadataMustMatchPinnedContract(t *testing.T) {
 	root := copyFixture(t)
 	request := validRequest(root)
 	encoded, _ := json.Marshal(request)
@@ -226,7 +227,7 @@ func TestProducerMetadataMustMatchNegotiatedContract(t *testing.T) {
 	err := runCLI(context.Background(), []string{
 		"--scip-java=" + os.Args[0], "index", "--protocol", adapter.Protocol,
 	}, bytes.NewReader(encoded), &output, &bytes.Buffer{}, dependencies{run: fake.run})
-	if err == nil || !strings.Contains(err.Error(), "producer-version") || !strings.Contains(err.Error(), "0.12.0") {
+	if err == nil || !strings.Contains(err.Error(), "metadata-version") || !strings.Contains(err.Error(), "0.12.0") {
 		t.Fatalf("metadata mismatch error = %v", err)
 	}
 	if output.Len() != 0 {
@@ -241,6 +242,7 @@ func TestArgumentsAndRequestsAreStrict(t *testing.T) {
 	for _, arguments := range [][]string{
 		{"describe", "--protocol", "wrong"},
 		{"--producer-version=not a version", "describe", "--protocol", adapter.Protocol},
+		{"--metadata-version=not a version", "describe", "--protocol", adapter.Protocol},
 		{"--build-tool=ant", "describe", "--protocol", adapter.Protocol},
 		{"--scip-java=a", "--scip-java=b", "describe", "--protocol", adapter.Protocol},
 	} {

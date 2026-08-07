@@ -20,28 +20,32 @@ import (
 	"github.com/TheFellow/weave/internal/graph"
 	"github.com/TheFellow/weave/internal/scipimport"
 	"github.com/scip-code/scip/bindings/go/scip"
+	"google.golang.org/protobuf/proto"
 )
 
 const (
-	providerName       = "scip:scip-java"
-	defaultIndexer     = "scip-java"
-	defaultVersion     = "0.13.1"
-	maxRequestBytes    = 4 << 20
-	maxToolOutputBytes = 1 << 20
-	maxIndexBytes      = 256 << 20
+	providerName           = "scip:scip-java"
+	defaultIndexer         = "scip-java"
+	defaultVersion         = "0.13.1"
+	defaultMetadataVersion = "0.0.0-SNAPSHOT"
+	maxRequestBytes        = 4 << 20
+	maxToolOutputBytes     = 1 << 20
+	maxIndexBytes          = 256 << 20
 )
 
 var versionPattern = regexp.MustCompile(`^[0-9A-Za-z][0-9A-Za-z.+_-]{0,127}$`)
 
 type options struct {
-	indexer   string
-	version   string
-	buildTool string
+	indexer         string
+	version         string
+	metadataVersion string
+	buildTool       string
 }
 
 type producer struct {
-	path    string
-	version string
+	path            string
+	version         string
+	metadataVersion string
 }
 
 type commandResult struct {
@@ -93,8 +97,9 @@ func runCLI(ctx context.Context, arguments []string, input io.Reader, output, di
 
 func parseArguments(arguments []string) (options, string, error) {
 	configuration := options{
-		indexer: os.Getenv("WEAVE_SCIP_JAVA"),
-		version: os.Getenv("WEAVE_SCIP_JAVA_VERSION"),
+		indexer:         os.Getenv("WEAVE_SCIP_JAVA"),
+		version:         os.Getenv("WEAVE_SCIP_JAVA_VERSION"),
+		metadataVersion: os.Getenv("WEAVE_SCIP_JAVA_METADATA_VERSION"),
 	}
 	if configuration.indexer == "" {
 		configuration.indexer = defaultIndexer
@@ -102,8 +107,11 @@ func parseArguments(arguments []string) (options, string, error) {
 	if configuration.version == "" {
 		configuration.version = defaultVersion
 	}
+	if configuration.metadataVersion == "" {
+		configuration.metadataVersion = defaultMetadataVersion
+	}
 	if len(arguments) < 3 || arguments[len(arguments)-2] != "--protocol" || arguments[len(arguments)-1] != adapter.Protocol {
-		return options{}, "", errors.New("usage: weave-jvm [--scip-java=PATH] [--producer-version=VERSION] [--build-tool=TOOL] (describe|index) --protocol weave.adapter/v0")
+		return options{}, "", errors.New("usage: weave-jvm [--scip-java=PATH] [--producer-version=VERSION] [--metadata-version=VERSION] [--build-tool=TOOL] (describe|index) --protocol weave.adapter/v0")
 	}
 	operation := arguments[len(arguments)-3]
 	if operation != "describe" && operation != "index" {
@@ -112,7 +120,7 @@ func parseArguments(arguments []string) (options, string, error) {
 	seen := map[string]bool{}
 	for _, value := range arguments[:len(arguments)-3] {
 		name, argument, ok := strings.Cut(value, "=")
-		if !ok || argument == "" || !slices.Contains([]string{"--scip-java", "--producer-version", "--build-tool"}, name) {
+		if !ok || argument == "" || !slices.Contains([]string{"--scip-java", "--producer-version", "--metadata-version", "--build-tool"}, name) {
 			return options{}, "", fmt.Errorf("unsupported adapter argument %q", value)
 		}
 		if seen[name] {
@@ -124,12 +132,17 @@ func parseArguments(arguments []string) (options, string, error) {
 			configuration.indexer = argument
 		case "--producer-version":
 			configuration.version = argument
+		case "--metadata-version":
+			configuration.metadataVersion = argument
 		case "--build-tool":
 			configuration.buildTool = strings.ToLower(argument)
 		}
 	}
 	if !versionPattern.MatchString(configuration.version) {
 		return options{}, "", errors.New("producer version must be a short release identifier without whitespace")
+	}
+	if !versionPattern.MatchString(configuration.metadataVersion) {
+		return options{}, "", errors.New("metadata version must be a short release identifier without whitespace")
 	}
 	if configuration.buildTool != "" && !slices.Contains([]string{"auto", "gradle", "maven", "bazel"}, configuration.buildTool) {
 		return options{}, "", errors.New("--build-tool must be auto, gradle, maven, or bazel")
@@ -181,7 +194,7 @@ func resolveProducer(configuration options) (producer, error) {
 	if absolute, absoluteErr := filepath.Abs(path); absoluteErr == nil {
 		path = absolute
 	}
-	return producer{path: path, version: configuration.version}, nil
+	return producer{path: path, version: configuration.version, metadataVersion: configuration.metadataVersion}, nil
 }
 
 func readRequest(input io.Reader) (adapter.IndexRequest, error) {
@@ -246,10 +259,18 @@ func index(ctx context.Context, request adapter.IndexRequest, configuration opti
 	if err != nil {
 		return scipimport.Result{}, diagnostics, fmt.Errorf("run scip-java: %w%s", err, stderrSuffix(command.stderr))
 	}
+	encoded, err := readIndex(indexPath)
+	if err != nil {
+		return scipimport.Result{}, diagnostics, err
+	}
+	encoded, err = normalizeProducerMetadata(encoded, tool)
+	if err != nil {
+		return scipimport.Result{}, diagnostics, fmt.Errorf("validate scip-java index: %w", err)
+	}
 	result, err := (scipimport.Importer{Limits: scipimport.Limits{
 		MaxIndexBytes: maxIndexBytes,
 		MaxFacts:      request.Limits.MaxFacts,
-	}}).ImportFile(ctx, indexPath, scipimport.Options{
+	}}).Import(ctx, encoded, scipimport.Options{
 		RepositoryRoot:         root,
 		RepositoryIdentity:     request.RepositoryIdentity,
 		LegacyPositionEncoding: scip.PositionEncoding_UTF16CodeUnitOffsetFromLineStart,
@@ -261,6 +282,46 @@ func index(ctx context.Context, request adapter.IndexRequest, configuration opti
 		return scipimport.Result{}, diagnostics, fmt.Errorf("SCIP producer is %s %s, want %s %s; configure --producer-version for an intentional alternate release", result.Provider, result.ProviderVersion, providerName, tool.version)
 	}
 	return result, diagnostics, nil
+}
+
+func readIndex(indexPath string) ([]byte, error) {
+	info, err := os.Lstat(indexPath)
+	if err != nil {
+		return nil, fmt.Errorf("inspect scip-java index: %w", err)
+	}
+	if !info.Mode().IsRegular() || info.Size() > maxIndexBytes {
+		return nil, fmt.Errorf("scip-java index must be a regular file no larger than %d bytes", maxIndexBytes)
+	}
+	encoded, err := os.ReadFile(indexPath)
+	if err != nil {
+		return nil, fmt.Errorf("read scip-java index: %w", err)
+	}
+	return encoded, nil
+}
+
+func normalizeProducerMetadata(encoded []byte, tool producer) ([]byte, error) {
+	var index scip.Index
+	if err := (proto.UnmarshalOptions{RecursionLimit: 100}).Unmarshal(encoded, &index); err != nil {
+		return nil, fmt.Errorf("decode SCIP protobuf: %w", err)
+	}
+	if index.Metadata == nil || index.Metadata.ToolInfo == nil || index.Metadata.ToolInfo.Name != "scip-java" {
+		return nil, errors.New("SCIP metadata must identify scip-java")
+	}
+	if index.Metadata.ToolInfo.Version != tool.metadataVersion {
+		return nil, fmt.Errorf("SCIP metadata version is %q, want %q; configure --metadata-version for an intentional alternate release", index.Metadata.ToolInfo.Version, tool.metadataVersion)
+	}
+	// The official v0.13.1 launcher embeds 0.0.0-SNAPSHOT. Validate that
+	// observed value above, then retain the selected distribution release as
+	// Weave's durable provider and stable-unit identity.
+	index.Metadata.ToolInfo.Version = tool.version
+	result, err := proto.Marshal(&index)
+	if err != nil {
+		return nil, fmt.Errorf("encode normalized SCIP protobuf: %w", err)
+	}
+	if len(result) > maxIndexBytes {
+		return nil, errors.New("normalized SCIP index exceeds byte limit")
+	}
+	return result, nil
 }
 
 func toolDiagnostics(result commandResult) []byte {
