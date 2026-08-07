@@ -5,8 +5,10 @@
     <PackAsTool>true</PackAsTool>
     <ToolCommandName>weave-dotnet</ToolCommandName>
     <PackageId>Weave.Adapter.DotNet</PackageId>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>
   <ItemGroup>
+    <None Include="../../DISTRIBUTION.md" Pack="true" PackagePath="/" Link="README.md" />
     <ProjectReference Include="../Weave.Adapter.Model/Weave.Adapter.Model.csproj" />
     <ProjectReference Include="../Weave.Adapter.FSharp/Weave.Adapter.FSharp.fsproj" />
     <PackageReference Include="Microsoft.Build" ExcludeAssets="runtime" PrivateAssets="all" />
