@@ -317,6 +317,7 @@ func attachIntegritySARIF(log *architecture.SARIFLog, issues []storage.Issue) {
 	for _, rule := range driver.Rules {
 		known[rule.ID] = true
 	}
+	invocation := architecture.SARIFInvocation{ExecutionSuccessful: true}
 	for _, issue := range issues {
 		ruleID := "weave/integrity/" + issue.Kind
 		if !known[ruleID] {
@@ -326,12 +327,15 @@ func attachIntegritySARIF(log *architecture.SARIFLog, issues []storage.Issue) {
 		level := "warning"
 		if issue.Fatal() {
 			level = "error"
+			invocation.ExecutionSuccessful = false
 		}
-		log.Runs[0].Results = append(log.Runs[0].Results, architecture.SARIFResult{
-			RuleID: ruleID, Level: level,
+		invocation.ToolExecutionNotifications = append(invocation.ToolExecutionNotifications, architecture.SARIFNotification{
+			Level: level,
 			Message: architecture.SARIFMessage{Text: issue.Record + ": " + issue.Detail},
+			Descriptor: architecture.SARIFDescriptorReference{ID: ruleID},
 		})
 	}
+	log.Runs[0].Invocations = append(log.Runs[0].Invocations, invocation)
 	slices.SortFunc(driver.Rules, func(a, b architecture.SARIFRule) int { return strings.Compare(a.ID, b.ID) })
 }
 

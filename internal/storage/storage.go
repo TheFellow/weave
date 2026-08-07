@@ -492,10 +492,12 @@ func (db *DB) Export(ctx context.Context) (graph.Snapshot, error) {
 
 // Issue is one deterministic logical-integrity failure.
 type Issue struct {
-	Severity string `json:"severity"`
-	Kind     string `json:"kind"`
-	Record   string `json:"record"`
-	Detail   string `json:"detail"`
+	Severity string      `json:"severity"`
+	Kind     string      `json:"kind"`
+	Record   string      `json:"record"`
+	Detail   string      `json:"detail"`
+	Document string      `json:"document,omitempty"`
+	Range    graph.Range `json:"range"`
 }
 
 const (
@@ -528,34 +530,54 @@ func (db *DB) Verify(ctx context.Context) ([]Issue, error) {
 	var issues []Issue
 	for _, document := range snapshot.Documents {
 		if _, ok := units[document.UnitID]; !ok {
-			issues = append(issues, Issue{IssueError, "orphan-document", document.ID, "unit " + document.UnitID + " is absent"})
+			issues = append(issues, Issue{Severity: IssueError, Kind: "orphan-document", Record: document.ID, Detail: "unit " + document.UnitID + " is absent", Document: document.Path})
 		}
 	}
 	for _, symbol := range snapshot.Symbols {
 		if _, ok := units[symbol.UnitID]; !ok {
-			issues = append(issues, Issue{IssueError, "orphan-symbol", symbol.ID, "unit " + symbol.UnitID + " is absent"})
+			issue := Issue{Severity: IssueError, Kind: "orphan-symbol", Record: symbol.ID, Detail: "unit " + symbol.UnitID + " is absent", Range: symbol.Definition}
+			if document, ok := documents[symbol.DocumentID]; ok {
+				issue.Document = document.Path
+			}
+			issues = append(issues, issue)
 		}
 		if symbol.DocumentID != "" {
 			if document, ok := documents[symbol.DocumentID]; !ok || document.UnitID != symbol.UnitID {
-				issues = append(issues, Issue{IssueError, "invalid-symbol-document", symbol.ID, "document " + symbol.DocumentID + " is absent or owned by another unit"})
+				issue := Issue{Severity: IssueError, Kind: "invalid-symbol-document", Record: symbol.ID, Detail: "document " + symbol.DocumentID + " is absent or owned by another unit", Range: symbol.Definition}
+				if ok {
+					issue.Document = document.Path
+				}
+				issues = append(issues, issue)
 			}
 		}
 	}
 	for _, occurrence := range snapshot.Occurrences {
 		if document, ok := documents[occurrence.DocumentID]; !ok || document.UnitID != occurrence.UnitID {
-			issues = append(issues, Issue{IssueError, "invalid-occurrence-document", occurrence.ID, "document " + occurrence.DocumentID + " is absent or owned by another unit"})
+			issue := Issue{Severity: IssueError, Kind: "invalid-occurrence-document", Record: occurrence.ID, Detail: "document " + occurrence.DocumentID + " is absent or owned by another unit", Range: occurrence.Range}
+			if ok {
+				issue.Document = document.Path
+			}
+			issues = append(issues, issue)
 		}
 		if _, ok := symbols[occurrence.SymbolID]; !ok {
-			issues = append(issues, Issue{IssueWarning, "unresolved-occurrence", occurrence.ID, "symbol " + occurrence.SymbolID + " is not indexed (external or builtin symbols may be intentionally unmaterialized)"})
+			issues = append(issues, Issue{Severity: IssueWarning, Kind: "unresolved-occurrence", Record: occurrence.ID, Detail: "symbol " + occurrence.SymbolID + " is not indexed (external or builtin symbols may be intentionally unmaterialized)", Document: documents[occurrence.DocumentID].Path, Range: occurrence.Range})
 		}
 	}
 	for _, edge := range snapshot.Edges {
 		if _, ok := units[edge.UnitID]; !ok {
-			issues = append(issues, Issue{IssueError, "orphan-edge", edge.ID, "unit " + edge.UnitID + " is absent"})
+			issue := Issue{Severity: IssueError, Kind: "orphan-edge", Record: edge.ID, Detail: "unit " + edge.UnitID + " is absent", Range: edge.Range}
+			if document, ok := documents[edge.DocumentID]; ok {
+				issue.Document = document.Path
+			}
+			issues = append(issues, issue)
 		}
 		if edge.DocumentID != "" {
 			if document, ok := documents[edge.DocumentID]; !ok || document.UnitID != edge.UnitID {
-				issues = append(issues, Issue{IssueError, "invalid-edge-document", edge.ID, "document " + edge.DocumentID + " is absent or owned by another unit"})
+				issue := Issue{Severity: IssueError, Kind: "invalid-edge-document", Record: edge.ID, Detail: "document " + edge.DocumentID + " is absent or owned by another unit", Range: edge.Range}
+				if ok {
+					issue.Document = document.Path
+				}
+				issues = append(issues, issue)
 			}
 		}
 	}

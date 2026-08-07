@@ -256,9 +256,20 @@ type SARIFLog struct {
 	Runs    []SARIFRun `json:"runs"`
 }
 type SARIFRun struct {
-	Tool    SARIFTool     `json:"tool"`
-	Results []SARIFResult `json:"results"`
+	Tool        SARIFTool       `json:"tool"`
+	Results     []SARIFResult   `json:"results"`
+	Invocations []SARIFInvocation `json:"invocations,omitempty"`
 }
+type SARIFInvocation struct {
+	ExecutionSuccessful       bool                `json:"executionSuccessful"`
+	ToolExecutionNotifications []SARIFNotification `json:"toolExecutionNotifications,omitempty"`
+}
+type SARIFNotification struct {
+	Level      string                 `json:"level"`
+	Message    SARIFMessage           `json:"message"`
+	Descriptor SARIFDescriptorReference `json:"descriptor"`
+}
+type SARIFDescriptorReference struct { ID string `json:"id"` }
 type SARIFTool struct {
 	Driver SARIFDriver `json:"driver"`
 }
