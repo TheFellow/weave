@@ -39,7 +39,7 @@ func New(app application.Service, streams Streams) *cli.Command {
 		traversal(app, streams, "path", "find a bounded path between symbols", 2),
 		traversal(app, streams, "impact", "find code affected by a symbol", 1),
 		noop(app, streams, "dependencies", "find semantic dependencies"),
-		group("architecture", "evaluate architecture rules", noop(app, streams, "architecture check", "check architecture rules")),
+		architectureCommand(app, streams),
 		repositoryCommands(app, streams),
 		group("adapters", "inspect semantic adapters", adapterInspection(app, streams, "list", "list available adapters"), adapterInspection(app, streams, "doctor", "diagnose adapter availability")),
 		maintenance(app, streams, "export", "export normalized semantic facts", true),
@@ -48,6 +48,43 @@ func New(app application.Service, streams Streams) *cli.Command {
 		noop(app, streams, "version", "show the Weave version"),
 	}
 	return root
+}
+
+func architectureCommand(app application.Service, streams Streams) *cli.Command {
+	check := &cli.Command{
+		Name: "check", Usage: "check repository architecture rules",
+		Flags: []cli.Flag{
+			&cli.StringFlag{Name: "config", Usage: "repository-relative or absolute rule configuration"},
+			&cli.StringFlag{Name: "format", Value: "text", Usage: "output format: text, json, or sarif", Validator: func(value string) error {
+				if value != "text" && value != "json" && value != "sarif" {
+					return fmt.Errorf("must be text, json, or sarif")
+				}
+				return nil
+			}},
+		},
+		Action: func(ctx context.Context, cmd *cli.Command) error {
+			if cmd.Args().Len() != 0 {
+				return cli.Exit("architecture check expects no arguments", 2)
+			}
+			format := cmd.String("format")
+			invocationFormat := format
+			if invocationFormat == "text" {
+				invocationFormat = ""
+			}
+			response, err := app.Execute(ctx, application.Invocation{Command: "architecture check", JSON: format == "json", Format: invocationFormat, ConfigPath: cmd.String("config")})
+			if err != nil {
+				return err
+			}
+			if err := renderInvocation(streams, response, format == "json"); err != nil {
+				return err
+			}
+			if response.Failed {
+				return cli.Exit("architecture rules failed", 3)
+			}
+			return nil
+		},
+	}
+	return &cli.Command{Name: "architecture", Aliases: []string{"arch"}, Usage: "evaluate architecture rules", Commands: []*cli.Command{check}}
 }
 
 func repositoryCommands(app application.Service, streams Streams) *cli.Command {
@@ -285,9 +322,17 @@ func arity(minimum, maximum int) string {
 }
 
 func render(writer io.Writer, response application.Response, jsonOutput bool) error {
+	if response.SARIF != nil {
+		encoder := json.NewEncoder(writer)
+		encoder.SetEscapeHTML(false)
+		return encoder.Encode(response.SARIF)
+	}
 	if jsonOutput {
 		encoder := json.NewEncoder(writer)
 		encoder.SetEscapeHTML(false)
+		if response.Architecture != nil {
+			return encoder.Encode(response.Architecture)
+		}
 		if response.Export != nil {
 			return encoder.Encode(struct {
 				Schema string `json:"schema"`
@@ -352,6 +397,17 @@ func render(writer io.Writer, response application.Response, jsonOutput bool) er
 		}
 		if _, err := fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%s\n", repository.Identity, repository.WorktreeID, state, repository.Root, repository.DatabasePath); err != nil {
 			return err
+		}
+	}
+	if response.Architecture != nil {
+		for _, violation := range response.Architecture.Violations {
+			location := violation.Document
+			if location != "" {
+				location = fmt.Sprintf("%s:%d:%d", location, violation.Range.Start.Line+1, violation.Range.Start.Column+1)
+			}
+			if _, err := fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%s\t%s\n", violation.RuleID, violation.Kind, violation.From, violation.To, location, violation.Message); err != nil {
+				return err
+			}
 		}
 	}
 	if response.Export != nil {

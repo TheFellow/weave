@@ -22,6 +22,7 @@ import (
 	"github.com/TheFellow/weave/internal/graph"
 	"github.com/TheFellow/weave/internal/storage"
 	"github.com/scip-code/scip/bindings/go/scip"
+	cli "github.com/urfave/cli/v3"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -113,6 +114,56 @@ func TestRepositoryCatalogCommands(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "\tmain\tcurrent\t") || !strings.Contains(stdout.String(), repositoryRoot) {
 		t.Fatalf("list stdout=%q", stdout.String())
+	}
+}
+
+func TestArchitectureCheckTextJSONAndSARIF(t *testing.T) {
+	ctx := context.Background()
+	repositoryRoot := commandRepository(t)
+	databasePath := filepath.Join(t.TempDir(), "index.db")
+	db, err := storage.Open(ctx, databasePath, storage.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.ReplaceUnit(ctx, commandFixture()); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(t.TempDir(), "architecture.json")
+	config := `{"schema":"weave.architecture/v1","layers":[{"id":"handler","symbols":["fixture.HandleRequest"]},{"id":"authorization","symbols":["fixture.authorize"]}],"rules":[{"id":"handler-no-auth","action":"forbid","from":"handler","to":"authorization","kinds":["calls"],"message":"route through the policy boundary"}]}`
+	if err := os.WriteFile(configPath, []byte(config), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	app := application.Local{DatabasePath: databasePath, Directory: repositoryRoot}
+	for _, test := range []struct {
+		name     string
+		format   string
+		contains string
+	}{
+		{"text", "text", "handler-no-auth\tcalls"},
+		{"json", "json", `"schema":"weave.architecture-result/v1"`},
+		{"sarif", "sarif", `"version":"2.1.0"`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			root := command.New(app, command.Streams{Stdin: strings.NewReader(""), Stdout: &stdout, Stderr: &stderr})
+			err := root.Run(ctx, []string{"weave", "arch", "check", "--config", configPath, "--format", test.format})
+			var exit cli.ExitCoder
+			if !errors.As(err, &exit) || exit.ExitCode() != 3 {
+				t.Fatalf("Run error = %v", err)
+			}
+			if !strings.Contains(stdout.String(), test.contains) {
+				t.Fatalf("stdout = %q", stdout.String())
+			}
+			if test.format == "sarif" {
+				var value map[string]any
+				if err := json.Unmarshal(stdout.Bytes(), &value); err != nil {
+					t.Fatalf("invalid SARIF JSON: %v", err)
+				}
+			}
+		})
 	}
 }
 

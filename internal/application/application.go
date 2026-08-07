@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/TheFellow/weave/internal/adapter"
+	"github.com/TheFellow/weave/internal/architecture"
 	"github.com/TheFellow/weave/internal/catalog"
 	"github.com/TheFellow/weave/internal/federation"
 	"github.com/TheFellow/weave/internal/freshness"
@@ -49,22 +51,24 @@ type Invocation struct {
 
 // Response is the stable application result consumed by text and JSON renderers.
 type Response struct {
-	Schema       string              `json:"schema"`
-	Command      string              `json:"command"`
-	Query        []string            `json:"query,omitempty"`
-	Truncated    bool                `json:"truncated"`
-	Symbols      []graph.Symbol      `json:"symbols,omitempty"`
-	Occurrences  []graph.Occurrence  `json:"occurrences,omitempty"`
-	Edges        []graph.Edge        `json:"edges,omitempty"`
-	Nodes        []string            `json:"nodes,omitempty"`
-	Export       *graph.Snapshot     `json:"export,omitempty"`
-	Issues       []storage.Issue     `json:"issues,omitempty"`
-	Freshness    *freshness.Status   `json:"freshness,omitempty"`
-	Diagnostics  []string            `json:"diagnostics,omitempty"`
-	Adapters     []AdapterStatus     `json:"adapters,omitempty"`
-	Repositories []catalog.Entry     `json:"repositories,omitempty"`
-	Failed       bool                `json:"failed,omitempty"`
-	Sources      []federation.Source `json:"sources,omitempty"`
+	Schema       string                 `json:"schema"`
+	Command      string                 `json:"command"`
+	Query        []string               `json:"query,omitempty"`
+	Truncated    bool                   `json:"truncated"`
+	Symbols      []graph.Symbol         `json:"symbols,omitempty"`
+	Occurrences  []graph.Occurrence     `json:"occurrences,omitempty"`
+	Edges        []graph.Edge           `json:"edges,omitempty"`
+	Nodes        []string               `json:"nodes,omitempty"`
+	Export       *graph.Snapshot        `json:"export,omitempty"`
+	Issues       []storage.Issue        `json:"issues,omitempty"`
+	Freshness    *freshness.Status      `json:"freshness,omitempty"`
+	Diagnostics  []string               `json:"diagnostics,omitempty"`
+	Adapters     []AdapterStatus        `json:"adapters,omitempty"`
+	Repositories []catalog.Entry        `json:"repositories,omitempty"`
+	Failed       bool                   `json:"failed,omitempty"`
+	Sources      []federation.Source    `json:"sources,omitempty"`
+	Architecture *architecture.Report   `json:"architecture,omitempty"`
+	SARIF        *architecture.SARIFLog `json:"-"`
 }
 
 // AdapterStatus is a side-effect-free executable discovery result. Discovery
@@ -105,6 +109,9 @@ func (app Local) Execute(ctx context.Context, invocation Invocation) (Response, 
 	response := Response{Schema: QuerySchema, Command: invocation.Command, Query: append([]string(nil), invocation.Arguments...)}
 	if strings.HasPrefix(invocation.Command, "repos ") {
 		return app.repositories(ctx, response, invocation)
+	}
+	if invocation.Command == "architecture check" {
+		return app.architectureCheck(ctx, response, invocation)
 	}
 	if invocation.Scope == "catalog" && requiresDatabase(invocation.Command) {
 		return app.federated(ctx, response, invocation)
@@ -217,6 +224,56 @@ func (app Local) Execute(ctx context.Context, invocation Invocation) (Response, 
 	}
 	if err != nil {
 		return Response{}, fmt.Errorf("%s: %w", invocation.Command, err)
+	}
+	return response, nil
+}
+
+func (app Local) architectureCheck(ctx context.Context, response Response, invocation Invocation) (Response, error) {
+	if app.Freshness != nil {
+		status, err := app.Freshness.Ensure(ctx, false)
+		if err != nil {
+			return Response{}, err
+		}
+		response.Freshness = &status
+	}
+	repo, err := app.repository(ctx)
+	if err != nil {
+		return Response{}, err
+	}
+	configPath := invocation.ConfigPath
+	if configPath == "" {
+		configPath = filepath.Join(repo.Root, ".weave", "architecture.json")
+	} else if !filepath.IsAbs(configPath) {
+		configPath = filepath.Join(repo.Root, configPath)
+	}
+	config, err := architecture.Load(configPath)
+	if errors.Is(err, architecture.ErrNotConfigured) {
+		report := architecture.Report{Schema: architecture.ReportSchema}
+		response.Architecture = &report
+		return response, nil
+	}
+	if err != nil {
+		return Response{}, err
+	}
+	databasePath, err := app.databasePath(ctx)
+	if err != nil {
+		return Response{}, err
+	}
+	db, err := storage.Open(ctx, databasePath, storage.Options{MustExist: true})
+	if err != nil {
+		return Response{}, err
+	}
+	defer db.Close()
+	snapshot, err := db.Export(ctx)
+	if err != nil {
+		return Response{}, err
+	}
+	report := architecture.Check(config, snapshot)
+	response.Architecture = &report
+	response.Failed = len(report.Violations) != 0
+	if invocation.Format == "sarif" {
+		value := architecture.SARIF(config, report)
+		response.SARIF = &value
 	}
 	return response, nil
 }
