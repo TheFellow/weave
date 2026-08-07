@@ -5,6 +5,7 @@
   <ItemGroup>
     <PackageVersion Include="Buildalyzer" Version="9.0.0" />
     <PackageVersion Include="FSharp.Compiler.Service" Version="43.8.403" />
+    <PackageVersion Include="Microsoft.Build" Version="17.14.28" />
     <PackageVersion Include="Microsoft.Build.Locator" Version="1.11.2" />
     <PackageVersion Include="Microsoft.CodeAnalysis.CSharp" Version="4.14.0" />
     <PackageVersion Include="Microsoft.CodeAnalysis.CSharp.Workspaces" Version="4.14.0" />

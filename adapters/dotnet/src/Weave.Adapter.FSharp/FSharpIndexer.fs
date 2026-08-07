@@ -130,7 +130,7 @@ type FSharpIndexer private () =
                 let definedSymbols = HashSet<string>(StringComparer.Ordinal)
                 let seenOccurrences = HashSet<string>(StringComparer.Ordinal)
                 let seenEdges = HashSet<string>(StringComparer.Ordinal)
-                let uses = checkedProject.GetAllUsesOfAllSymbols(cancellationToken = cancellationToken) |> Array.sortBy (fun use -> use.Range.FileName, use.Range.StartLine, use.Range.StartColumn)
+                let uses = checkedProject.GetAllUsesOfAllSymbols(cancellationToken = cancellationToken) |> Array.sortBy (fun symbolUse -> symbolUse.Range.FileName, symbolUse.Range.StartLine, symbolUse.Range.StartColumn)
                 for symbolUse in uses do
                     let fullFile = Path.GetFullPath symbolUse.Range.FileName
                     match documents.TryGetValue fullFile with

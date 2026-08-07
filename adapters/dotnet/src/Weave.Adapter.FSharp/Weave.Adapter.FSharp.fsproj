@@ -9,6 +9,7 @@
     <ProjectReference Include="../Weave.Adapter.Model/Weave.Adapter.Model.csproj" />
     <PackageReference Include="Buildalyzer" />
     <PackageReference Include="FSharp.Compiler.Service" />
+    <PackageReference Include="Microsoft.Build" ExcludeAssets="runtime" PrivateAssets="all" />
     <!-- Buildalyzer accepts Roslyn >=4.0, but its C#/VB floor pins Common 4.0.
          Converge the compiler family with the 4.14 Workspaces used by the adapter. -->
     <PackageReference Include="Microsoft.CodeAnalysis.CSharp" PrivateAssets="all" />

@@ -8,6 +8,7 @@
   <ItemGroup>
     <ProjectReference Include="../Weave.Adapter.Model/Weave.Adapter.Model.csproj" />
     <ProjectReference Include="../Weave.Adapter.FSharp/Weave.Adapter.FSharp.fsproj" />
+    <PackageReference Include="Microsoft.Build" ExcludeAssets="runtime" PrivateAssets="all" />
     <PackageReference Include="Microsoft.Build.Locator" />
     <PackageReference Include="Microsoft.CodeAnalysis.CSharp.Workspaces" />
     <PackageReference Include="Microsoft.CodeAnalysis.Workspaces.MSBuild" />
