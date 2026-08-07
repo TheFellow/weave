@@ -18,7 +18,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        include:
+          - os: ubuntu-latest
+            rid: linux-x64
+          - os: macos-latest
+            rid: osx-arm64
+          - os: windows-latest
+            rid: win-x64
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -33,3 +39,9 @@ jobs:
         run: dotnet build adapters/dotnet/tests/fixtures/Mixed/Mixed.sln --configuration Debug
       - name: Test
         run: dotnet test adapters/dotnet/Weave.Adapter.sln --no-build --configuration Release --logger "console;verbosity=normal"
+      - name: Dry-run release package
+        shell: bash
+        env:
+          WEAVE_DOTNET_RIDS: ${{ matrix.rid }}
+          WEAVE_DOTNET_VERIFY_RID: ${{ matrix.rid }}
+        run: scripts/package-dotnet-adapter.sh 0.0.0-ci "${RUNNER_TEMP}/weave-dotnet-dist"

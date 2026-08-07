@@ -40,6 +40,10 @@ archives:
 checksum:
   name_template: checksums.txt
 
+release:
+  extra_files:
+    - glob: ./adapter-dist/*
+
 changelog:
   sort: asc
   filters:

@@ -71,7 +71,8 @@ build targets from directory names.
 ## C# and F# adapter
 
 The optional adapter uses Roslyn/MSBuild for C# and
-FSharp.Compiler.Service for F#. Restore and build it explicitly:
+FSharp.Compiler.Service for F#. Tagged releases include same-version NuGet
+tool and host archives for every supported core platform. For a source build:
 
 ```sh
 dotnet restore adapters/dotnet/Weave.Adapter.sln

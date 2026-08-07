@@ -21,6 +21,33 @@ dotnet build adapters/dotnet/tests/fixtures/Mixed/Mixed.sln --configuration Debu
 dotnet test adapters/dotnet/Weave.Adapter.sln --no-build
 ```
 
+## Install a release companion
+
+Every tagged Weave release includes a same-version `Weave.Adapter.DotNet`
+NuGet tool package and framework-dependent archives for macOS, Linux, and
+Windows on x64 and arm64. All require the .NET 9 runtime. Install a downloaded
+package into an explicit local tool directory:
+
+```console
+dotnet tool install Weave.Adapter.DotNet --tool-path .weave-tools \
+  --add-source /path/to/downloads --version VERSION
+export PATH="$PWD/.weave-tools:$PATH"
+weave adapters doctor
+```
+
+Alternatively unpack the archive matching the host RID and put
+`weave-dotnet` (`weave-dotnet.exe` on Windows) on `PATH`. The adapter and core
+release versions are built together; `weave adapters doctor` performs the
+protocol compatibility handshake. No package is published to NuGet.org by the
+release workflow.
+
+Maintainers can dry-run one or all release RIDs without a tag:
+
+```console
+WEAVE_DOTNET_RIDS=osx-arm64 WEAVE_DOTNET_VERIFY_RID=osx-arm64 \
+  scripts/package-dotnet-adapter.sh 0.0.0-local /tmp/weave-dotnet-dist
+```
+
 During development, expose the built adapter to Weave:
 
 ```console

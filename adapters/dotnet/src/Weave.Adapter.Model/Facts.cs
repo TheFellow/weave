@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using System.Reflection;
 
 namespace Weave.Adapter.Model;
 
@@ -94,5 +95,7 @@ public static class Constants
     public const string Protocol = "weave.adapter/v0";
     public const string FactEncoding = "weave.facts/v0";
     public const string Provider = "weave-dotnet";
-    public const string Version = "0.1.0";
+    public static readonly string Version =
+        typeof(Constants).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?
+            .InformationalVersion.Split('+', 2)[0] ?? "0.0.0-dev";
 }
