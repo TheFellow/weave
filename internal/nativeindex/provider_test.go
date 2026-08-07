@@ -62,6 +62,15 @@ func TestProviderRunsFullAdapterOnlyWhenDotnetSemanticInputsChange(t *testing.T)
 	}
 }
 
+func TestProviderFingerprintIncludesAdapterIdentity(t *testing.T) {
+	inputs := "sha256:inputs"
+	first := providerFingerprint(freshness.ProviderID{Name: "native/weave-dotnet", Version: "1.binary-a"}, inputs)
+	second := providerFingerprint(freshness.ProviderID{Name: "native/weave-dotnet", Version: "1.binary-b"}, inputs)
+	if first == second || first != providerFingerprint(freshness.ProviderID{Name: "native/weave-dotnet", Version: "1.binary-a"}, inputs) {
+		t.Fatalf("provider fingerprints are not deterministic or upgrade-sensitive: %q %q", first, second)
+	}
+}
+
 func TestNativeAdapterHelperProcess(t *testing.T) {
 	separator := -1
 	for i, arg := range os.Args {

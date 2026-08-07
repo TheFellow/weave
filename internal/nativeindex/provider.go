@@ -66,6 +66,7 @@ func (provider Provider) Refresh(ctx context.Context, request freshness.Request)
 	if err != nil {
 		return freshness.Result{}, err
 	}
+	fingerprint = providerFingerprint(provider.ID(), fingerprint)
 	previous := previousUnits(request.Previous)
 	if len(paths) == 0 {
 		return freshness.Result{Removed: sortedKeys(previous), Units: []freshness.Unit{}}, nil
@@ -112,6 +113,11 @@ func (provider Provider) Refresh(ctx context.Context, request freshness.Request)
 	slices.SortFunc(units, func(a, b freshness.Unit) int { return strings.Compare(a.ID, b.ID) })
 	slices.Sort(removed)
 	return freshness.Result{Batches: result.Units, Removed: removed, Units: units}, nil
+}
+
+func providerFingerprint(id freshness.ProviderID, inputs string) string {
+	digest := sha256.Sum256([]byte(id.Name + "\x00" + id.Version + "\x00" + inputs))
+	return "sha256:" + hex.EncodeToString(digest[:])
 }
 
 func semanticInputs(ctx context.Context, root string) ([]string, string, error) {
