@@ -102,8 +102,33 @@ The current edge vocabulary and record shapes are defined by
 `weave.facts/v0`; the golden response exercises a minimal valid document and
 symbol. A symbol's `definition` is its canonical display anchor; providers may
 emit several `definition` occurrences for languages with repeated bindings.
-Queries should prefer those complete occurrences. Until a protobuf v1 schema is
-published, the Go model and this fixture must change together.
+Queries should prefer those complete occurrences. Until the first stable wire
+specification is published, this document, the fixtures, and the Go model must
+change together. A future stable encoding is not required to be protobuf.
+
+## Additive enrichment and composition
+
+Each successful run replaces only the complete inventory owned by the run's
+provider. It cannot replace, relabel, or delete another provider's facts. The
+host rejects documents, symbols, occurrences, and edges whose provider identity
+does not match their enclosing unit and run.
+
+Providers enrich the shared graph by returning additional provider-owned facts.
+An edge may connect two local symbols, an existing stable entity ID learned from
+a documented namespace, or an open endpoint that another provider or a manually
+authored contextual link may later satisfy. Owning an edge never implies owning
+its endpoints. Precise SCIP/compiler facts, structured-content facts, broad
+syntactic outlines, generated-schema bridges, and declared human relationships
+therefore coexist without a provider calling another provider or writing the
+database directly.
+
+The core unions these observations and preserves their provider and evidence.
+Reconciliation may add an explicitly evidenced relationship between uniquely
+matching observations; it must not silently merge them or upgrade a heuristic
+to compiler truth. Future additive request fields may supply bounded read-only
+anchors from the existing graph for conservative matching, but those anchors
+remain host-owned context and can never enter the adapter's replaceable
+inventory.
 
 The built-in workspace provider owns one path symbol for every Git-visible
 file. An adapter can join compiler truth to that symbol by emitting an exact
@@ -138,9 +163,11 @@ request explicitly permits the relevant action.
 ## Evolution
 
 Additive v0 experimentation may occur before the first compatibility promise.
-Stable v1 will be defined by a checked-in protobuf schema and retain this
-one-shot mode. A persistent worker transport may later be negotiated for
-expensive compiler startup, but it will not replace the one-shot contract.
+Stable v1 will be defined by a checked-in language-neutral wire specification,
+compatibility rules, fixtures, and a reusable executable conformance suite. It
+will retain this one-shot mode. A persistent worker transport may later be
+negotiated for expensive compiler startup, but it will not replace the one-shot
+contract.
 
 Generated bindings and helper SDKs are optional. An adapter in C#, F#, Rust,
 Java, Kotlin, TypeScript, Python, or another language is conformant if its bytes
