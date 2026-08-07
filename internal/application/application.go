@@ -294,13 +294,6 @@ func (app Local) ci(ctx context.Context, response Response, invocation Invocatio
 }
 
 func (app Local) architectureCheck(ctx context.Context, response Response, invocation Invocation) (Response, error) {
-	if app.Freshness != nil {
-		status, err := app.Freshness.Ensure(ctx, false)
-		if err != nil {
-			return Response{}, err
-		}
-		response.Freshness = &status
-	}
 	repo, err := app.repository(ctx)
 	if err != nil {
 		return Response{}, err
@@ -323,6 +316,13 @@ func (app Local) architectureCheck(ctx context.Context, response Response, invoc
 	}
 	if err != nil {
 		return Response{}, err
+	}
+	if app.Freshness != nil {
+		status, err := app.Freshness.Ensure(ctx, false)
+		if err != nil {
+			return Response{}, err
+		}
+		response.Freshness = &status
 	}
 	databasePath, err := app.databasePath(ctx)
 	if err != nil {
