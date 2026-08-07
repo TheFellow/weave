@@ -170,7 +170,7 @@ func TestArchitectureCheckTextJSONAndSARIF(t *testing.T) {
 func TestCIKeyIndexAndCheckWorkflow(t *testing.T) {
 	ctx := context.Background()
 	repositoryRoot := commandRepository(t)
-	provider := &commandProvider{}
+	provider := &unresolvedCommandProvider{}
 	manager := &freshness.Manager{Directory: repositoryRoot, Provider: provider, Command: "test"}
 	app := application.Local{Freshness: manager}
 
@@ -195,12 +195,35 @@ func TestCIKeyIndexAndCheckWorkflow(t *testing.T) {
 	}
 
 	root = command.New(app, command.Streams{Stdin: strings.NewReader(""), Stdout: &stdout, Stderr: &stderr})
+	if err := root.Run(ctx, []string{"weave", "ci", "check"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stdout.String(), "warning\tunresolved-occurrence") {
+		t.Fatalf("text check hid integrity diagnostic: %q", stdout.String())
+	}
+	stdout.Reset()
+	root = command.New(app, command.Streams{Stdin: strings.NewReader(""), Stdout: &stdout, Stderr: &stderr})
+	if err := root.Run(ctx, []string{"weave", "ci", "check", "--format", "json"}); err != nil {
+		t.Fatal(err)
+	}
+	var report struct {
+		Issues       []storage.Issue `json:"issues"`
+		Architecture json.RawMessage `json:"architecture"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil || len(report.Issues) != 1 || len(report.Architecture) == 0 {
+		t.Fatalf("JSON check hid results: %q, %#v, %v", stdout.String(), report, err)
+	}
+	stdout.Reset()
+	root = command.New(app, command.Streams{Stdin: strings.NewReader(""), Stdout: &stdout, Stderr: &stderr})
 	if err := root.Run(ctx, []string{"weave", "ci", "check", "--format", "sarif"}); err != nil {
 		t.Fatal(err)
 	}
 	var sarif map[string]any
 	if err := json.Unmarshal(stdout.Bytes(), &sarif); err != nil || sarif["version"] != "2.1.0" {
 		t.Fatalf("SARIF = %q, %v", stdout.String(), err)
+	}
+	if !strings.Contains(stdout.String(), "weave/integrity/unresolved-occurrence") || !strings.Contains(stdout.String(), `"level":"warning"`) {
+		t.Fatalf("SARIF hid integrity diagnostic: %q", stdout.String())
 	}
 	if provider.calls != 1 {
 		t.Fatalf("current check unexpectedly reindexed: calls=%d", provider.calls)
@@ -695,6 +718,27 @@ type commandProvider struct{ calls int }
 
 func (*commandProvider) ID() freshness.ProviderID {
 	return freshness.ProviderID{Name: "command-fixture", Version: "1"}
+}
+
+type unresolvedCommandProvider struct{ calls int }
+
+func (*unresolvedCommandProvider) ID() freshness.ProviderID {
+	return freshness.ProviderID{Name: "unresolved-command-fixture", Version: "1"}
+}
+
+func (p *unresolvedCommandProvider) Refresh(context.Context, freshness.Request) (freshness.Result, error) {
+	p.calls++
+	facts := commandFixture()
+	facts.Occurrences = append(facts.Occurrences, graph.Occurrence{
+		ID: "external-occurrence", UnitID: facts.Unit.ID,
+		SymbolID: "scip go builtin builtin 1 error#", DocumentID: facts.Documents[0].ID,
+		Role: "reference", Range: facts.Symbols[0].Definition,
+		Provider: facts.Unit.Provider, Evidence: graph.EvidenceExact,
+	})
+	return freshness.Result{
+		Batches: []graph.UnitFacts{facts},
+		Units:   []freshness.Unit{{ID: facts.Unit.ID, InventoryDigest: "fixture-with-external-v1"}},
+	}, nil
 }
 
 func (p *commandProvider) Refresh(context.Context, freshness.Request) (freshness.Result, error) {

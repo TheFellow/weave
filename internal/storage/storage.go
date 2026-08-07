@@ -492,10 +492,20 @@ func (db *DB) Export(ctx context.Context) (graph.Snapshot, error) {
 
 // Issue is one deterministic logical-integrity failure.
 type Issue struct {
-	Kind   string `json:"kind"`
-	Record string `json:"record"`
-	Detail string `json:"detail"`
+	Severity string `json:"severity"`
+	Kind     string `json:"kind"`
+	Record   string `json:"record"`
+	Detail   string `json:"detail"`
 }
+
+const (
+	IssueWarning = "warning"
+	IssueError   = "error"
+)
+
+// Fatal reports whether an integrity issue makes a graph unsafe for CI policy
+// evaluation. Open-world references are diagnostic; ownership damage is fatal.
+func (issue Issue) Fatal() bool { return issue.Severity != IssueWarning }
 
 // Verify checks normalized cross-record invariants.
 func (db *DB) Verify(ctx context.Context) ([]Issue, error) {
@@ -518,34 +528,34 @@ func (db *DB) Verify(ctx context.Context) ([]Issue, error) {
 	var issues []Issue
 	for _, document := range snapshot.Documents {
 		if _, ok := units[document.UnitID]; !ok {
-			issues = append(issues, Issue{"orphan-document", document.ID, "unit " + document.UnitID + " is absent"})
+			issues = append(issues, Issue{IssueError, "orphan-document", document.ID, "unit " + document.UnitID + " is absent"})
 		}
 	}
 	for _, symbol := range snapshot.Symbols {
 		if _, ok := units[symbol.UnitID]; !ok {
-			issues = append(issues, Issue{"orphan-symbol", symbol.ID, "unit " + symbol.UnitID + " is absent"})
+			issues = append(issues, Issue{IssueError, "orphan-symbol", symbol.ID, "unit " + symbol.UnitID + " is absent"})
 		}
 		if symbol.DocumentID != "" {
 			if document, ok := documents[symbol.DocumentID]; !ok || document.UnitID != symbol.UnitID {
-				issues = append(issues, Issue{"invalid-symbol-document", symbol.ID, "document " + symbol.DocumentID + " is absent or owned by another unit"})
+				issues = append(issues, Issue{IssueError, "invalid-symbol-document", symbol.ID, "document " + symbol.DocumentID + " is absent or owned by another unit"})
 			}
 		}
 	}
 	for _, occurrence := range snapshot.Occurrences {
 		if document, ok := documents[occurrence.DocumentID]; !ok || document.UnitID != occurrence.UnitID {
-			issues = append(issues, Issue{"invalid-occurrence-document", occurrence.ID, "document " + occurrence.DocumentID + " is absent or owned by another unit"})
+			issues = append(issues, Issue{IssueError, "invalid-occurrence-document", occurrence.ID, "document " + occurrence.DocumentID + " is absent or owned by another unit"})
 		}
 		if _, ok := symbols[occurrence.SymbolID]; !ok {
-			issues = append(issues, Issue{"unresolved-occurrence", occurrence.ID, "symbol " + occurrence.SymbolID + " is not indexed"})
+			issues = append(issues, Issue{IssueWarning, "unresolved-occurrence", occurrence.ID, "symbol " + occurrence.SymbolID + " is not indexed (external or builtin symbols may be intentionally unmaterialized)"})
 		}
 	}
 	for _, edge := range snapshot.Edges {
 		if _, ok := units[edge.UnitID]; !ok {
-			issues = append(issues, Issue{"orphan-edge", edge.ID, "unit " + edge.UnitID + " is absent"})
+			issues = append(issues, Issue{IssueError, "orphan-edge", edge.ID, "unit " + edge.UnitID + " is absent"})
 		}
 		if edge.DocumentID != "" {
 			if document, ok := documents[edge.DocumentID]; !ok || document.UnitID != edge.UnitID {
-				issues = append(issues, Issue{"invalid-edge-document", edge.ID, "document " + edge.DocumentID + " is absent or owned by another unit"})
+				issues = append(issues, Issue{IssueError, "invalid-edge-document", edge.ID, "document " + edge.DocumentID + " is absent or owned by another unit"})
 			}
 		}
 	}

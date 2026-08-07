@@ -190,7 +190,28 @@ func TestVerifyFindsLogicalDamage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(issues) != 1 || issues[0].Kind != "unresolved-occurrence" {
+	if len(issues) != 1 || issues[0].Kind != "unresolved-occurrence" || issues[0].Severity != IssueWarning || issues[0].Fatal() {
+		t.Fatalf("Verify() = %#v", issues)
+	}
+}
+
+func TestVerifyClassifiesOwnershipDamageAsFatal(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	db := openTestDB(t, filepath.Join(t.TempDir(), "index.db"))
+	defer db.Close()
+	if err := db.ReplaceUnit(ctx, fixtureFacts("unit-a")); err != nil {
+		t.Fatal(err)
+	}
+	bad := documentRecord{ID: "orphan.go", UnitID: "missing-unit", Path: "orphan.go", Language: "go", Provider: "fixture", ProviderVersion: "1"}
+	if err := db.db.Insert(ctx, &bad); err != nil {
+		t.Fatal(err)
+	}
+	issues, err := db.Verify(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(issues) != 1 || issues[0].Kind != "orphan-document" || issues[0].Severity != IssueError || !issues[0].Fatal() {
 		t.Fatalf("Verify() = %#v", issues)
 	}
 }

@@ -370,7 +370,7 @@ func render(writer io.Writer, response application.Response, jsonOutput bool) er
 	if jsonOutput {
 		encoder := json.NewEncoder(writer)
 		encoder.SetEscapeHTML(false)
-		if response.Architecture != nil {
+		if response.Architecture != nil && response.Command == "architecture check" {
 			return encoder.Encode(response.Architecture)
 		}
 		if response.Export != nil {
@@ -419,7 +419,7 @@ func render(writer io.Writer, response application.Response, jsonOutput bool) er
 		}
 	}
 	for _, issue := range response.Issues {
-		if _, err := fmt.Fprintf(writer, "%s\t%s\t%s\n", issue.Kind, issue.Record, issue.Detail); err != nil {
+		if _, err := fmt.Fprintf(writer, "%s\t%s\t%s\t%s\n", issue.Severity, issue.Kind, issue.Record, issue.Detail); err != nil {
 			return err
 		}
 	}

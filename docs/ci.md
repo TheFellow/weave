@@ -18,6 +18,10 @@ graph schema, semantic provider/version, architecture configuration digest, and
 OS/architecture. Its JSON form uses `weave.ci/v1`. `ci index` is silent on
 success and reuses a current restored index. `ci check` composes graph
 verification and architecture checking; policy or integrity failures exit 3.
+Unmaterialized external or builtin occurrence targets remain visible as
+warnings but are not structural failures. Orphaned records and invalid
+unit/document ownership remain fatal. Text, JSON, and SARIF retain these
+diagnostics; SARIF uses warning/error levels to preserve the distinction.
 
 See [the GitHub Actions workflow](../.github/workflows/weave.yml) for a complete
 example. Pin third-party actions to reviewed commit SHAs when adopting the

@@ -289,8 +289,50 @@ func (app Local) ci(ctx context.Context, response Response, invocation Invocatio
 	if err != nil {
 		return Response{}, err
 	}
-	response.Failed = response.Failed || len(response.Issues) != 0
+	response.Failed = response.Failed || hasFatalIssues(response.Issues)
+	if response.SARIF != nil {
+		attachIntegritySARIF(response.SARIF, response.Issues)
+	}
 	return response, nil
+}
+
+func hasFatalIssues(issues []storage.Issue) bool {
+	for _, issue := range issues {
+		if issue.Fatal() {
+			return true
+		}
+	}
+	return false
+}
+
+func attachIntegritySARIF(log *architecture.SARIFLog, issues []storage.Issue) {
+	if log == nil || len(issues) == 0 {
+		return
+	}
+	if len(log.Runs) == 0 {
+		log.Runs = []architecture.SARIFRun{{Tool: architecture.SARIFTool{Driver: architecture.SARIFDriver{Name: "weave", InformationURI: "https://github.com/TheFellow/weave"}}}}
+	}
+	driver := &log.Runs[0].Tool.Driver
+	known := make(map[string]bool, len(driver.Rules))
+	for _, rule := range driver.Rules {
+		known[rule.ID] = true
+	}
+	for _, issue := range issues {
+		ruleID := "weave/integrity/" + issue.Kind
+		if !known[ruleID] {
+			driver.Rules = append(driver.Rules, architecture.SARIFRule{ID: ruleID, ShortDescription: architecture.SARIFMessage{Text: "Weave graph integrity: " + issue.Kind}})
+			known[ruleID] = true
+		}
+		level := "warning"
+		if issue.Fatal() {
+			level = "error"
+		}
+		log.Runs[0].Results = append(log.Runs[0].Results, architecture.SARIFResult{
+			RuleID: ruleID, Level: level,
+			Message: architecture.SARIFMessage{Text: issue.Record + ": " + issue.Detail},
+		})
+	}
+	slices.SortFunc(driver.Rules, func(a, b architecture.SARIFRule) int { return strings.Compare(a.ID, b.ID) })
 }
 
 func (app Local) architectureCheck(ctx context.Context, response Response, invocation Invocation) (Response, error) {
