@@ -1,5 +1,9 @@
 name: release
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 on:
   push:
     tags:
@@ -10,6 +14,9 @@ permissions:
   id-token: write
   attestations: write
   artifact-metadata: write
+
+env:
+  NUGET_PACKAGES: ${{ github.workspace }}/.nuget/packages
 
 jobs:
   release:
@@ -25,6 +32,8 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 10.0.x
+          cache: true
+          cache-dependency-path: adapters/dotnet/**/packages*.lock.json
       - uses: actions/setup-python@v6
         with:
           python-version: "3.14"

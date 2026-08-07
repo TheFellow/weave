@@ -1,5 +1,9 @@
 name: JVM adapter
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 on:
   push:
     paths:
@@ -62,14 +66,25 @@ jobs:
       - uses: gradle/actions/setup-gradle@v6
         with:
           gradle-version: "8.14.3"
+          cache-provider: basic
+          cache-read-only: ${{ github.ref != 'refs/heads/main' }}
       - uses: actions/setup-python@v6
         with:
           python-version: "3.x"
+      - name: Restore pinned scip-java
+        id: scip_java_cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/weave-tools/scip-java
+          key: scip-java-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('adapters/jvm/scripts/install-scip-java.sh') }}
       - name: Install pinned scip-java launcher
+        if: steps.scip_java_cache.outputs.cache-hit != 'true'
         shell: bash
         run: |
-          adapters/jvm/scripts/install-scip-java.sh "${{ runner.temp }}/bin"
-          echo "${{ runner.temp }}/bin" >> "$GITHUB_PATH"
+          adapters/jvm/scripts/install-scip-java.sh "${{ runner.temp }}/weave-tools/scip-java"
+      - name: Expose pinned scip-java launcher
+        shell: bash
+        run: echo "${{ runner.temp }}/weave-tools/scip-java" >> "$GITHUB_PATH"
       - name: Build Weave and adapter
         shell: bash
         run: |

@@ -1,5 +1,9 @@
 name: .NET adapter
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 on:
   push:
     paths:
@@ -14,6 +18,9 @@ on:
 
 permissions:
   contents: read
+
+env:
+  NUGET_PACKAGES: ${{ github.workspace }}/.nuget/packages
 
 jobs:
   test:
@@ -33,12 +40,16 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 10.0.x
+          cache: true
+          cache-dependency-path: adapters/dotnet/**/packages*.lock.json
       - name: Restore
-        run: dotnet restore adapters/dotnet/Weave.Adapter.sln
+        run: dotnet restore adapters/dotnet/Weave.Adapter.sln --locked-mode
       - name: Build
         run: dotnet build adapters/dotnet/Weave.Adapter.sln --no-restore --configuration Release
+      - name: Restore mixed-language fixture
+        run: dotnet restore adapters/dotnet/tests/fixtures/Mixed/Mixed.sln --locked-mode
       - name: Prepare mixed-language fixture
-        run: dotnet build adapters/dotnet/tests/fixtures/Mixed/Mixed.sln --configuration Debug
+        run: dotnet build adapters/dotnet/tests/fixtures/Mixed/Mixed.sln --no-restore --configuration Debug
       - name: Test
         run: dotnet test adapters/dotnet/Weave.Adapter.sln --no-build --configuration Release --logger "console;verbosity=normal"
       - name: Dry-run release package

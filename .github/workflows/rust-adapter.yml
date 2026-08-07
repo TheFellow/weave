@@ -1,5 +1,9 @@
 name: Rust adapter
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 on:
   push:
     paths:
@@ -41,6 +45,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      # Swatinem/rust-cache v2.9.2, pinned to the annotated tag commit.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          shared-key: weave-rust
+          workspaces: adapters/rust -> target
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Formatting
         run: cargo fmt --manifest-path adapters/rust/Cargo.toml -- --check
       - name: Contract and semantic tests
@@ -61,6 +71,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rust-analyzer
+      # Swatinem/rust-cache v2.9.2, pinned to the annotated tag commit.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          shared-key: weave-rust
+          workspaces: adapters/rust -> target
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Build adapter and host
         shell: bash
         run: |

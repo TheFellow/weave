@@ -1,5 +1,9 @@
 name: C and C++ adapter
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 on:
   push:
     paths:
@@ -58,11 +62,20 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.x"
+      - name: Restore pinned scip-clang
+        id: scip_clang_cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/weave-tools/scip-clang
+          key: scip-clang-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('adapters/cpp/scripts/install-scip-clang.sh') }}
       - name: Install pinned scip-clang
+        if: steps.scip_clang_cache.outputs.cache-hit != 'true'
         shell: bash
         run: |
-          adapters/cpp/scripts/install-scip-clang.sh "${{ runner.temp }}/bin"
-          echo "${{ runner.temp }}/bin" >> "$GITHUB_PATH"
+          adapters/cpp/scripts/install-scip-clang.sh "${{ runner.temp }}/weave-tools/scip-clang"
+      - name: Expose pinned scip-clang
+        shell: bash
+        run: echo "${{ runner.temp }}/weave-tools/scip-clang" >> "$GITHUB_PATH"
       - name: Build Weave and adapter
         shell: bash
         run: |

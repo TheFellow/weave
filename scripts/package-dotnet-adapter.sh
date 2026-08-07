@@ -25,12 +25,14 @@ output=$(cd "$output" && pwd)
 work=$(mktemp -d "${TMPDIR:-/tmp}/weave-dotnet-package.XXXXXX")
 trap 'rm -rf "$work"' EXIT
 
-dotnet pack "$project" --configuration Release --output "$output" \
+dotnet restore "$project" --locked-mode -p:WeaveReleaseRestore=true
+
+dotnet pack "$project" --no-restore --configuration Release --output "$output" \
   -p:PackageVersion="$version" -p:Version="$version"
 
 for rid in $rids; do
   publish="$work/$rid/publish"
-  dotnet publish "$project" --configuration Release --runtime "$rid" \
+  dotnet publish "$project" --no-restore --configuration Release --runtime "$rid" \
     --self-contained false --output "$publish" -p:Version="$version" \
     -p:PublishSingleFile=true -p:DebugType=None -p:DebugSymbols=false
 
