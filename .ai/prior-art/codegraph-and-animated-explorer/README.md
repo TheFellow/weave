@@ -5,6 +5,7 @@ giving up its stronger semantic and local-first foundations:
 
 - [CodeGraph](https://github.com/colbymchenry/codegraph/tree/969ea1ec371dc62d056cbeb3920fa79036128842), commit `969ea1ec371dc62d056cbeb3920fa79036128842`, package version 1.5.0, MIT.
 - [d3-graphviz](https://github.com/magjac/d3-graphviz/tree/355158dc789ff8556549018a0c0f7a567ac0bfc3), commit `355158dc789ff8556549018a0c0f7a567ac0bfc3`, package version 5.6.0, BSD-3-Clause.
+- [Graphviz Visual Editor](https://github.com/magjac/graphviz-visual-editor), MIT.
 
 The audit is pinned because both products will evolve. Statements below describe
 those commits, not every past or future release.
@@ -213,6 +214,12 @@ Reproducible metadata and `-trimpath` remain preferable. Core operation must not
 phone home.
 
 ## Animated human explorer with d3-graphviz
+
+Magjac's Graphviz Visual Editor validates the interaction model: pan and zoom,
+click selection, layout-engine controls, SVG export, and animated transition as
+DOT changes. Weave should adapt that immediacy, not its general-purpose editing
+surface. The graph remains generated from current semantic facts; a click
+changes focus or filters rather than silently editing source or derived state.
 
 d3-graphviz renders DOT through `@hpcc-js/wasm` Graphviz, converts the SVG to D3
 data, and animates the data join between layouts. It supports fading entering and
