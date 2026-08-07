@@ -2,6 +2,7 @@ package graph_test
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/TheFellow/weave/internal/graph"
@@ -31,5 +32,56 @@ func TestUnitFactsValidationRejectsCrossUnitDocument(t *testing.T) {
 	}
 	if err := facts.Validate(); err == nil {
 		t.Fatal("Validate() error = nil")
+	}
+}
+
+func TestUnitFactsValidationEnforcesProviderOwnership(t *testing.T) {
+	t.Parallel()
+	base := graph.UnitFacts{
+		Unit: graph.Unit{ID: "unit", Provider: "fixture", ProviderVersion: "1"},
+		Documents: []graph.Document{{
+			ID: "doc", UnitID: "unit", Path: "source.go", Language: "go",
+			Provider: "fixture", ProviderVersion: "1",
+		}},
+		Symbols: []graph.Symbol{{
+			ID: "symbol", UnitID: "unit", StableName: "fixture Symbol", DisplayName: "Symbol",
+			Kind: "function", DocumentID: "doc", Provider: "fixture", Evidence: graph.EvidenceExact,
+		}},
+		Occurrences: []graph.Occurrence{{
+			ID: "occurrence", UnitID: "unit", SymbolID: "external:symbol", DocumentID: "doc",
+			Role: "reference", Provider: "fixture", Evidence: graph.EvidenceExact,
+		}},
+		Edges: []graph.Edge{{
+			ID: "edge", UnitID: "unit", From: "symbol", To: "external:symbol",
+			Kind: graph.EdgeReferences, Provider: "fixture", Evidence: graph.EvidenceExact,
+		}},
+	}
+	if err := base.Validate(); err != nil {
+		t.Fatalf("valid open-endpoint enrichment: %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(*graph.UnitFacts)
+		want   string
+	}{
+		{"document provider", func(facts *graph.UnitFacts) { facts.Documents[0].Provider = "spoofed" }, "document"},
+		{"document provider version", func(facts *graph.UnitFacts) { facts.Documents[0].ProviderVersion = "2" }, "document"},
+		{"symbol provider", func(facts *graph.UnitFacts) { facts.Symbols[0].Provider = "spoofed" }, "symbol"},
+		{"occurrence provider", func(facts *graph.UnitFacts) { facts.Occurrences[0].Provider = "spoofed" }, "occurrence"},
+		{"edge provider", func(facts *graph.UnitFacts) { facts.Edges[0].Provider = "spoofed" }, "edge"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			facts := base
+			facts.Documents = append([]graph.Document(nil), base.Documents...)
+			facts.Symbols = append([]graph.Symbol(nil), base.Symbols...)
+			facts.Occurrences = append([]graph.Occurrence(nil), base.Occurrences...)
+			facts.Edges = append([]graph.Edge(nil), base.Edges...)
+			test.mutate(&facts)
+			if err := facts.Validate(); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("Validate() error = %v, want %s ownership error", err, test.want)
+			}
+		})
 	}
 }

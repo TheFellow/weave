@@ -173,6 +173,9 @@ func (f UnitFacts) Validate() error {
 		if err := validText("document provider", document.Provider, true); err != nil {
 			return fmt.Errorf("document %q: %w", document.ID, err)
 		}
+		if document.Provider != f.Unit.Provider || document.ProviderVersion != f.Unit.ProviderVersion {
+			return fmt.Errorf("document %q: provider %q version %q does not match unit provider %q version %q", document.ID, document.Provider, document.ProviderVersion, f.Unit.Provider, f.Unit.ProviderVersion)
+		}
 	}
 
 	symbols := make(map[string]struct{}, len(f.Symbols))
@@ -181,6 +184,9 @@ func (f UnitFacts) Validate() error {
 	}
 	for i := range f.Symbols {
 		symbol := &f.Symbols[i]
+		if symbol.Provider != f.Unit.Provider {
+			return fmt.Errorf("symbol %q: provider %q does not match unit provider %q", symbol.ID, symbol.Provider, f.Unit.Provider)
+		}
 		if err := validText("stable name", symbol.StableName, true); err != nil {
 			return fmt.Errorf("symbol %q: %w", symbol.ID, err)
 		}
@@ -208,6 +214,9 @@ func (f UnitFacts) Validate() error {
 		return fmt.Errorf("occurrences: %w", err)
 	}
 	for _, occurrence := range f.Occurrences {
+		if occurrence.Provider != f.Unit.Provider {
+			return fmt.Errorf("occurrence %q: provider %q does not match unit provider %q", occurrence.ID, occurrence.Provider, f.Unit.Provider)
+		}
 		if occurrence.SymbolID == "" {
 			return fmt.Errorf("occurrence %q: symbol id is empty", occurrence.ID)
 		}
@@ -227,6 +236,9 @@ func (f UnitFacts) Validate() error {
 		return fmt.Errorf("edges: %w", err)
 	}
 	for _, edge := range f.Edges {
+		if edge.Provider != f.Unit.Provider {
+			return fmt.Errorf("edge %q: provider %q does not match unit provider %q", edge.ID, edge.Provider, f.Unit.Provider)
+		}
 		if edge.From == "" || edge.To == "" {
 			return fmt.Errorf("edge %q: endpoints must be nonempty", edge.ID)
 		}
