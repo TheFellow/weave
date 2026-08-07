@@ -321,13 +321,14 @@ func TestFederationFlagsReachApplication(t *testing.T) {
 func TestAdapterDoctorReportsMissingToolsWithoutExecutingThem(t *testing.T) {
 	t.Setenv("PATH", "")
 	t.Setenv("WEAVE_DOTNET_ADAPTER", "")
+	t.Setenv("WEAVE_PYTHON_ADAPTER", "")
 	t.Setenv("WEAVE_SCIP_DOTNET", "")
 	var stdout, stderr bytes.Buffer
 	root := command.New(application.Local{}, command.Streams{Stdin: strings.NewReader(""), Stdout: &stdout, Stderr: &stderr})
 	if err := root.Run(context.Background(), []string{"weave", "adapters", "doctor"}); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"weave-dotnet\tnative\tmissing", "scip-dotnet\tscip-producer\tmissing", "dotnet\truntime\tmissing"} {
+	for _, name := range []string{"weave-dotnet\tnative\tmissing", "weave-python\tnative\tmissing", "scip-dotnet\tscip-producer\tmissing", "dotnet\truntime\tmissing"} {
 		if !strings.Contains(stdout.String(), name) {
 			t.Errorf("stdout = %q, want %q", stdout.String(), name)
 		}
@@ -370,7 +371,8 @@ func TestRealQueryCommands(t *testing.T) {
 		empty    bool
 	}{
 		{name: "symbols", args: []string{"symbols", "handle"}, contains: []string{"fixture:handle\tfunction\tHandleRequest"}},
-		{name: "definition", args: []string{"definition", "authorize"}, contains: []string{"fixture:authorize\tfunction\tauthorize"}},
+		{name: "definition", args: []string{"definition", "authorize"}, contains: []string{"fixture:authorize\tdefinition\tfixture:main.go:2:3", "fixture:authorize\tdefinition\tfixture:main.go:8:3"}},
+		{name: "definition anchor fallback", args: []string{"definition", "HandleRequest"}, contains: []string{"fixture:handle\tfunction\tHandleRequest"}},
 		{name: "references", args: []string{"references", "authorize"}, contains: []string{"fixture:authorize\treference\tfixture:main.go:8:3"}},
 		{name: "callers", args: []string{"callers", "authorize"}, contains: []string{"fixture:handle\tcalls\tfixture:authorize"}},
 		{name: "callees", args: []string{"callees", "HandleRequest"}, contains: []string{"fixture:handle\tcalls\tfixture:authorize"}},
@@ -848,7 +850,11 @@ func commandFixture() graph.UnitFacts {
 			{ID: "fixture:handle", UnitID: "fixture", StableName: "fixture.HandleRequest", DisplayName: "HandleRequest", Kind: "function", DocumentID: "fixture:main.go", Definition: rng, Provider: "fixture", Evidence: graph.EvidenceExact},
 			{ID: "fixture:authorize", UnitID: "fixture", StableName: "fixture.authorize", DisplayName: "authorize", Kind: "function", DocumentID: "fixture:main.go", Definition: rng, Provider: "fixture", Evidence: graph.EvidenceExact},
 		},
-		Occurrences: []graph.Occurrence{{ID: "occ", UnitID: "fixture", SymbolID: "fixture:authorize", DocumentID: "fixture:main.go", Role: "reference", Range: rng, Provider: "fixture", Evidence: graph.EvidenceExact}},
+		Occurrences: []graph.Occurrence{
+			{ID: "def-one", UnitID: "fixture", SymbolID: "fixture:authorize", DocumentID: "fixture:main.go", Role: "definition", Range: graph.Range{Start: graph.Position{Line: 1, Column: 2, Byte: 10}, End: graph.Position{Line: 1, Column: 11, Byte: 19}}, Provider: "fixture", Evidence: graph.EvidenceExact},
+			{ID: "def-two", UnitID: "fixture", SymbolID: "fixture:authorize", DocumentID: "fixture:main.go", Role: "definition", Range: rng, Provider: "fixture", Evidence: graph.EvidenceExact},
+			{ID: "occ", UnitID: "fixture", SymbolID: "fixture:authorize", DocumentID: "fixture:main.go", Role: "reference", Range: rng, Provider: "fixture", Evidence: graph.EvidenceExact},
+		},
 		Edges: []graph.Edge{
 			{ID: "edge", UnitID: "fixture", From: "fixture:handle", To: "fixture:authorize", Kind: graph.EdgeCalls, Provider: "fixture", Evidence: graph.EvidenceExact},
 			{ID: "dependency", UnitID: "fixture", From: "fixture:handle", To: "fixture:authorize", Kind: graph.EdgeDependsOn, Provider: "fixture", Evidence: graph.EvidenceDeclared},

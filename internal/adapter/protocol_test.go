@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -164,6 +165,48 @@ func TestPublishedV0ContractFixtures(t *testing.T) {
 	}
 	if closeErr != nil {
 		t.Fatal(closeErr)
+	}
+}
+
+func TestPythonAdapterImplementsPublishedProcessContract(t *testing.T) {
+	t.Parallel()
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		python, err = exec.LookPath("python")
+	}
+	if err != nil {
+		t.Skip("Python is not installed")
+	}
+	root := t.TempDir()
+	command := exec.Command("git", "init", "--quiet")
+	command.Dir = root
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v: %s", err, output)
+	}
+	if err := os.WriteFile(filepath.Join(root, "example.py"), []byte("def greet(name):\n    return name.strip()\n\ndef run():\n    return greet('weave')\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	moduleRoot, err := filepath.Abs(filepath.Join("..", "..", "adapters", "python", "src"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := (Runner{}).Index(context.Background(), Executable{
+		Path: python, Args: []string{"-m", "weave_python"}, Dir: root,
+		Env: append(os.Environ(), "PYTHONPATH="+moduleRoot),
+	}, IndexRequest{RequestID: "python-contract", RepositoryRoot: root, RepositoryIdentity: "example.com/python"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Provider.Name != "weave-python" || len(result.Units) != 1 {
+		t.Fatalf("Python adapter result = %#v", result)
+	}
+	var exactReference, syntacticCall bool
+	for _, edge := range result.Units[0].Edges {
+		exactReference = exactReference || edge.Kind == graph.EdgeReferences && edge.Evidence == graph.EvidenceExact
+		syntacticCall = syntacticCall || edge.Kind == graph.EdgeCalls && edge.Evidence == graph.EvidenceSyntactic
+	}
+	if !exactReference || !syntacticCall {
+		t.Fatalf("Python adapter evidence = %#v", result.Units[0].Edges)
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -62,12 +63,112 @@ func TestProviderRunsFullAdapterOnlyWhenDotnetSemanticInputsChange(t *testing.T)
 	}
 }
 
+func TestProviderUsesPythonInputProfileAndRuntimeVersion(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "python")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, root, "example.py", "value = 1")
+	writeFile(t, root, "Example.cs", "class Example {}")
+	git(t, root, "init", "-q")
+	git(t, root, "config", "user.email", "weave@example.test")
+	git(t, root, "config", "user.name", "Weave")
+	git(t, root, "add", ".")
+	git(t, root, "commit", "-qm", "initial")
+	repo, err := repository.Discover(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(t.TempDir(), "calls")
+	provider := Provider{
+		Name: "fixture-dotnet", Path: os.Args[0],
+		Args:      []string{"-test.run=TestNativeAdapterHelperProcess", "--", marker},
+		Directory: root, Profile: PythonInputs, ProbeProviderVersion: true,
+	}
+	refresh := func(previous *freshness.Manifest) freshness.Result {
+		state, err := repo.Inspect(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		result, err := provider.Refresh(context.Background(), freshness.Request{Repository: repo, State: state, Previous: previous})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return result
+	}
+	first := refresh(nil)
+	if len(first.Batches) != 1 || callCount(t, marker) != 3 {
+		t.Fatalf("first refresh = %#v, calls %d", first, callCount(t, marker))
+	}
+	manifest := &freshness.Manifest{Units: first.Units}
+	writeFile(t, root, "Example.cs", "class Example { int Value; }")
+	second := refresh(manifest)
+	if len(second.Batches) != 0 || callCount(t, marker) != 4 {
+		t.Fatalf("non-Python refresh invoked index: %#v, calls %d", second, callCount(t, marker))
+	}
+	writeFile(t, root, "example.py", "value = 2")
+	third := refresh(manifest)
+	if len(third.Batches) != 1 || callCount(t, marker) != 7 {
+		t.Fatalf("Python refresh = %#v, calls %d", third, callCount(t, marker))
+	}
+}
+
 func TestProviderFingerprintIncludesAdapterIdentity(t *testing.T) {
 	inputs := "sha256:inputs"
 	first := providerFingerprint(freshness.ProviderID{Name: "native/weave-dotnet", Version: "1.binary-a"}, inputs)
 	second := providerFingerprint(freshness.ProviderID{Name: "native/weave-dotnet", Version: "1.binary-b"}, inputs)
 	if first == second || first != providerFingerprint(freshness.ProviderID{Name: "native/weave-dotnet", Version: "1.binary-a"}, inputs) {
 		t.Fatalf("provider fingerprints are not deterministic or upgrade-sensitive: %q %q", first, second)
+	}
+}
+
+func TestCappedBufferBoundsRetainedInventory(t *testing.T) {
+	buffer := cappedBuffer{limit: 3}
+	if count, err := buffer.Write([]byte("abcdef")); err != nil || count != 6 {
+		t.Fatalf("Write() = %d, %v", count, err)
+	}
+	if !buffer.exceeded || buffer.String() != "abc" {
+		t.Fatalf("buffer = %q, exceeded %v", buffer.String(), buffer.exceeded)
+	}
+}
+
+func TestSemanticInputsDisableRepositoryFSMonitor(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fsmonitor fixture uses a POSIX script")
+	}
+	root := filepath.Join(t.TempDir(), "python")
+	if err := os.MkdirAll(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	git(t, root, "init", "-q")
+	writeFile(t, root, "example.py", "value = 1")
+	marker := filepath.Join(root, ".git", "fsmonitor-ran")
+	hook := filepath.Join(root, ".git", "fsmonitor-test.sh")
+	writeFile(t, root, ".git/fsmonitor-test.sh", fmt.Sprintf("#!/bin/sh\nprintf ran > %q\n", marker))
+	if err := os.Chmod(hook, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	git(t, root, "config", "core.fsmonitor", hook)
+	if _, _, err := semanticInputs(context.Background(), root, PythonInputs); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("repository fsmonitor executed: %v", err)
+	}
+}
+
+func TestPythonSemanticInputsRejectSymlinks(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation may require privileges")
+	}
+	root := t.TempDir()
+	git(t, root, "init", "-q")
+	writeFile(t, root, "target.txt", "value = 1")
+	if err := os.Symlink("target.txt", filepath.Join(root, "link.py")); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := semanticInputs(context.Background(), root, PythonInputs); err == nil || !strings.Contains(err.Error(), "source is a symlink") {
+		t.Fatalf("semanticInputs() error = %v, want symlink rejection", err)
 	}
 }
 

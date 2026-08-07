@@ -356,7 +356,10 @@ func (r gitRunner) text(ctx context.Context, args ...string) (string, error) {
 }
 
 func (r gitRunner) run(ctx context.Context, args ...string) ([]byte, error) {
-	command := exec.CommandContext(ctx, "git", args...)
+	// Repository-local fsmonitor commands are executable code. Weave's
+	// read-only discovery and freshness operations must never invoke them.
+	commandArgs := append([]string{"-c", "core.fsmonitor=false"}, args...)
+	command := exec.CommandContext(ctx, "git", commandArgs...)
 	command.Dir = r.directory
 	var stdout, stderr limitedBuffer
 	stdout.limit, stderr.limit = maxGitOutput, 64<<10

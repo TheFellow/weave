@@ -318,6 +318,28 @@ F# compilation order is semantically significant. Invalidation must operate on
 the project dependency and file-order graph rather than treating files as
 independent syntax units.
 
+### Python
+
+The baseline Python adapter is a Python subprocess using CPython `ast` plus the
+compiler-generated `symtable`. Model names as lexical binding slots with one or
+more definition occurrences. Compiler declarations and local/global/free/
+nonlocal slot resolution can be exact facts about the recorded interpreter;
+runtime object identity, attribute dispatch, imports, decorators, and calls
+cannot.
+
+Use `Declared` evidence for import statements, `Syntactic` for direct call
+spelling, and omit unsupported dynamic relationships. Do not import repository
+modules during indexing. Type-checker enrichment through pinned open-source
+Pyright/`scip-python`, Jedi, or `ty` may add inferred or ambiguous facts later,
+but it must not weaken the dependency-free lexical correctness floor.
+
+The adapter and exact interpreter version, source/package-root topology, stubs,
+configuration, and environment are semantic inputs as their corresponding
+features become supported. Toolchain patch changes invalidate facts without
+churning stable symbol identity. Dynamic Python exports require conservative
+surface invalidation until a richer static export model can safely narrow it.
+Test installed adapters on macOS, Linux, and Windows.
+
 ### Other languages
 
 Adopt existing SCIP or compiler-native producers behind executable adapters.
@@ -844,6 +866,8 @@ Benchmarks must include `go-modular-monolith`, `arch-lint`, `cedar-dotnet`, and
 
 - Integrate C# through existing Roslyn-backed prior art where sufficient.
 - Implement the focused FCS adapter for F# gaps.
+- Validate the language-neutral process model with the Python-native lexical
+  adapter and honest dynamic-language evidence.
 - Model MSBuild projects, target frameworks, and cross-project dependencies.
 - Test mixed C#/F# solutions.
 

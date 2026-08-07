@@ -94,6 +94,8 @@ type Symbol struct {
 	NormalizedName string   `json:"normalized_name"`
 	Kind           string   `json:"kind"`
 	DocumentID     string   `json:"document_id,omitempty"`
+	// Definition is the canonical display anchor. All binding sites are retained
+	// as definition occurrences because some languages permit repeated bindings.
 	Definition     Range    `json:"definition"`
 	Provider       string   `json:"provider"`
 	Evidence       Evidence `json:"evidence"`

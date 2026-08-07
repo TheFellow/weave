@@ -205,8 +205,6 @@ func runIndex(ctx context.Context, executable Executable, request IndexRequest, 
 	if err := command.Start(); err != nil {
 		return Result{}, "", err
 	}
-	wait := make(chan error, 1)
-	go func() { wait <- command.Wait() }()
 
 	var wg sync.WaitGroup
 	var result Result
@@ -228,7 +226,10 @@ func runIndex(ctx context.Context, executable Executable, request IndexRequest, 
 		}
 	}()
 	wg.Wait()
-	waitErr := <-wait
+	// StdoutPipe and StderrPipe require all reads to complete before Wait. Calling
+	// Wait concurrently can close a pipe while a fast child still has buffered
+	// terminal frames, making a valid run appear truncated.
+	waitErr := command.Wait()
 	stderrText := string(stderr)
 	if ctx.Err() != nil {
 		return Result{}, stderrText, ctx.Err()

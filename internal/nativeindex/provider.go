@@ -25,31 +25,54 @@ import (
 
 const maxInputBytes = 512 << 20
 const maxAdapterOutputBytes = 256 << 20
+const maxGitInventoryBytes = 16 << 20
 
-// Default returns the automatic provider set for a worktree. Only the known
-// weave-dotnet adapter is automatically trusted and executed.
+// Default returns the automatic provider set for a worktree. Only known
+// compiler-native adapter names or explicit environment paths are trusted.
 func Default(directory string) freshness.Provider {
 	providers := []freshness.Provider{goindex.Provider{}, bridge.Provider{}}
-	configured := os.Getenv("WEAVE_DOTNET_ADAPTER")
-	if configured == "" {
-		configured = "weave-dotnet"
+	candidates := []Provider{
+		{Name: "weave-dotnet", Path: configuredPath("WEAVE_DOTNET_ADAPTER", "weave-dotnet"), Directory: directory, Profile: DotNetInputs, Permissions: adapter.Permissions{BuildTool: true}},
+		{Name: "weave-python", Path: configuredPath("WEAVE_PYTHON_ADAPTER", "weave-python"), Directory: directory, Profile: PythonInputs, ProbeProviderVersion: true},
 	}
-	if path, err := exec.LookPath(configured); err == nil {
-		if absolute, absoluteErr := filepath.Abs(path); absoluteErr == nil {
-			path = absolute
+	for _, provider := range candidates {
+		if path, err := exec.LookPath(provider.Path); err == nil {
+			if absolute, absoluteErr := filepath.Abs(path); absoluteErr == nil {
+				path = absolute
+			}
+			provider.Path = path
+			providers = append(providers, provider)
 		}
-		providers = append(providers, Provider{Path: path, Directory: directory})
 	}
 	return freshness.CompositeProvider{Providers: providers}
 }
 
-// Provider invokes one weave-dotnet full-refresh only when its semantic inputs change.
+func configuredPath(environment, fallback string) string {
+	if configured := os.Getenv(environment); configured != "" {
+		return configured
+	}
+	return fallback
+}
+
+// InputProfile selects the repository inputs that invalidate an adapter.
+type InputProfile string
+
+const (
+	DotNetInputs InputProfile = "dotnet"
+	PythonInputs InputProfile = "python"
+)
+
+// Provider invokes one compiler-native full-refresh adapter when its inputs change.
 type Provider struct {
-	Path      string
-	Args      []string
-	Directory string
-	Runner    adapter.Runner
-	Timeout   time.Duration
+	Name                 string
+	Path                 string
+	Args                 []string
+	Directory            string
+	Profile              InputProfile
+	Permissions          adapter.Permissions
+	ProbeProviderVersion bool
+	Runner               adapter.Runner
+	Timeout              time.Duration
 }
 
 func (provider Provider) ID() freshness.ProviderID {
@@ -60,19 +83,33 @@ func (provider Provider) ID() freshness.ProviderID {
 		_ = file.Close()
 		copy(digest[:], hash.Sum(nil))
 	}
-	return freshness.ProviderID{Name: "native/weave-dotnet", Version: "1." + hex.EncodeToString(digest[:6])}
+	return freshness.ProviderID{Name: "native/" + provider.name(), Version: "1." + hex.EncodeToString(digest[:6])}
 }
 
 func (provider Provider) Refresh(ctx context.Context, request freshness.Request) (freshness.Result, error) {
-	paths, fingerprint, err := semanticInputs(ctx, request.Repository.Root)
+	paths, fingerprint, err := semanticInputs(ctx, request.Repository.Root, provider.profile())
 	if err != nil {
 		return freshness.Result{}, err
 	}
-	fingerprint = providerFingerprint(provider.ID(), fingerprint)
 	previous := previousUnits(request.Previous)
 	if len(paths) == 0 {
 		return freshness.Result{Removed: sortedKeys(previous), Units: []freshness.Unit{}}, nil
 	}
+	if provider.ProbeProviderVersion {
+		probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		capabilities, _, probeErr := provider.Runner.Describe(probeCtx, adapter.Executable{
+			Path: provider.Path, Args: provider.Args, Dir: request.Repository.Root, Env: adapterEnvironment(),
+		})
+		cancel()
+		if probeErr != nil {
+			return freshness.Result{}, probeErr
+		}
+		if capabilities.Provider.Name != provider.name() {
+			return freshness.Result{}, fmt.Errorf("adapter provider is %q, want %q", capabilities.Provider.Name, provider.name())
+		}
+		fingerprint += "\x00" + capabilities.Provider.Name + "\x00" + capabilities.Provider.Version
+	}
+	fingerprint = providerFingerprint(provider.ID(), fingerprint)
 	if !request.Force && len(previous) != 0 && inventoryFingerprint(previous) == fingerprint {
 		return freshness.Result{Units: sortedUnits(previous)}, nil
 	}
@@ -95,11 +132,14 @@ func (provider Provider) Refresh(ctx context.Context, request freshness.Request)
 	}, adapter.IndexRequest{
 		RequestID: hex.EncodeToString(requestID), RepositoryRoot: request.Repository.Root,
 		RepositoryIdentity: request.Repository.Identity,
-		ChangedPaths:       changedSemanticPaths(request.State.Changes),
-		Permissions:        adapter.Permissions{BuildTool: true},
+		ChangedPaths:       changedSemanticPaths(request.State.Changes, provider.profile()),
+		Permissions:        provider.permissions(),
 	})
 	if err != nil {
 		return freshness.Result{}, err
+	}
+	if provider.Name != "" && result.Provider.Name != provider.name() {
+		return freshness.Result{}, fmt.Errorf("adapter provider is %q, want %q", result.Provider.Name, provider.name())
 	}
 	units := make([]freshness.Unit, 0, len(result.Units))
 	present := make(map[string]bool, len(result.Units))
@@ -121,25 +161,55 @@ func (provider Provider) Refresh(ctx context.Context, request freshness.Request)
 	return freshness.Result{Batches: result.Units, Removed: removed, Units: units}, nil
 }
 
+func (provider Provider) name() string {
+	if provider.Name != "" {
+		return provider.Name
+	}
+	return "weave-dotnet"
+}
+
+func (provider Provider) profile() InputProfile {
+	if provider.Profile != "" {
+		return provider.Profile
+	}
+	return DotNetInputs
+}
+
+func (provider Provider) permissions() adapter.Permissions {
+	if provider.Permissions != (adapter.Permissions{}) || provider.profile() != DotNetInputs {
+		return provider.Permissions
+	}
+	return adapter.Permissions{BuildTool: true}
+}
+
 func providerFingerprint(id freshness.ProviderID, inputs string) string {
 	digest := sha256.Sum256([]byte(id.Name + "\x00" + id.Version + "\x00" + inputs))
 	return "sha256:" + hex.EncodeToString(digest[:])
 }
 
-func semanticInputs(ctx context.Context, root string) ([]string, string, error) {
-	command := exec.CommandContext(ctx, "git", "ls-files", "-co", "--exclude-standard", "-z", "--")
+func semanticInputs(ctx context.Context, root string, profile InputProfile) ([]string, string, error) {
+	command := exec.CommandContext(ctx, "git", "-c", "core.fsmonitor=false", "ls-files", "-co", "--exclude-standard", "-z", "--")
 	command.Dir = root
-	output, err := command.Output()
+	var stdout, stderr cappedBuffer
+	stdout.limit, stderr.limit = maxGitInventoryBytes, 64<<10
+	command.Stdout, command.Stderr = &stdout, &stderr
+	err := command.Run()
+	if stdout.exceeded {
+		return nil, "", fmt.Errorf("Git semantic input inventory exceeds %d bytes", maxGitInventoryBytes)
+	}
+	if stderr.exceeded {
+		return nil, "", fmt.Errorf("Git semantic input diagnostics exceed %d bytes", stderr.limit)
+	}
 	if err != nil {
-		return nil, "", fmt.Errorf("list .NET semantic inputs: %w", err)
+		return nil, "", fmt.Errorf("list %s semantic inputs: %w: %s", profile, err, strings.TrimSpace(stderr.String()))
 	}
 	var paths []string
-	for _, raw := range bytes.Split(output, []byte{0}) {
+	for _, raw := range bytes.Split(stdout.Bytes(), []byte{0}) {
 		if len(raw) == 0 {
 			continue
 		}
 		path := filepath.ToSlash(string(raw))
-		if isSemanticInput(path) {
+		if isSemanticInput(path, profile) {
 			paths = append(paths, path)
 		}
 	}
@@ -154,18 +224,21 @@ func semanticInputs(ctx context.Context, root string) ([]string, string, error) 
 			if os.IsNotExist(err) {
 				continue
 			}
-			return nil, "", fmt.Errorf("inspect .NET input %q: %w", path, err)
+			return nil, "", fmt.Errorf("inspect %s input %q: %w", profile, path, err)
+		}
+		if profile == PythonInputs && info.Mode()&os.ModeSymlink != 0 {
+			return nil, "", fmt.Errorf("Python source is a symlink: %s", path)
 		}
 		if !info.Mode().IsRegular() {
 			continue
 		}
 		total += info.Size()
 		if total > maxInputBytes {
-			return nil, "", fmt.Errorf(".NET semantic inputs exceed %d bytes", maxInputBytes)
+			return nil, "", fmt.Errorf("%s semantic inputs exceed %d bytes", profile, maxInputBytes)
 		}
 		content, err := os.ReadFile(full)
 		if err != nil {
-			return nil, "", fmt.Errorf("read .NET input %q: %w", path, err)
+			return nil, "", fmt.Errorf("read %s input %q: %w", profile, path, err)
 		}
 		_, _ = hash.Write([]byte(path))
 		_, _ = hash.Write([]byte{0})
@@ -175,9 +248,32 @@ func semanticInputs(ctx context.Context, root string) ([]string, string, error) 
 	return paths, "sha256:" + hex.EncodeToString(hash.Sum(nil)), nil
 }
 
-func isSemanticInput(path string) bool {
+type cappedBuffer struct {
+	bytes.Buffer
+	limit    int
+	exceeded bool
+}
+
+func (buffer *cappedBuffer) Write(value []byte) (int, error) {
+	original := len(value)
+	remaining := buffer.limit - buffer.Len()
+	if remaining < len(value) {
+		buffer.exceeded = true
+		if remaining <= 0 {
+			return original, nil
+		}
+		value = value[:remaining]
+	}
+	_, _ = buffer.Buffer.Write(value)
+	return original, nil
+}
+
+func isSemanticInput(path string, profile InputProfile) bool {
 	base := strings.ToLower(filepath.Base(path))
 	ext := strings.ToLower(filepath.Ext(path))
+	if profile == PythonInputs {
+		return ext == ".py"
+	}
 	if slices.Contains([]string{".cs", ".csx", ".fs", ".fsx", ".csproj", ".fsproj", ".sln", ".slnx", ".props", ".targets"}, ext) {
 		return true
 	}
@@ -185,11 +281,11 @@ func isSemanticInput(path string) bool {
 		base == ".editorconfig" || base == "directory.build.props" || base == "directory.build.targets" || base == "directory.packages.props"
 }
 
-func changedSemanticPaths(changes []repository.Change) []string {
+func changedSemanticPaths(changes []repository.Change, profile InputProfile) []string {
 	var result []string
 	for _, change := range changes {
 		path := change.Path
-		if isSemanticInput(path) {
+		if isSemanticInput(path, profile) {
 			result = append(result, filepath.ToSlash(path))
 		}
 	}

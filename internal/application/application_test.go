@@ -26,6 +26,7 @@ printf '%s\n' '{"protocols":["weave.adapter/v0"],"provider":{"name":"weave-dotne
 		t.Fatal(err)
 	}
 	t.Setenv("WEAVE_DOTNET_ADAPTER", path)
+	t.Setenv("WEAVE_PYTHON_ADAPTER", "")
 	t.Setenv("WEAVE_SCIP_DOTNET", "")
 	statuses := inspectAdapters(context.Background(), true, adapter.Runner{})
 	if len(statuses) < 1 {
@@ -39,6 +40,7 @@ printf '%s\n' '{"protocols":["weave.adapter/v0"],"provider":{"name":"weave-dotne
 
 func TestConfiguredAdapterPathMustExistAndBeExecutable(t *testing.T) {
 	t.Setenv("WEAVE_DOTNET_ADAPTER", filepath.Join(t.TempDir(), "missing"))
+	t.Setenv("WEAVE_PYTHON_ADAPTER", "")
 	t.Setenv("WEAVE_SCIP_DOTNET", "")
 	statuses := inspectAdapters(context.Background(), false, adapter.Runner{})
 	if statuses[0].Available || !strings.Contains(statuses[0].Detail, "configured path unavailable") {

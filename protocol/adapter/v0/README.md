@@ -100,8 +100,10 @@ an evidence class.
 
 The current edge vocabulary and record shapes are defined by
 `weave.facts/v0`; the golden response exercises a minimal valid document and
-symbol. Until a protobuf v1 schema is published, the Go model and this fixture
-must change together.
+symbol. A symbol's `definition` is its canonical display anchor; providers may
+emit several `definition` occurrences for languages with repeated bindings.
+Queries should prefer those complete occurrences. Until a protobuf v1 schema is
+published, the Go model and this fixture must change together.
 
 ## Atomicity, bounds, and failure
 

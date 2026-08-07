@@ -192,13 +192,7 @@ func (app Local) Execute(ctx context.Context, invocation Invocation) (Response, 
 	case "symbols":
 		response.Symbols, response.Truncated, err = db.FindSymbols(ctx, invocation.Arguments[0], invocation.Limit)
 	case "definition":
-		var symbols []graph.Symbol
-		symbols, response.Truncated, err = db.FindSymbols(ctx, invocation.Arguments[0], invocation.Limit)
-		for _, symbol := range symbols {
-			if symbol.DocumentID != "" {
-				response.Symbols = append(response.Symbols, symbol)
-			}
-		}
+		response.Symbols, response.Occurrences, response.Truncated, err = findDefinitions(ctx, db, invocation.Arguments[0], invocation.Limit)
 	case "references":
 		var symbol graph.Symbol
 		if symbol, err = query.Resolve(ctx, db, invocation.Arguments[0]); err == nil {
@@ -477,13 +471,7 @@ func (app Local) federated(ctx context.Context, response Response, invocation In
 	case "symbols":
 		response.Symbols, response.Truncated, err = store.FindSymbols(ctx, invocation.Arguments[0], invocation.Limit)
 	case "definition":
-		var values []graph.Symbol
-		values, response.Truncated, err = store.FindSymbols(ctx, invocation.Arguments[0], invocation.Limit)
-		for _, symbol := range values {
-			if symbol.DocumentID != "" {
-				response.Symbols = append(response.Symbols, symbol)
-			}
-		}
+		response.Symbols, response.Occurrences, response.Truncated, err = findDefinitions(ctx, store, invocation.Arguments[0], invocation.Limit)
 	case "references":
 		var symbol graph.Symbol
 		if symbol, err = query.Resolve(ctx, store, invocation.Arguments[0]); err == nil {
@@ -530,6 +518,42 @@ func (app Local) federated(ctx context.Context, response Response, invocation In
 	response.Diagnostics = store.Diagnostics()
 	response.Sources = store.Sources()
 	return response, nil
+}
+
+type definitionStore interface {
+	FindSymbols(context.Context, string, int) ([]graph.Symbol, bool, error)
+	Occurrences(context.Context, string, []string, int) ([]graph.Occurrence, bool, error)
+}
+
+// findDefinitions returns every compiler-reported binding occurrence. The
+// singular Symbol.Definition is retained only as a display anchor/fallback for
+// older providers that do not emit definition occurrences.
+func findDefinitions(ctx context.Context, store definitionStore, value string, limit int) ([]graph.Symbol, []graph.Occurrence, bool, error) {
+	matches, truncated, err := store.FindSymbols(ctx, value, limit)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	var anchors []graph.Symbol
+	var definitions []graph.Occurrence
+	for _, symbol := range matches {
+		remaining := limit - len(anchors) - len(definitions)
+		if remaining <= 0 {
+			return anchors, definitions, true, nil
+		}
+		occurrences, occurrenceTruncated, err := store.Occurrences(ctx, symbol.ID, []string{"definition"}, remaining)
+		if err != nil {
+			return nil, nil, false, err
+		}
+		truncated = truncated || occurrenceTruncated
+		if len(occurrences) == 0 {
+			if symbol.DocumentID != "" {
+				anchors = append(anchors, symbol)
+			}
+			continue
+		}
+		definitions = append(definitions, occurrences...)
+	}
+	return anchors, definitions, truncated, nil
 }
 
 func (app Local) repositories(ctx context.Context, response Response, invocation Invocation) (Response, error) {
@@ -583,6 +607,7 @@ func inspectAdapters(ctx context.Context, doctor bool, runner adapter.Runner) []
 	type candidate struct{ name, kind, configured string }
 	candidates := []candidate{
 		{"weave-dotnet", "native", os.Getenv("WEAVE_DOTNET_ADAPTER")},
+		{"weave-python", "native", os.Getenv("WEAVE_PYTHON_ADAPTER")},
 		{"scip-dotnet", "scip-producer", os.Getenv("WEAVE_SCIP_DOTNET")},
 	}
 	if doctor {

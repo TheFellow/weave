@@ -4,9 +4,11 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -165,6 +167,33 @@ func TestDiscoverOutsideRepository(t *testing.T) {
 	_, err := Discover(context.Background(), t.TempDir())
 	if !errorsIs(err, ErrNotRepository) {
 		t.Fatalf("Discover() error = %v, want ErrNotRepository", err)
+	}
+}
+
+func TestReadOnlyGitCommandsDisableRepositoryFSMonitor(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fsmonitor fixture uses a POSIX script")
+	}
+	root := newRepository(t)
+	writeFile(t, root, "main.go", "package main\n")
+	git(t, root, "add", ".")
+	git(t, root, "commit", "-m", "initial")
+	marker := filepath.Join(root, ".git", "fsmonitor-ran")
+	hook := filepath.Join(root, ".git", "fsmonitor-test.sh")
+	writeFile(t, root, ".git/fsmonitor-test.sh", fmt.Sprintf("#!/bin/sh\nprintf ran > %q\n", marker))
+	if err := os.Chmod(hook, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	git(t, root, "config", "core.fsmonitor", hook)
+	repo, err := Discover(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.Inspect(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("repository fsmonitor executed: %v", err)
 	}
 }
 

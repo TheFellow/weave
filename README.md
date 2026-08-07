@@ -103,6 +103,22 @@ stdout, keeps diagnostics on stderr, and atomically publishes a complete valid
 inventory. The contract fixtures are exercised by the Go test suite so adapter
 authors do not need to import Weave's Go internals.
 
+## Python adapter
+
+The optional [`weave-python`](adapters/python/README.md) companion is itself
+written in Python and uses CPython's parser and compiler symbol tables. Install
+it from source with `python -m pip install ./adapters/python`; once the
+`weave-python` executable is on `PATH`, normal queries refresh Git-visible `.py`
+files automatically.
+
+Lexical declarations and scope-slot references are exact facts about the
+recorded interpreter. Repeated bindings retain every definition occurrence.
+Imports are declared evidence and calls are syntactic because Python can replace
+their runtime targets. The adapter never imports project modules or silently
+upgrades dynamic behavior to compiler-exact evidence. Repository Git fsmonitor
+commands and Python source symlinks are disabled so a read-only refresh cannot
+execute repository configuration or hash different bytes than it indexes.
+
 ## Derived data and recovery
 
 Per-worktree state lives at the Git-resolved `git rev-parse --git-path weave`
@@ -140,7 +156,8 @@ members still return bounded partial results with repository provenance.
 The native Go provider currently covers typed declarations/references, imports,
 dependencies, interfaces/implementations, and direct static calls. C# covers
 compiler-resolved calls and project relationships; the initial F# slice omits
-call edges. Exact cross-language relationships use checked-in
+call edges. Python covers compiler lexical bindings while deliberately omitting
+dynamic attribute/type resolution. Exact cross-language relationships use checked-in
 declared/generated bridges. Finer-grained .NET refresh, fuzzy search,
 hooks/watch mode, MCP, automatic discovery of third-party language adapters,
 additional languages, and signed package-manager distribution remain future
