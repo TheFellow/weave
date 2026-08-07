@@ -56,6 +56,9 @@ for repository in "${repositories[@]}"; do
   git -C "$clone" checkout --quiet --detach "$(git -C "$source" rev-parse HEAD)"
   git -C "$clone" rev-parse HEAD >"$output/$repository/commit.txt"
 
+  if [[ -f "$clone/go.mod" ]]; then
+    (cd "$clone" && GOFLAGS=-mod=readonly go mod download) >"$output/$repository/go-mod-download.log" 2>&1
+  fi
   if find "$clone" \( -name '*.csproj' -o -name '*.fsproj' \) -print -quit | grep -q .; then
     (cd "$clone" && dotnet restore) >"$output/$repository/restore.log" 2>&1
   fi
@@ -73,7 +76,7 @@ for repository in "${repositories[@]}"; do
     git rev-parse --git-path weave >"$output/$repository/storage-path.txt"
     database=$(git rev-parse --git-path weave)/index.db
     wc -c <"$database" | tr -d ' ' >"$output/$repository/database-bytes.txt"
-    jq '{units:(.export.units|length),documents:(.export.documents|length),symbols:(.export.symbols|length),occurrences:(.export.occurrences|length),edges:(.export.edges|length)}' \
+    jq '{units:(.facts.units|length),documents:(.facts.documents|length),symbols:(.facts.symbols|length),occurrences:(.facts.occurrences|length),edges:(.facts.edges|length)}' \
       "$output/$repository/export.stdout" >"$output/$repository/facts.json"
   )
 
