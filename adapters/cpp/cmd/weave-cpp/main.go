@@ -231,11 +231,9 @@ func index(ctx context.Context, request adapter.IndexRequest, configuration opti
 		"--log-level=warning",
 	}
 	command, err := run(ctx, tool.path, arguments, root)
+	diagnostics := toolDiagnostics(command)
 	if err != nil {
-		return scipimport.Result{}, command.stderr, fmt.Errorf("run scip-clang: %w%s", err, stderrSuffix(command.stderr))
-	}
-	if len(bytes.TrimSpace(command.stdout)) != 0 {
-		return scipimport.Result{}, command.stderr, errors.New("scip-clang wrote unexpected stdout")
+		return scipimport.Result{}, diagnostics, fmt.Errorf("run scip-clang: %w%s", err, stderrSuffix(command.stderr))
 	}
 	result, err := (scipimport.Importer{Limits: scipimport.Limits{
 		MaxIndexBytes: maxIndexBytes,
@@ -246,12 +244,29 @@ func index(ctx context.Context, request adapter.IndexRequest, configuration opti
 		LegacyPositionEncoding: scip.PositionEncoding_UTF8CodeUnitOffsetFromLineStart,
 	})
 	if err != nil {
-		return scipimport.Result{}, command.stderr, fmt.Errorf("import scip-clang index: %w", err)
+		return scipimport.Result{}, diagnostics, fmt.Errorf("import scip-clang index: %w", err)
 	}
 	if result.Provider != providerName || result.ProviderVersion != tool.version {
-		return scipimport.Result{}, command.stderr, fmt.Errorf("SCIP producer is %s %s, want %s %s", result.Provider, result.ProviderVersion, providerName, tool.version)
+		return scipimport.Result{}, diagnostics, fmt.Errorf("SCIP producer is %s %s, want %s %s", result.Provider, result.ProviderVersion, providerName, tool.version)
 	}
-	return result, command.stderr, nil
+	return result, diagnostics, nil
+}
+
+// scip-clang writes informational progress to stdout even with progress
+// reporting disabled. Both producer streams are bounded and become adapter
+// diagnostics; the adapter's own stdout remains protocol-only.
+func toolDiagnostics(result commandResult) []byte {
+	var diagnostics bytes.Buffer
+	for _, stream := range [][]byte{result.stdout, result.stderr} {
+		if len(stream) == 0 {
+			continue
+		}
+		_, _ = diagnostics.Write(stream)
+		if stream[len(stream)-1] != '\n' {
+			_ = diagnostics.WriteByte('\n')
+		}
+	}
+	return diagnostics.Bytes()
 }
 
 func canonicalDirectory(value string) (string, error) {

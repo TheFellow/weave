@@ -54,7 +54,7 @@ func (fake *fakeProducer) run(_ context.Context, _ string, arguments []string, d
 	if err := os.WriteFile(output, index, 0o600); err != nil {
 		return commandResult{}, err
 	}
-	return commandResult{}, nil
+	return commandResult{stdout: []byte("indexed fixture\n")}, nil
 }
 
 func fixtureIndex() *scip.Index {
@@ -109,9 +109,10 @@ func TestAdapterLifecycleUsesLiteralArgumentsAndCleansTemporaryFiles(t *testing.
 		t.Fatal(err)
 	}
 	var output bytes.Buffer
+	var diagnostics bytes.Buffer
 	err = runCLI(context.Background(), []string{
 		"--scip-clang=" + os.Args[0], "index", "--protocol", adapter.Protocol,
-	}, bytes.NewReader(encoded), &output, &bytes.Buffer{}, dependencies{run: fake.run})
+	}, bytes.NewReader(encoded), &output, &diagnostics, dependencies{run: fake.run})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,6 +124,9 @@ func TestAdapterLifecycleUsesLiteralArgumentsAndCleansTemporaryFiles(t *testing.
 	}
 	if _, err := os.Stat(filepath.Join(root, "index.scip")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("adapter wrote index into repository: %v", err)
+	}
+	if diagnostics.String() != "indexed fixture\n" {
+		t.Fatalf("producer stdout was not routed to bounded diagnostics: %q", diagnostics.String())
 	}
 	lines := bytes.Split(bytes.TrimSpace(output.Bytes()), []byte("\n"))
 	if len(lines) < 5 {
