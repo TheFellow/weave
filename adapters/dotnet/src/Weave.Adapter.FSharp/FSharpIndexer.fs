@@ -59,6 +59,9 @@ type FSharpIndexer private () =
                 match Path.GetDirectoryName(Path.GetFullPath projectPath) with
                 | null -> invalidArg "projectPath" ("project path has no directory: " + projectPath)
                 | directory -> directory
+            let absoluteProjectPath path =
+                if Path.IsPathFullyQualified path then Path.GetFullPath path
+                else Path.GetFullPath(path, projectDirectory)
 
             for result in results do
                 cancellationToken.ThrowIfCancellationRequested()
@@ -107,7 +110,7 @@ type FSharpIndexer private () =
                         facts.Documents.Add document
 
                 let rangeOf (range: range) =
-                    let file = Path.GetFullPath range.FileName
+                    let file = absoluteProjectPath range.FileName
                     let document, text = documents.[file]
                     let lineStarts = ResizeArray<int>()
                     lineStarts.Add 0
@@ -142,7 +145,7 @@ type FSharpIndexer private () =
                 let symbolId (symbol: FSharpSymbol) =
                     let localDiscriminator =
                         match symbol.DeclarationLocation with
-                        | Some location -> relativePath location.FileName + ":" + string location.StartLine + ":" + string location.StartColumn
+                        | Some location -> relativePath (absoluteProjectPath location.FileName) + ":" + string location.StartLine + ":" + string location.StartColumn
                         | None -> "external"
                     "dotnet:fsharp:symbol:" + Identity.Hash(repositoryIdentity, projectRelative, actualVariant, stableName symbol, localDiscriminator)
 
@@ -152,7 +155,7 @@ type FSharpIndexer private () =
                 let seenEdges = HashSet<string>(StringComparer.Ordinal)
                 let uses = checkedProject.GetAllUsesOfAllSymbols(cancellationToken = cancellationToken) |> Array.sortBy (fun (symbolUse: FSharpSymbolUse) -> symbolUse.Range.FileName, symbolUse.Range.StartLine, symbolUse.Range.StartColumn)
                 for symbolUse in uses do
-                    let fullFile = Path.GetFullPath symbolUse.Range.FileName
+                    let fullFile = absoluteProjectPath symbolUse.Range.FileName
                     match documents.TryGetValue fullFile with
                     | false, _ -> ()
                     | true, _ ->
@@ -163,7 +166,7 @@ type FSharpIndexer private () =
                         if seenSymbols.Add id then
                             let definitionDocument, definitionRange =
                                 match symbol.DeclarationLocation with
-                                | Some declaration when documents.ContainsKey(Path.GetFullPath declaration.FileName) -> rangeOf declaration
+                                | Some declaration when documents.ContainsKey(absoluteProjectPath declaration.FileName) -> rangeOf declaration
                                 | _ -> document, SourceRange.Empty
                             facts.Symbols.Add(Symbol(
                                 Id = id, UnitId = unitId, StableName = stableName symbol,
