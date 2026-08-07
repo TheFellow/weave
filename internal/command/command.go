@@ -26,9 +26,9 @@ func New(app application.Service, streams Streams) *cli.Command {
 		ExitErrHandler: func(context.Context, *cli.Command, error) {},
 	}
 	root.Commands = []*cli.Command{
-		noop(app, streams, "init", "initialize Weave for a repository"),
-		noop(app, streams, "index", "build or refresh the semantic index"),
-		noop(app, streams, "status", "show index and freshness status"),
+		lifecycle(app, streams, "init", "initialize Weave for a repository"),
+		lifecycle(app, streams, "index", "build or refresh the semantic index"),
+		lifecycle(app, streams, "status", "show index and freshness status"),
 		lookup(app, streams, "symbols", "find symbols"),
 		lookup(app, streams, "definition", "find symbol definitions"),
 		lookup(app, streams, "references", "find symbol references"),
@@ -76,6 +76,10 @@ func maintenance(app application.Service, streams Streams, name, usage string, j
 	return &cli.Command{Name: name, Usage: usage, Flags: flags, Action: invoke(app, streams, name, 0, 0)}
 }
 
+func lifecycle(app application.Service, streams Streams, name, usage string) *cli.Command {
+	return &cli.Command{Name: name, Usage: usage, Flags: []cli.Flag{jsonFlag()}, Action: invoke(app, streams, name, 0, 0)}
+}
+
 func noop(app application.Service, streams Streams, path, usage string) *cli.Command {
 	name := path
 	if index := strings.LastIndexByte(path, ' '); index >= 0 {
@@ -114,6 +118,11 @@ func invoke(app application.Service, streams Streams, path string, minArgs, maxA
 		if err != nil {
 			return err
 		}
+		if response.Freshness != nil && response.Freshness.Refreshed {
+			if _, err := fmt.Fprintf(streams.Stderr, "index: refreshed %d changed paths\n", response.Freshness.ChangeCount); err != nil {
+				return err
+			}
+		}
 		return render(streams.Stdout, response, cmd.Bool("json"))
 	}
 }
@@ -142,6 +151,17 @@ func render(writer io.Writer, response application.Response, jsonOutput bool) er
 			}{"weave.export/v1", response.Export})
 		}
 		return encoder.Encode(response)
+	}
+	if response.Command == "status" && response.Freshness != nil {
+		status := response.Freshness
+		_, err := fmt.Fprintf(writer, "current\t%t\ndirty\t%t\nchanges\t%d\nrepository\t%s\nworktree\t%s\n", status.Current, status.Dirty, status.ChangeCount, status.RepositoryIdentity, status.WorktreeID)
+		if err != nil {
+			return err
+		}
+		if status.Reason != "" {
+			_, err = fmt.Fprintf(writer, "reason\t%s\n", status.Reason)
+		}
+		return err
 	}
 	for _, symbol := range response.Symbols {
 		if _, err := fmt.Fprintf(writer, "%s\t%s\t%s\t%s:%d:%d\n", symbol.ID, symbol.Kind, symbol.DisplayName, symbol.DocumentID, symbol.Definition.Start.Line+1, symbol.Definition.Start.Column+1); err != nil {

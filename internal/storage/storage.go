@@ -172,80 +172,118 @@ func (db *DB) Path() string { return db.path }
 
 // ReplaceUnit atomically replaces every fact owned by one compilation unit.
 func (db *DB) ReplaceUnit(ctx context.Context, facts graph.UnitFacts) error {
-	if err := facts.Validate(); err != nil {
-		return fmt.Errorf("%w: %v", ErrInvalid, err)
-	}
-	for i := range facts.Symbols {
-		facts.Symbols[i].NormalizedName = graph.NormalizeName(facts.Symbols[i].DisplayName)
-	}
-	return classify("replace compilation unit", db.db.Write(ctx, func(tx *bstore.Tx) error {
-		unitID := facts.Unit.ID
-		for _, deleteUnit := range []func() error{
-			func() error {
-				_, err := bstore.QueryTx[tokenRecord](tx).FilterEqual("UnitID", unitID).Delete()
-				return err
-			},
-			func() error {
-				_, err := bstore.QueryTx[edgeRecord](tx).FilterEqual("UnitID", unitID).Delete()
-				return err
-			},
-			func() error {
-				_, err := bstore.QueryTx[occurrenceRecord](tx).FilterEqual("UnitID", unitID).Delete()
-				return err
-			},
-			func() error {
-				_, err := bstore.QueryTx[symbolRecord](tx).FilterEqual("UnitID", unitID).Delete()
-				return err
-			},
-			func() error {
-				_, err := bstore.QueryTx[documentRecord](tx).FilterEqual("UnitID", unitID).Delete()
-				return err
-			},
-		} {
-			if err := deleteUnit(); err != nil {
-				return err
-			}
-		}
-		if _, err := bstore.QueryTx[unitRecord](tx).FilterID(unitID).Delete(); err != nil {
-			return err
-		}
+	return db.ReplaceUnits(ctx, []graph.UnitFacts{facts}, nil)
+}
 
-		unit := toUnitRecord(facts.Unit)
-		if err := tx.Insert(&unit); err != nil {
-			return err
+// ReplaceUnits atomically replaces complete returned compilation-unit batches
+// and removes units no longer present in the provider's complete inventory.
+func (db *DB) ReplaceUnits(ctx context.Context, batches []graph.UnitFacts, removed []string) error {
+	seen := map[string]bool{}
+	for _, id := range removed {
+		if id == "" || seen[id] {
+			return fmt.Errorf("%w: duplicate or empty removed unit %q", ErrInvalid, id)
 		}
-		for _, document := range facts.Documents {
-			record := toDocumentRecord(document)
-			if err := tx.Insert(&record); err != nil {
+		seen[id] = true
+	}
+	for i := range batches {
+		facts := &batches[i]
+		if err := facts.Validate(); err != nil {
+			return fmt.Errorf("%w: %v", ErrInvalid, err)
+		}
+		if seen[facts.Unit.ID] {
+			return fmt.Errorf("%w: duplicate unit %q", ErrInvalid, facts.Unit.ID)
+		}
+		seen[facts.Unit.ID] = true
+		for j := range facts.Symbols {
+			facts.Symbols[j].NormalizedName = graph.NormalizeName(facts.Symbols[j].DisplayName)
+		}
+	}
+	return classify("replace compilation units", db.db.Write(ctx, func(tx *bstore.Tx) error {
+		for _, id := range removed {
+			if err := deleteUnit(tx, id); err != nil {
 				return err
 			}
 		}
-		for _, symbol := range facts.Symbols {
-			record := toSymbolRecord(symbol)
-			if err := tx.Insert(&record); err != nil {
+		for _, facts := range batches {
+			if err := deleteUnit(tx, facts.Unit.ID); err != nil {
 				return err
 			}
-			for _, token := range graph.Tokens(symbol.DisplayName) {
-				posting := tokenRecord{ID: tokenID(token, symbol.ID), UnitID: unitID, Token: token, SymbolID: symbol.ID}
-				if err := tx.Insert(&posting); err != nil {
-					return err
-				}
-			}
-		}
-		for _, occurrence := range facts.Occurrences {
-			record := toOccurrenceRecord(occurrence)
-			if err := tx.Insert(&record); err != nil {
-				return err
-			}
-		}
-		for _, edge := range facts.Edges {
-			record := toEdgeRecord(edge)
-			if err := tx.Insert(&record); err != nil {
+			if err := insertUnit(tx, facts); err != nil {
 				return err
 			}
 		}
 		return nil
 	}))
+}
+
+func deleteUnit(tx *bstore.Tx, unitID string) error {
+	for _, deleteOwned := range []func() error{
+		func() error {
+			_, err := bstore.QueryTx[tokenRecord](tx).FilterEqual("UnitID", unitID).Delete()
+			return err
+		},
+		func() error {
+			_, err := bstore.QueryTx[edgeRecord](tx).FilterEqual("UnitID", unitID).Delete()
+			return err
+		},
+		func() error {
+			_, err := bstore.QueryTx[occurrenceRecord](tx).FilterEqual("UnitID", unitID).Delete()
+			return err
+		},
+		func() error {
+			_, err := bstore.QueryTx[symbolRecord](tx).FilterEqual("UnitID", unitID).Delete()
+			return err
+		},
+		func() error {
+			_, err := bstore.QueryTx[documentRecord](tx).FilterEqual("UnitID", unitID).Delete()
+			return err
+		},
+	} {
+		if err := deleteOwned(); err != nil {
+			return err
+		}
+	}
+	_, err := bstore.QueryTx[unitRecord](tx).FilterID(unitID).Delete()
+	return err
+}
+
+func insertUnit(tx *bstore.Tx, facts graph.UnitFacts) error {
+	unitID := facts.Unit.ID
+	unit := toUnitRecord(facts.Unit)
+	if err := tx.Insert(&unit); err != nil {
+		return err
+	}
+	for _, document := range facts.Documents {
+		record := toDocumentRecord(document)
+		if err := tx.Insert(&record); err != nil {
+			return err
+		}
+	}
+	for _, symbol := range facts.Symbols {
+		record := toSymbolRecord(symbol)
+		if err := tx.Insert(&record); err != nil {
+			return err
+		}
+		for _, token := range graph.Tokens(symbol.DisplayName) {
+			posting := tokenRecord{ID: tokenID(token, symbol.ID), UnitID: unitID, Token: token, SymbolID: symbol.ID}
+			if err := tx.Insert(&posting); err != nil {
+				return err
+			}
+		}
+	}
+	for _, occurrence := range facts.Occurrences {
+		record := toOccurrenceRecord(occurrence)
+		if err := tx.Insert(&record); err != nil {
+			return err
+		}
+	}
+	for _, edge := range facts.Edges {
+		record := toEdgeRecord(edge)
+		if err := tx.Insert(&record); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Symbol returns a symbol by stable ID.

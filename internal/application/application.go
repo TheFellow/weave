@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/TheFellow/weave/internal/freshness"
 	"github.com/TheFellow/weave/internal/graph"
 	"github.com/TheFellow/weave/internal/query"
 	"github.com/TheFellow/weave/internal/storage"
@@ -34,6 +35,7 @@ type Response struct {
 	Nodes       []string           `json:"nodes,omitempty"`
 	Export      *graph.Snapshot    `json:"export,omitempty"`
 	Issues      []storage.Issue    `json:"issues,omitempty"`
+	Freshness   *freshness.Status  `json:"freshness,omitempty"`
 }
 
 // Service executes Weave use cases.
@@ -50,18 +52,48 @@ func (Noop) Execute(_ context.Context, invocation Invocation) (Response, error) 
 
 // Local executes queries against one local database file. Each invocation owns
 // the file handle, which permits gc to compact offline without hidden state.
-type Local struct{ DatabasePath string }
+type Local struct {
+	DatabasePath string
+	Freshness    *freshness.Manager
+}
 
 // Execute runs one local use case.
 func (app Local) Execute(ctx context.Context, invocation Invocation) (Response, error) {
 	response := Response{Schema: QuerySchema, Command: invocation.Command, Query: append([]string(nil), invocation.Arguments...)}
+	if app.Freshness != nil {
+		switch invocation.Command {
+		case "init", "index":
+			status, err := app.Freshness.Ensure(ctx, invocation.Command == "index")
+			response.Freshness = &status
+			return response, err
+		case "status":
+			status, err := app.Freshness.Inspect(ctx)
+			response.Freshness = &status
+			return response, err
+		}
+	}
 	if invocation.Command == "gc" {
-		return response, storage.Compact(ctx, app.DatabasePath)
+		path, err := app.databasePath(ctx)
+		if err != nil {
+			return Response{}, err
+		}
+		return response, storage.Compact(ctx, path)
 	}
 	if !requiresDatabase(invocation.Command) {
 		return Noop{}.Execute(ctx, invocation)
 	}
-	db, err := storage.Open(ctx, app.DatabasePath, storage.Options{MustExist: true})
+	if app.Freshness != nil {
+		status, err := app.Freshness.Ensure(ctx, false)
+		if err != nil {
+			return Response{}, err
+		}
+		response.Freshness = &status
+	}
+	databasePath, err := app.databasePath(ctx)
+	if err != nil {
+		return Response{}, err
+	}
+	db, err := storage.Open(ctx, databasePath, storage.Options{MustExist: true})
 	if err != nil {
 		return Response{}, err
 	}
@@ -128,6 +160,16 @@ func (app Local) Execute(ctx context.Context, invocation Invocation) (Response, 
 		return Response{}, fmt.Errorf("%s: %w", invocation.Command, err)
 	}
 	return response, nil
+}
+
+func (app Local) databasePath(ctx context.Context) (string, error) {
+	if app.Freshness != nil {
+		return app.Freshness.DatabasePath(ctx)
+	}
+	if app.DatabasePath == "" {
+		return "", fmt.Errorf("database path is not configured")
+	}
+	return app.DatabasePath, nil
 }
 
 func requiresDatabase(command string) bool {

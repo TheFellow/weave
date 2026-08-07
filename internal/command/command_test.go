@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -11,6 +13,7 @@ import (
 
 	"github.com/TheFellow/weave/internal/application"
 	"github.com/TheFellow/weave/internal/command"
+	"github.com/TheFellow/weave/internal/freshness"
 	"github.com/TheFellow/weave/internal/graph"
 	"github.com/TheFellow/weave/internal/storage"
 )
@@ -215,6 +218,89 @@ func TestGCCommandCompactsClosedDatabase(t *testing.T) {
 	if stdout.Len() != 0 {
 		t.Fatalf("stdout = %q", stdout.String())
 	}
+}
+
+func TestLifecycleAndQueriesRefreshRepositoryBeforeReading(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	root := commandRepository(t)
+	provider := &commandProvider{}
+	manager := &freshness.Manager{Directory: root, Provider: provider, Command: "weave test"}
+	app := application.Local{Freshness: manager}
+
+	run := func(args ...string) (string, string) {
+		t.Helper()
+		var stdout, stderr bytes.Buffer
+		rootCommand := command.New(app, command.Streams{Stdin: strings.NewReader(""), Stdout: &stdout, Stderr: &stderr})
+		if err := rootCommand.Run(ctx, append([]string{"weave"}, args...)); err != nil {
+			t.Fatalf("Run(%v) error = %v", args, err)
+		}
+		return stdout.String(), stderr.String()
+	}
+
+	stdout, stderr := run("status")
+	if !strings.Contains(stdout, "current\tfalse") || !strings.Contains(stdout, "reason\tindex is not initialized") || stderr != "" {
+		t.Fatalf("initial status stdout=%q stderr=%q", stdout, stderr)
+	}
+	stdout, stderr = run("init")
+	if stdout != "" || !strings.Contains(stderr, "index: refreshed 0 changed paths") || provider.calls != 1 {
+		t.Fatalf("init stdout=%q stderr=%q calls=%d", stdout, stderr, provider.calls)
+	}
+	stdout, stderr = run("symbols", "handle")
+	if !strings.Contains(stdout, "fixture:handle") || stderr != "" || provider.calls != 1 {
+		t.Fatalf("current query stdout=%q stderr=%q calls=%d", stdout, stderr, provider.calls)
+	}
+	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr = run("symbols", "handle")
+	if !strings.Contains(stdout, "fixture:handle") || !strings.Contains(stderr, "index: refreshed 1 changed paths") || provider.calls != 2 {
+		t.Fatalf("dirty query stdout=%q stderr=%q calls=%d", stdout, stderr, provider.calls)
+	}
+}
+
+type commandProvider struct{ calls int }
+
+func (*commandProvider) ID() freshness.ProviderID {
+	return freshness.ProviderID{Name: "command-fixture", Version: "1"}
+}
+
+func (p *commandProvider) Refresh(context.Context, freshness.Request) (freshness.Result, error) {
+	p.calls++
+	return freshness.Result{
+		Batches: []graph.UnitFacts{commandFixture()},
+		Units:   []freshness.Unit{{ID: "fixture", InventoryDigest: "fixture-v1"}},
+	}, nil
+}
+
+func commandRepository(t *testing.T) string {
+	t.Helper()
+	root := filepath.Join(t.TempDir(), "repo")
+	for _, invocation := range []struct {
+		dir  string
+		args []string
+	}{
+		{"", []string{"init", "--initial-branch=main", root}},
+		{root, []string{"config", "user.email", "weave@example.test"}},
+		{root, []string{"config", "user.name", "Weave Test"}},
+	} {
+		cmd := exec.Command("git", invocation.args...)
+		cmd.Dir = invocation.dir
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", invocation.args, err, output)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package fixture\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"add", "."}, {"commit", "-m", "initial"}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = root
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, output)
+		}
+	}
+	return root
 }
 
 func commandFixture() graph.UnitFacts {
