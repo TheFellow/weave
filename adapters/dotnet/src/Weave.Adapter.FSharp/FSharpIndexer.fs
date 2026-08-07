@@ -7,6 +7,7 @@ open System.Text
 open System.Threading
 open System.Threading.Tasks
 open Buildalyzer
+open Buildalyzer.IO
 open FSharp.Compiler.CodeAnalysis
 open FSharp.Compiler.Symbols
 open FSharp.Compiler.Text
@@ -48,7 +49,10 @@ type FSharpIndexer private () =
             use log = new StringWriter()
             let manager = new AnalyzerManager(AnalyzerManagerOptions(LogWriter = log))
             if not (String.IsNullOrWhiteSpace variant) then manager.SetGlobalProperty("Configuration", variant)
-            let analyzer = manager.GetProject(projectPath)
+            let analyzer =
+                manager.GetProject(IOPath.Parse projectPath)
+                |> Option.ofObj
+                |> Option.defaultWith (fun () -> failwith ("F# project not found: " + projectPath))
             let results = analyzer.Build() |> Seq.sortBy (fun r -> r.TargetFramework) |> Seq.toArray
             let units = List<UnitFacts>()
 
@@ -57,9 +61,7 @@ type FSharpIndexer private () =
                 if not result.Succeeded then
                     failwith ("F# design-time build failed for " + projectPath + ": " + log.ToString())
                 let options = checker.GetProjectOptionsFromCommandLineArgs(projectPath, result.CompilerArguments)
-                let! checkedProject =
-                    checker.ParseAndCheckProject(options)
-                    |> Async.StartAsTask(cancellationToken = cancellationToken)
+                let! checkedProject = Async.StartAsTask(checker.ParseAndCheckProject(options), cancellationToken = cancellationToken)
 
                 let projectRelative = relativePath projectPath
                 let actualVariant = String.Join(";", [| defaultArg (Option.ofObj result.TargetFramework) ""; variant |])
@@ -130,7 +132,7 @@ type FSharpIndexer private () =
                 let definedSymbols = HashSet<string>(StringComparer.Ordinal)
                 let seenOccurrences = HashSet<string>(StringComparer.Ordinal)
                 let seenEdges = HashSet<string>(StringComparer.Ordinal)
-                let uses = checkedProject.GetAllUsesOfAllSymbols(cancellationToken = cancellationToken) |> Array.sortBy (fun symbolUse -> symbolUse.Range.FileName, symbolUse.Range.StartLine, symbolUse.Range.StartColumn)
+                let uses = checkedProject.GetAllUsesOfAllSymbols(cancellationToken = cancellationToken) |> Array.sortBy (fun (symbolUse: FSharpSymbolUse) -> symbolUse.Range.FileName, symbolUse.Range.StartLine, symbolUse.Range.StartColumn)
                 for symbolUse in uses do
                     let fullFile = Path.GetFullPath symbolUse.Range.FileName
                     match documents.TryGetValue fullFile with
