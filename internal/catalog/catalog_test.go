@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -100,6 +101,89 @@ func TestCatalogLinkedWorktreesHaveIndependentEntries(t *testing.T) {
 	entries, err := db.List(ctx)
 	if err != nil || len(entries) != 2 {
 		t.Fatalf("List = %#v, %v", entries, err)
+	}
+}
+
+func TestCatalogAddRepairsCanonicalIdentityAtSameRoot(t *testing.T) {
+	ctx := context.Background()
+	root := gitRepository(t, "https://github.com/acme/before.git")
+	db, err := catalog.Open(ctx, filepath.Join(t.TempDir(), "catalog.db"), time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	before, err := db.Add(ctx, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	git(t, root, "remote", "set-url", "origin", "https://github.com/acme/after.git")
+	after, err := db.Add(ctx, root)
+	if err != nil {
+		t.Fatalf("Add after identity change: %v", err)
+	}
+	if before.Key == after.Key || after.Identity != "github.com/acme/after" {
+		t.Fatalf("before=%#v after=%#v", before, after)
+	}
+	entries, err := db.List(ctx)
+	if err != nil || len(entries) != 1 || entries[0].Key != after.Key || entries[0].Root != before.Root {
+		t.Fatalf("entries=%#v error=%v", entries, err)
+	}
+}
+
+func TestCatalogSyncRepairsCanonicalIdentityAtSameRoot(t *testing.T) {
+	ctx := context.Background()
+	root := gitRepository(t, "https://github.com/acme/sync-before.git")
+	db, err := catalog.Open(ctx, filepath.Join(t.TempDir(), "catalog.db"), time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	before, err := db.Add(ctx, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	git(t, root, "remote", "set-url", "origin", "https://github.com/acme/sync-after.git")
+	updates, diagnostics, err := db.Sync(ctx, []string{before.Key})
+	if err != nil || len(diagnostics) != 0 || len(updates) != 1 || updates[0].Identity != "github.com/acme/sync-after" {
+		t.Fatalf("Sync=%#v diagnostics=%#v error=%v", updates, diagnostics, err)
+	}
+	entries, err := db.List(ctx)
+	if err != nil || len(entries) != 1 || entries[0].Key != updates[0].Key {
+		t.Fatalf("entries=%#v error=%v", entries, err)
+	}
+}
+
+func TestCatalogIdentityCollisionDoesNotDisturbEitherRoot(t *testing.T) {
+	ctx := context.Background()
+	firstRoot := gitRepository(t, "https://github.com/acme/first.git")
+	secondRoot := gitRepository(t, "https://github.com/acme/second.git")
+	db, err := catalog.Open(ctx, filepath.Join(t.TempDir(), "catalog.db"), time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	first, err := db.Add(ctx, firstRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := db.Add(ctx, secondRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	git(t, firstRoot, "remote", "set-url", "origin", "https://github.com/acme/second.git")
+	if _, err := db.Add(ctx, firstRoot); err == nil || !strings.Contains(err.Error(), "already registered") {
+		t.Fatalf("collision error = %v", err)
+	}
+	entries, err := db.List(ctx)
+	if err != nil || len(entries) != 2 {
+		t.Fatalf("entries=%#v error=%v", entries, err)
+	}
+	keys := []string{entries[0].Key, entries[1].Key}
+	slices.Sort(keys)
+	want := []string{first.Key, second.Key}
+	slices.Sort(want)
+	if !slices.Equal(keys, want) {
+		t.Fatalf("keys=%q want=%q", keys, want)
 	}
 }
 

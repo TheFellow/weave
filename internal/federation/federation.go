@@ -52,13 +52,29 @@ func Open(ctx context.Context, catalogPath string, selectors []string, maxReposi
 		return nil, closeErr
 	}
 	selected := make([]catalog.Entry, 0, len(entries))
+	matched := make(map[string]bool, len(selectors))
 	for _, entry := range entries {
-		if len(selectors) == 0 || slices.Contains(selectors, entry.Key) || slices.Contains(selectors, entry.Identity) || slices.Contains(selectors, entry.Root) {
+		entryMatched := len(selectors) == 0
+		for _, selector := range selectors {
+			if selector == entry.Key || selector == entry.Identity || selector == entry.Root {
+				matched[selector] = true
+				entryMatched = true
+			}
+		}
+		if entryMatched {
 			selected = append(selected, entry)
 		}
 	}
-	if len(selectors) > 0 && len(selected) == 0 {
-		return nil, fmt.Errorf("no catalog repository matched selector")
+	var unmatched []string
+	for _, selector := range selectors {
+		if !matched[selector] {
+			unmatched = append(unmatched, selector)
+		}
+	}
+	slices.Sort(unmatched)
+	unmatched = slices.Compact(unmatched)
+	if len(unmatched) > 0 {
+		return nil, fmt.Errorf("catalog selectors did not match registered repositories: %s", strings.Join(unmatched, ", "))
 	}
 	if len(selected) > maxRepositories {
 		return nil, fmt.Errorf("catalog query selects %d repositories, exceeds --max-repos %d", len(selected), maxRepositories)

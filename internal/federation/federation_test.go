@@ -104,6 +104,10 @@ func TestFederationReportsMissingAndUnavailableMembers(t *testing.T) {
 	if _, err := federation.Open(ctx, catalogPath, nil, 1); err == nil || !strings.Contains(err.Error(), "exceeds --max-repos") {
 		t.Fatalf("fan-out error = %v", err)
 	}
+	_, err = federation.Open(ctx, catalogPath, []string{entries[0].Identity, "z-missing", "a-missing"}, 8)
+	if err == nil || !strings.Contains(err.Error(), "a-missing, z-missing") {
+		t.Fatalf("unmatched selector error = %v", err)
+	}
 }
 
 func fixtureSymbol(unit, id, name, suffix string) graph.Symbol {

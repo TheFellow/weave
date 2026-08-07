@@ -155,16 +155,7 @@ func (db *DB) Add(ctx context.Context, directory string) (Entry, error) {
 	}
 	record := fromRepository(repo, state)
 	err = db.db.Write(ctx, func(tx *bstore.Tx) error {
-		old, getErr := bstore.QueryTx[entryRecord](tx).FilterID(record.Key).Get()
-		switch getErr {
-		case nil:
-			_ = old
-			return tx.Update(&record)
-		case bstore.ErrAbsent:
-			return tx.Insert(&record)
-		default:
-			return getErr
-		}
+		return replaceRegistration(tx, record)
 	})
 	if err != nil {
 		return Entry{}, fmt.Errorf("register repository: %w", err)
@@ -260,7 +251,7 @@ func (db *DB) Sync(ctx context.Context, selectors []string) ([]Entry, []string, 
 	if len(updates) > 0 {
 		err = db.db.Write(ctx, func(tx *bstore.Tx) error {
 			for i := range updates {
-				if err := tx.Update(&updates[i]); err != nil {
+				if err := replaceRegistration(tx, updates[i]); err != nil {
 					return err
 				}
 			}
@@ -277,6 +268,41 @@ func (db *DB) Sync(ctx context.Context, selectors []string) ([]Entry, []string, 
 	}
 	slices.SortFunc(entries, func(a, b Entry) int { return strings.Compare(a.Key, b.Key) })
 	return entries, diagnostics, nil
+}
+
+// replaceRegistration treats the canonical root as the durable local locator.
+// Identity and worktree changes replace the primary-keyed record in one
+// transaction. A target key already owned by another root remains a collision.
+func replaceRegistration(tx *bstore.Tx, next entryRecord) error {
+	current, err := bstore.QueryTx[entryRecord](tx).FilterEqual("Root", next.Root).Get()
+	switch err {
+	case nil:
+		if current.Key == next.Key {
+			return tx.Update(&next)
+		}
+		owner, ownerErr := bstore.QueryTx[entryRecord](tx).FilterID(next.Key).Get()
+		if ownerErr == nil && owner.Root != next.Root {
+			return fmt.Errorf("catalog key %q is already registered at root %q", next.Key, owner.Root)
+		}
+		if ownerErr != nil && ownerErr != bstore.ErrAbsent {
+			return ownerErr
+		}
+		if _, err := bstore.QueryTx[entryRecord](tx).FilterID(current.Key).Delete(); err != nil {
+			return err
+		}
+		return tx.Insert(&next)
+	case bstore.ErrAbsent:
+		owner, ownerErr := bstore.QueryTx[entryRecord](tx).FilterID(next.Key).Get()
+		if ownerErr == nil {
+			return fmt.Errorf("catalog key %q is already registered at root %q", next.Key, owner.Root)
+		}
+		if ownerErr != bstore.ErrAbsent {
+			return ownerErr
+		}
+		return tx.Insert(&next)
+	default:
+		return err
+	}
 }
 
 func fromRepository(repo repository.Repository, state repository.State) entryRecord {
