@@ -53,8 +53,10 @@ go test ./internal/storage -run '^$' \
 | v1 | 96,784,384 | baseline |
 | v2 | 63,553,536 | **-34.3%** |
 
-The checked-in non-short test requires v2 to remain smaller than v1 but does
-not require an exact byte ratio because bbolt grows in coarse page/file steps.
+The checked-in non-short test requires v2 to be no larger than v1 but does not
+require a strict reduction or exact byte ratio because bbolt grows in coarse,
+platform-dependent page/file steps. The Windows CI fixture rounds both layouts
+to 32 MiB; the larger measured fixture above distinguishes them.
 
 The earlier design spike reached a smaller file by letting candidate indexes
 tie-break on auto numeric IDs. Review caught that this could change bounded

@@ -211,7 +211,11 @@ func TestRepresentativeV2SizeDoesNotRegressV1(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if v2Info.Size() >= v1Info.Size() {
+	// bbolt grows files in coarse platform-dependent steps. Windows can round
+	// both representative layouts to the same physical size even though larger
+	// fixtures and compacted measurements distinguish them. The portable
+	// regression invariant is therefore that v2 must not consume more space.
+	if v2Info.Size() > v1Info.Size() {
 		t.Fatalf("v2 database = %d bytes, v1 = %d", v2Info.Size(), v1Info.Size())
 	}
 }
