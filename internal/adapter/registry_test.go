@@ -131,6 +131,28 @@ func TestLoadRegistryEmptyPathHasNoImplicitDiscovery(t *testing.T) {
 	}
 }
 
+func TestJVMProviderCanOptIntoAutomaticRefreshThroughTrustedRegistry(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "adapters.json")
+	writeRegistry(t, path, `{
+  "schema":"weave.adapters/v1",
+  "adapters":[{
+    "name":"scip:scip-java",
+    "command":["weave-jvm"],
+    "inputs":{"extensions":[".java",".kt"],"filenames":["pom.xml","build.gradle","build.gradle.kts"]},
+    "permissions":{"network":true,"restore":true,"build_tool":true,"run_generators":true}
+  }]
+}`)
+	registrations, err := LoadRegistry(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(registrations) != 1 || registrations[0].Name != "scip:scip-java" ||
+		!registrations[0].Permissions.Network || !registrations[0].Permissions.Restore ||
+		!registrations[0].Permissions.BuildTool || !registrations[0].Permissions.RunGenerators {
+		t.Fatalf("JVM registration = %#v", registrations)
+	}
+}
+
 func writeRegistry(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {

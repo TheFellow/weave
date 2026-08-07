@@ -1,0 +1,8 @@
+{
+  "name": "weave-scip-typescript-toolchain",
+  "version": "0.0.0",
+  "private": true,
+  "dependencies": {
+    "@sourcegraph/scip-typescript": "0.4.0"
+  }
+}

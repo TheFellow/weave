@@ -228,5 +228,8 @@ func requireJSONEOF(decoder *json.Decoder) error {
 }
 
 func isReservedAdapterName(name string) bool {
-	return slices.Contains([]string{"dotnet", "scip-dotnet", "scip:scip-clang", "weave-cpp", "weave-dotnet", "weave-python", "weave-rust"}, name)
+	return slices.Contains([]string{
+		"dotnet", "scip-dotnet", "scip:scip-clang", "scip:scip-typescript",
+		"weave-cpp", "weave-dotnet", "weave-jvm", "weave-python", "weave-rust", "weave-typescript",
+	}, name)
 }

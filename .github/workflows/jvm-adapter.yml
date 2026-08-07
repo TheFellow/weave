@@ -1,0 +1,80 @@
+name: JVM adapter
+
+on:
+  push:
+    paths:
+      - "adapters/jvm/**"
+      - "cmd/weave/**"
+      - "internal/adapter/**"
+      - "internal/application/**"
+      - "internal/freshness/**"
+      - "internal/graph/**"
+      - "internal/nativeindex/**"
+      - "internal/scipimport/**"
+      - "protocol/adapter/**"
+      - ".github/workflows/jvm-adapter.yml"
+  pull_request:
+    paths:
+      - "adapters/jvm/**"
+      - "cmd/weave/**"
+      - "internal/adapter/**"
+      - "internal/application/**"
+      - "internal/freshness/**"
+      - "internal/graph/**"
+      - "internal/nativeindex/**"
+      - "internal/scipimport/**"
+      - "protocol/adapter/**"
+      - ".github/workflows/jvm-adapter.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  contract-without-java:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Adapter and host contract tests
+        run: go test ./adapters/jvm/... ./internal/adapter ./internal/scipimport ./internal/application
+      - name: Build adapter
+        run: go build ./adapters/jvm/cmd/weave-jvm
+
+  real-indexer:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: "8.14.3"
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.x"
+      - name: Install pinned scip-java launcher
+        shell: bash
+        run: |
+          adapters/jvm/scripts/install-scip-java.sh "${{ runner.temp }}/bin"
+          echo "${{ runner.temp }}/bin" >> "$GITHUB_PATH"
+      - name: Build Weave and adapter
+        shell: bash
+        run: |
+          go build -o "${{ runner.temp }}/weave" ./cmd/weave
+          go build -o "${{ runner.temp }}/weave-jvm" ./adapters/jvm/cmd/weave-jvm
+      - name: Real Java and Kotlin semantic indexing smoke test
+        shell: bash
+        run: python adapters/jvm/tests/e2e.py "${{ runner.temp }}/weave" "${{ runner.temp }}/weave-jvm"

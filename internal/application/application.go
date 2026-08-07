@@ -699,6 +699,8 @@ func inspectAdaptersWithError(ctx context.Context, doctor bool, runner adapter.R
 		{name: "weave-python", kind: "native", configured: os.Getenv("WEAVE_PYTHON_ADAPTER"), expectedProvider: "weave-python"},
 		{name: "weave-rust", kind: "native", configured: os.Getenv("WEAVE_RUST_ADAPTER"), expectedProvider: "weave-rust"},
 		{name: "weave-cpp", kind: "native", configured: os.Getenv("WEAVE_CPP_ADAPTER"), expectedProvider: "scip:scip-clang"},
+		{name: "weave-typescript", kind: "native", configured: os.Getenv("WEAVE_TYPESCRIPT_ADAPTER"), expectedProvider: "scip:scip-typescript"},
+		{name: "weave-jvm", kind: "native", configured: os.Getenv("WEAVE_JVM_ADAPTER"), expectedProvider: "scip:scip-java"},
 		{name: "scip-dotnet", kind: "scip-producer", configured: os.Getenv("WEAVE_SCIP_DOTNET")},
 	}
 	configured := append([]adapter.Registration(nil), registrations...)
@@ -882,7 +884,11 @@ func resolveExecutable(value string) (string, error) {
 }
 
 func adapterEnvironment() []string {
-	allowed := []string{"PATH", "HOME", "USERPROFILE", "CARGO_HOME", "RUSTUP_HOME", "RUSTUP_TOOLCHAIN", "WEAVE_RUST_ANALYZER", "WEAVE_SCIP_CLANG", "TMPDIR", "TMP", "TEMP", "SystemRoot", "WINDIR"}
+	allowed := []string{
+		"PATH", "HOME", "USERPROFILE", "JAVA_HOME", "CARGO_HOME", "RUSTUP_HOME", "RUSTUP_TOOLCHAIN",
+		"WEAVE_RUST_ANALYZER", "WEAVE_SCIP_CLANG", "WEAVE_SCIP_TYPESCRIPT", "WEAVE_SCIP_JAVA", "WEAVE_SCIP_JAVA_VERSION",
+		"TMPDIR", "TMP", "TEMP", "SystemRoot", "WINDIR",
+	}
 	var environment []string
 	for _, name := range allowed {
 		if value, ok := os.LookupEnv(name); ok {

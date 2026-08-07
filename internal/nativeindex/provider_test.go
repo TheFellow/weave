@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 
@@ -236,6 +237,52 @@ func TestBuiltInRustAndCppAdaptersUseProjectActivationAndSemanticInputs(t *testi
 		if !isSemanticInputFor(path, CppInputs, cpp.Inputs) {
 			t.Fatalf("C++ semantic input %q was not selected", path)
 		}
+	}
+}
+
+func TestBuiltInTypeScriptAdapterUsesRootProjectAndConservativeInputs(t *testing.T) {
+	t.Setenv("WEAVE_TYPESCRIPT_ADAPTER", os.Args[0])
+	composite := Default(t.TempDir()).(freshness.CompositeProvider)
+	var typescript Provider
+	for _, child := range composite.Providers {
+		provider, ok := child.(Provider)
+		if ok && provider.Name == "scip:scip-typescript" {
+			typescript = provider
+			break
+		}
+	}
+	if typescript.Path != os.Args[0] || typescript.Permissions != (adapter.Permissions{}) || !typescript.ProbeProviderVersion {
+		t.Fatalf("TypeScript provider = %#v", typescript)
+	}
+	if typescript.active([]string{"src/main.ts", "packages/web/tsconfig.json"}) ||
+		!typescript.active([]string{"tsconfig.json", "src/main.ts"}) ||
+		!typescript.active([]string{"jsconfig.json", "src/main.js"}) {
+		t.Fatal("TypeScript automatic activation did not require a root project configuration")
+	}
+	for _, path := range []string{"src/main.ts", "src/view.tsx", "package.json", "pnpm-lock.yaml", "assets/schema.graphql"} {
+		if !isSemanticInputFor(path, TypeScriptInputs, typescript.Inputs) {
+			t.Fatalf("TypeScript semantic input %q was not conservatively selected", path)
+		}
+	}
+}
+
+func TestTypeScriptAutomaticActivationDoesNotGuessNestedProject(t *testing.T) {
+	root := t.TempDir()
+	git(t, root, "init", "-q")
+	if err := os.MkdirAll(filepath.Join(root, "packages", "web"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, root, "packages/web/tsconfig.json", `{}`)
+	writeFile(t, root, "packages/web/main.ts", "export const value = 1")
+	activation := adapter.Inputs{Filenames: []string{"tsconfig.json", "jsconfig.json"}}
+	paths, _, err := semanticInputsForActivation(context.Background(), root, TypeScriptInputs, adapter.Inputs{}, activation)
+	if err != nil || len(paths) != 0 {
+		t.Fatalf("nested-only TypeScript project activated automatically: %q, %v", paths, err)
+	}
+	writeFile(t, root, "tsconfig.json", `{}`)
+	paths, _, err = semanticInputsForActivation(context.Background(), root, TypeScriptInputs, adapter.Inputs{}, activation)
+	if err != nil || !slices.Contains(paths, "packages/web/main.ts") || !slices.Contains(paths, "tsconfig.json") {
+		t.Fatalf("root TypeScript project inputs = %q, %v", paths, err)
 	}
 }
 

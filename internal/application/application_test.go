@@ -104,6 +104,41 @@ printf '%s\n' '{"protocols":["weave.adapter/v0"],"provider":{"name":"scip:scip-c
 	t.Fatal("C++ adapter status is absent")
 }
 
+func TestTypeScriptAndJVMDoctorUseSCIPProviderIdentities(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fixture uses POSIX executable scripts")
+	}
+	tests := []struct {
+		name, environment, executable, provider, version, languages string
+	}{
+		{"TypeScript", "WEAVE_TYPESCRIPT_ADAPTER", "weave-typescript", "scip:scip-typescript", "0.4.0", `"javascript","typescript"`},
+		{"JVM", "WEAVE_JVM_ADAPTER", "weave-jvm", "scip:scip-java", "0.13.1", `"java","kotlin"`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), test.executable)
+			program := `#!/bin/sh
+printf '%s\n' '{"protocols":["weave.adapter/v0"],"provider":{"name":"` + test.provider + `","version":"` + test.version + `"},"languages":[` + test.languages + `],"operations":["index"],"refresh_modes":["full"],"fact_encoding":"weave.facts/v0","position_encodings":["utf8-byte"],"requires":{"executables":[],"may_run_build_tool":true}}'
+`
+			if err := os.WriteFile(path, []byte(program), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv(test.environment, path)
+			statuses := inspectAdapters(context.Background(), true, adapter.Runner{})
+			for _, status := range statuses {
+				if status.Name != test.executable {
+					continue
+				}
+				if !status.Available || !status.Checked || !status.Compatible || status.Provider != test.provider || status.Version != test.version {
+					t.Fatalf("%s adapter status = %#v", test.name, status)
+				}
+				return
+			}
+			t.Fatalf("%s adapter status is absent", test.name)
+		})
+	}
+}
+
 func TestCIFatalIssueClassification(t *testing.T) {
 	warnings := []storage.Issue{{Severity: storage.IssueWarning, Kind: "unresolved-occurrence", Record: "external"}}
 	if hasFatalIssues(warnings) {

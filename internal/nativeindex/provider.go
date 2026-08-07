@@ -46,6 +46,11 @@ func Default(directory string, registrations ...adapter.Registration) freshness.
 			Profile: CppInputs, Activation: adapter.Inputs{Filenames: []string{"compile_commands.json"}},
 			Permissions: adapter.Permissions{BuildTool: true}, ProbeProviderVersion: true, ConfigFingerprint: "builtin/cpp-inputs/v1",
 		},
+		{
+			Name: "scip:scip-typescript", Path: configuredPath("WEAVE_TYPESCRIPT_ADAPTER", "weave-typescript"), Directory: directory,
+			Profile: TypeScriptInputs, Activation: adapter.Inputs{Filenames: []string{"tsconfig.json", "jsconfig.json"}},
+			ProbeProviderVersion: true, ConfigFingerprint: "builtin/typescript-inputs/v1",
+		},
 	}
 	configured := append([]adapter.Registration(nil), registrations...)
 	slices.SortFunc(configured, func(a, b adapter.Registration) int { return strings.Compare(a.Name, b.Name) })
@@ -85,10 +90,11 @@ func configuredPath(environment, fallback string) string {
 type InputProfile string
 
 const (
-	DotNetInputs InputProfile = "dotnet"
-	PythonInputs InputProfile = "python"
-	RustInputs   InputProfile = "rust"
-	CppInputs    InputProfile = "cpp"
+	DotNetInputs     InputProfile = "dotnet"
+	PythonInputs     InputProfile = "python"
+	RustInputs       InputProfile = "rust"
+	CppInputs        InputProfile = "cpp"
+	TypeScriptInputs InputProfile = "typescript"
 )
 
 // Provider invokes one compiler-native full-refresh adapter when its inputs change.
@@ -223,6 +229,12 @@ func (provider Provider) active(paths []string) bool {
 	if !hasConfiguredInputs(provider.Activation) {
 		return true
 	}
+	// The built-in TypeScript adapter deliberately indexes one root project.
+	// Nested project selection remains an explicit adapter argument so an
+	// automatic refresh never guesses among monorepo configurations.
+	if provider.profile() == TypeScriptInputs {
+		return slices.Contains(paths, "tsconfig.json") || slices.Contains(paths, "jsconfig.json")
+	}
 	return slices.ContainsFunc(paths, func(path string) bool {
 		return isSemanticInputFor(path, provider.Profile, provider.Activation)
 	})
@@ -269,10 +281,16 @@ func semanticInputsForActivation(ctx context.Context, root string, profile Input
 	}
 	slices.Sort(paths)
 	paths = slices.Compact(paths)
-	if hasConfiguredInputs(activation) && !slices.ContainsFunc(paths, func(path string) bool {
-		return isSemanticInputFor(path, profile, activation)
-	}) {
-		return nil, "", nil
+	if hasConfiguredInputs(activation) {
+		active := slices.ContainsFunc(paths, func(path string) bool {
+			return isSemanticInputFor(path, profile, activation)
+		})
+		if profile == TypeScriptInputs {
+			active = slices.Contains(paths, "tsconfig.json") || slices.Contains(paths, "jsconfig.json")
+		}
+		if !active {
+			return nil, "", nil
+		}
 	}
 	hash := sha256.New()
 	var total int64
@@ -285,7 +303,7 @@ func semanticInputsForActivation(ctx context.Context, root string, profile Input
 			}
 			return nil, "", fmt.Errorf("inspect %s input %q: %w", profile, path, err)
 		}
-		if (profile == PythonInputs || profile == RustInputs || profile == CppInputs || hasConfiguredInputs(inputs)) && info.Mode()&os.ModeSymlink != 0 {
+		if (profile == PythonInputs || profile == RustInputs || profile == CppInputs || profile == TypeScriptInputs || hasConfiguredInputs(inputs)) && info.Mode()&os.ModeSymlink != 0 {
 			return nil, "", fmt.Errorf("%s source is a symlink: %s", profile, path)
 		}
 		if !info.Mode().IsRegular() {
@@ -338,7 +356,7 @@ func isSemanticInputFor(path string, profile InputProfile, inputs adapter.Inputs
 	// tracked files with arbitrary extensions. Until an adapter returns an exact
 	// dependency inventory, hash every Git-visible file once its project root
 	// activates the provider.
-	if (profile == RustInputs || profile == CppInputs) && !hasConfiguredInputs(inputs) {
+	if (profile == RustInputs || profile == CppInputs || profile == TypeScriptInputs) && !hasConfiguredInputs(inputs) {
 		return true
 	}
 	if hasConfiguredInputs(inputs) {
