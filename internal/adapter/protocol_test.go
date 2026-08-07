@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -86,6 +87,23 @@ func TestDescribeRejectsUnsupportedCapabilities(t *testing.T) {
 	_, _, err := (Runner{}).Describe(context.Background(), helperExecutable("unsupported"))
 	if err == nil || !strings.Contains(err.Error(), "does not support") {
 		t.Fatalf("Describe() error = %v", err)
+	}
+}
+
+func TestDotnetCapabilityFixtureMatchesProtocol(t *testing.T) {
+	t.Parallel()
+	encoded, err := os.ReadFile("testdata/weave-dotnet.describe.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var capabilities Capabilities
+	if err := decodeStrict(encoded, &capabilities); err != nil {
+		t.Fatal(err)
+	}
+	if capabilities.Provider != (Provider{Name: "weave-dotnet", Version: "0.1.0"}) ||
+		!slices.Equal(capabilities.Languages, []string{"csharp", "fsharp"}) ||
+		!capabilities.Requires.MayRunBuildTool || !slices.Contains(capabilities.Requires.Executables, "dotnet") {
+		t.Fatalf("capabilities = %#v", capabilities)
 	}
 }
 

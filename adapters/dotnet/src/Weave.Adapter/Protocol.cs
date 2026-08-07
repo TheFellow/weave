@@ -97,7 +97,7 @@ public sealed class ProtocolWriter(TextWriter output, IndexRequest request)
             kind,
             payload,
         }, Json);
-        var bytes = System.Text.Encoding.UTF8.GetByteCount(line) + 1;
+        var bytes = System.Text.Encoding.UTF8.GetByteCount(line) + System.Text.Encoding.UTF8.GetByteCount(output.NewLine);
         if (bytes > request.Limits.MaxFrameBytes) throw new InvalidOperationException($"{kind} frame exceeds negotiated limit");
         totalBytes += bytes;
         if (totalBytes > request.Limits.MaxTotalBytes) throw new InvalidOperationException("output exceeds negotiated byte limit");

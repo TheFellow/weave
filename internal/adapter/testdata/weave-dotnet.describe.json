@@ -1,0 +1,10 @@
+{
+  "protocols": ["weave.adapter/v0"],
+  "provider": {"name": "weave-dotnet", "version": "0.1.0"},
+  "languages": ["csharp", "fsharp"],
+  "operations": ["index"],
+  "refresh_modes": ["full"],
+  "fact_encoding": "weave.facts/v0",
+  "position_encodings": ["utf8-byte"],
+  "requires": {"executables": ["dotnet"], "may_run_build_tool": true}
+}

@@ -36,9 +36,10 @@ side effect.
    imports, and project dependencies are exact compiler evidence. Unsupported
    semantics are omitted with diagnostics rather than inferred.
 7. Input fingerprints hash canonical project identity, options, ordered source
-   content, references, and tool versions. Surface fingerprints initially hash
-   sorted public/protected symbol signatures; they are a conservative adapter
-   ABI summary, not a compiler binary-compatibility guarantee.
+   content, references, and tool versions. C# surface fingerprints hash sorted
+   public/protected symbol signatures. The initial F# slice conservatively hashes
+   compiler-resolved declarations until accessibility fixtures narrow it. These
+   are adapter invalidation summaries, not binary-compatibility guarantees.
 8. Output is sorted and framed incrementally under request limits. A failed or
    incomplete project fails the run so the Go core retains the previous atomic
    inventory.
@@ -61,4 +62,3 @@ built genuine C#/F# fixture projects and deterministic replay succeeds.
 - a formal stable third-party adapter schema;
 - automatic tool installation or restore;
 - binary-compatible ABI calculation for every .NET language feature.
-

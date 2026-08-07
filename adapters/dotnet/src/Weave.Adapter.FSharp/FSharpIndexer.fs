@@ -24,16 +24,29 @@ type FSharpIndexer private () =
             let root = Path.GetFullPath repositoryRoot
             let comparison = if OperatingSystem.IsWindows() then StringComparison.OrdinalIgnoreCase else StringComparison.Ordinal
             let rootPrefix = root.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + string Path.DirectorySeparatorChar
+            let resolvedRoot =
+                match DirectoryInfo(root).ResolveLinkTarget(true) with
+                | null -> root
+                | target -> Path.GetFullPath target.FullName
+            let resolvedRootPrefix = resolvedRoot.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + string Path.DirectorySeparatorChar
 
             let relativePath path =
                 let full = Path.GetFullPath path
                 if not (full.StartsWith(rootPrefix, comparison)) then
                     invalidArg "path" ("source path escapes repository root: " + path)
+                let info = FileInfo full
+                if not (isNull info.LinkTarget) then
+                    match info.ResolveLinkTarget(true) with
+                    | null -> invalidArg "path" ("broken source symlink: " + path)
+                    | target ->
+                        let resolved = Path.GetFullPath target.FullName
+                        if not (resolved.Equals(resolvedRoot, comparison)) && not (resolved.StartsWith(resolvedRootPrefix, comparison)) then
+                            invalidArg "path" ("source symlink escapes repository root: " + path)
                 Path.GetRelativePath(root, full).Replace(Path.DirectorySeparatorChar, '/')
 
             let diagnostics = List<AdapterDiagnostic>()
             use log = new StringWriter()
-            let manager = new AnalyzerManager(projectPath, AnalyzerManagerOptions(LogWriter = log))
+            let manager = new AnalyzerManager(AnalyzerManagerOptions(LogWriter = log))
             if not (String.IsNullOrWhiteSpace variant) then manager.SetGlobalProperty("Configuration", variant)
             let analyzer = manager.GetProject(projectPath)
             let results = analyzer.Build() |> Seq.sortBy (fun r -> r.TargetFramework) |> Seq.toArray
@@ -62,12 +75,16 @@ type FSharpIndexer private () =
                 let documents = Dictionary<string, Document * string>(if OperatingSystem.IsWindows() then StringComparer.OrdinalIgnoreCase else StringComparer.Ordinal)
                 for sourceFile in options.SourceFiles do
                     let relative = relativePath sourceFile
-                    let text = File.ReadAllText sourceFile
-                    let document = Document(
-                        Id = "dotnet:document:" + Identity.Hash(unitId, relative),
-                        UnitId = unitId, Path = relative, Language = "fsharp", ContentHash = Identity.Hash text)
-                    documents.[Path.GetFullPath sourceFile] <- (document, text)
-                    facts.Documents.Add document
+                    let pathParts = relative.Split('/')
+                    if pathParts |> Array.exists (fun part -> part = "bin" || part = "obj" || part = ".git") then
+                        diagnostics.Add(AdapterDiagnostic("info", "generated/build-output document omitted: " + relative, unitId))
+                    else
+                        let text = File.ReadAllText sourceFile
+                        let document = Document(
+                            Id = "dotnet:document:" + Identity.Hash(unitId, relative),
+                            UnitId = unitId, Path = relative, Language = "fsharp", ContentHash = Identity.Hash text)
+                        documents.[Path.GetFullPath sourceFile] <- (document, text)
+                        facts.Documents.Add document
 
                 let rangeOf (range: range) =
                     let file = Path.GetFullPath range.FileName
@@ -110,6 +127,7 @@ type FSharpIndexer private () =
                     "dotnet:fsharp:symbol:" + Identity.Hash(repositoryIdentity, projectRelative, actualVariant, stableName symbol, localDiscriminator)
 
                 let seenSymbols = HashSet<string>(StringComparer.Ordinal)
+                let definedSymbols = HashSet<string>(StringComparer.Ordinal)
                 let seenOccurrences = HashSet<string>(StringComparer.Ordinal)
                 let seenEdges = HashSet<string>(StringComparer.Ordinal)
                 let uses = checkedProject.GetAllUsesOfAllSymbols(cancellationToken = cancellationToken) |> Array.sortBy (fun use -> use.Range.FileName, use.Range.StartLine, use.Range.StartColumn)
@@ -120,6 +138,7 @@ type FSharpIndexer private () =
                     | true, _ ->
                         let symbol = symbolUse.Symbol
                         let id = symbolId symbol
+                        if symbolUse.IsFromDefinition then definedSymbols.Add id |> ignore
                         let document, sourceRange = rangeOf symbolUse.Range
                         if seenSymbols.Add id then
                             let definitionDocument, definitionRange =
@@ -170,7 +189,7 @@ type FSharpIndexer private () =
                     String.Join("\n", facts.Documents |> Seq.map (fun d -> d.Path + "\000" + d.ContentHash)))
                 unit.SurfaceFingerprint <- Identity.Hash(
                     "weave-dotnet-fsharp-surface/v1",
-                    String.Join("\n", facts.Symbols |> Seq.filter (fun s -> s.Kind <> "project") |> Seq.map (fun s -> s.StableName) |> Seq.sort))
+                    String.Join("\n", facts.Symbols |> Seq.filter (fun symbol -> definedSymbols.Contains symbol.Id) |> Seq.map (fun symbol -> symbol.StableName) |> Seq.sort))
                 unit.InventoryDigest <- Identity.Hash(
                     "weave-dotnet-inventory/v1",
                     String.Join("\n", facts.Symbols |> Seq.map (fun value -> value.Id)),

@@ -107,6 +107,11 @@ public sealed class CSharpIndexer(RepositoryPaths paths, IndexRequest request)
         foreach (var document in project.Documents.OrderBy(d => d.FilePath, StringComparer.Ordinal))
         {
             if (document.FilePath is null) continue;
+            if (IsBuildOutput(document.FilePath))
+            {
+                diagnostics.Add(new("info", "generated/build-output document omitted: " + document.FilePath, unitId));
+                continue;
+            }
             var relative = paths.RelativeFile(document.FilePath);
             var text = await document.GetTextAsync(cancellationToken);
             var tree = await document.GetSyntaxTreeAsync(cancellationToken);
