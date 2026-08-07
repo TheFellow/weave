@@ -1,0 +1,59 @@
+name: Universal Ctags adapter
+
+on:
+  push:
+    paths:
+      - "adapters/ctags/**"
+      - "internal/adapter/**"
+      - "internal/graph/**"
+      - ".github/workflows/ctags-adapter.yml"
+  pull_request:
+    paths:
+      - "adapters/ctags/**"
+      - "internal/adapter/**"
+      - "internal/graph/**"
+      - ".github/workflows/ctags-adapter.yml"
+  workflow_dispatch:
+    inputs:
+      real_producer:
+        description: Install Universal Ctags and run the opt-in smoke test
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  contract-without-ctags:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Adapter and host contract tests
+        run: go test ./adapters/ctags/... ./internal/adapter ./internal/graph
+      - name: Build adapter
+        run: go build ./adapters/ctags/cmd/weave-ctags
+
+  real-producer:
+    if: github.event_name == 'workflow_dispatch' && inputs.real_producer
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Install Universal Ctags
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes universal-ctags
+      - name: Real producer smoke test
+        run: WEAVE_REAL_CTAGS="$(command -v ctags)" go test ./adapters/ctags/... -run TestRealUniversalCtagsSmoke -count=1

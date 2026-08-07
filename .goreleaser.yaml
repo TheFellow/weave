@@ -71,6 +71,24 @@ builds:
       - -trimpath
     ldflags:
       - -s -w
+  # This is the protocol wrapper only. Universal Ctags is a separately
+  # installed GPL-2.0 producer and is intentionally not bundled or linked.
+  - id: weave-ctags
+    main: ./adapters/ctags/cmd/weave-ctags
+    binary: weave-ctags
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
 
 archives:
   - id: weave
@@ -85,7 +103,7 @@ archives:
       - README.md
       - LICENSE
   - id: weave-adapters
-    ids: [weave-cpp, weave-typescript, weave-jvm]
+    ids: [weave-cpp, weave-typescript, weave-jvm, weave-ctags]
     formats: [tar.gz]
     format_overrides:
       - goos: windows
@@ -98,6 +116,7 @@ archives:
       - adapters/cpp/README.md
       - adapters/typescript/README.md
       - adapters/jvm/README.md
+      - adapters/ctags/README.md
 
 checksum:
   name_template: checksums.txt
