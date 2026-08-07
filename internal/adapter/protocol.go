@@ -237,10 +237,15 @@ func runIndex(ctx context.Context, executable Executable, request IndexRequest, 
 	if stderrErr != nil {
 		return Result{}, stderrText, fmt.Errorf("read stderr: %w", stderrErr)
 	}
-	if waitErr != nil && parseErr != nil && strings.Contains(parseErr.Error(), "before run.end") && !errors.Is(waitErr, context.Canceled) {
-		return Result{}, stderrText, waitErr
-	}
 	if parseErr != nil {
+		// A parser-triggered cancellation can race with an already-exited process.
+		// Windows reports TerminateProcess access denied in that case rather than
+		// context.Canceled; retain the actual protocol error. Preserve a genuine
+		// nonzero child exit when its incomplete stream contains no better error.
+		var exitErr *exec.ExitError
+		if waitErr != nil && strings.Contains(parseErr.Error(), "before run.") && errors.As(waitErr, &exitErr) && exitErr.ExitCode() >= 0 {
+			return Result{}, stderrText, waitErr
+		}
 		return Result{}, stderrText, parseErr
 	}
 	if waitErr != nil {
