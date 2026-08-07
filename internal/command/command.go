@@ -92,7 +92,7 @@ func group(name, usage string, children ...*cli.Command) *cli.Command {
 }
 
 func lookup(app application.Service, streams Streams, name, usage string) *cli.Command {
-	return &cli.Command{Name: name, Usage: usage, Flags: []cli.Flag{jsonFlag(), limitFlag()}, Action: invoke(app, streams, name, 1, 1)}
+	return &cli.Command{Name: name, Usage: usage, Flags: append([]cli.Flag{jsonFlag(), limitFlag()}, federationFlags()...), Action: invoke(app, streams, name, 1, 1)}
 }
 
 func traversal(app application.Service, streams Streams, name, usage string, arguments int) *cli.Command {
@@ -104,7 +104,34 @@ func traversal(app application.Service, streams Streams, name, usage string, arg
 			return nil
 		}},
 		&cli.StringSliceFlag{Name: "kind", Usage: "edge kind to traverse (repeatable)"},
+		&cli.StringFlag{Name: "scope", Value: "local", Usage: "query scope: local or catalog", Validator: validateScope},
+		&cli.StringSliceFlag{Name: "repo", Usage: "catalog repository identity, key, or root (repeatable)"},
+		&cli.StringFlag{Name: "catalog", Usage: "absolute catalog database path"},
+		&cli.IntFlag{Name: "max-repos", Value: 32, Usage: "maximum catalog fan-out", Validator: validateMaxRepos},
 	}, Action: invoke(app, streams, name, arguments, arguments)}
+}
+
+func federationFlags() []cli.Flag {
+	return []cli.Flag{
+		&cli.StringFlag{Name: "scope", Value: "local", Usage: "query scope: local or catalog", Validator: validateScope},
+		&cli.StringSliceFlag{Name: "repo", Usage: "catalog repository identity, key, or root (repeatable)"},
+		&cli.StringFlag{Name: "catalog", Usage: "absolute catalog database path"},
+		&cli.IntFlag{Name: "max-repos", Value: 32, Usage: "maximum catalog fan-out", Validator: validateMaxRepos},
+	}
+}
+
+func validateScope(value string) error {
+	if value != "local" && value != "catalog" {
+		return fmt.Errorf("must be local or catalog")
+	}
+	return nil
+}
+
+func validateMaxRepos(value int) error {
+	if value < 1 || value > 256 {
+		return fmt.Errorf("must be between 1 and 256")
+	}
+	return nil
 }
 
 func maintenance(app application.Service, streams Streams, name, usage string, jsonOutput bool) *cli.Command {
@@ -214,12 +241,20 @@ func invoke(app application.Service, streams Streams, path string, minArgs, maxA
 		response, err := app.Execute(ctx, application.Invocation{
 			Command: path, Arguments: append([]string(nil), cmd.Args().Slice()...), JSON: cmd.Bool("json"),
 			Limit: cmd.Int("limit"), MaxDepth: cmd.Int("max-depth"), Kinds: kinds,
+			Scope: queryScope(cmd), Repositories: cmd.StringSlice("repo"), CatalogPath: cmd.String("catalog"), MaxRepos: cmd.Int("max-repos"),
 		})
 		if err != nil {
 			return err
 		}
 		return renderInvocation(streams, response, cmd.Bool("json"))
 	}
+}
+
+func queryScope(cmd *cli.Command) string {
+	if len(cmd.StringSlice("repo")) > 0 {
+		return "catalog"
+	}
+	return cmd.String("scope")
 }
 
 func renderInvocation(streams Streams, response application.Response, jsonOutput bool) error {

@@ -216,6 +216,10 @@ func (db *DB) List(ctx context.Context) ([]Entry, error) {
 			} else {
 				entry.Diagnostic = "registered repository identity or worktree changed"
 			}
+		} else if state, inspectErr := repo.Inspect(ctx); inspectErr != nil {
+			entry.Stale, entry.Diagnostic = true, inspectErr.Error()
+		} else if state.Commit != entry.Commit || state.Tree != entry.Tree || state.Branch != entry.Branch || state.Detached != entry.Detached || (len(state.Changes) != 0) != entry.Dirty {
+			entry.Stale, entry.Diagnostic = true, "registered Git state changed; run weave repos sync after refreshing the index"
 		}
 		entries = append(entries, entry)
 	}

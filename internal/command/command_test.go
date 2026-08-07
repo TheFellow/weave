@@ -190,6 +190,22 @@ func TestExplicitExternalIndexFlagsReachApplication(t *testing.T) {
 	}
 }
 
+func TestFederationFlagsReachApplication(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	app := &recordingApplication{}
+	root := command.New(app, command.Streams{Stdin: strings.NewReader(""), Stdout: &stdout, Stderr: &stderr})
+	if err := root.Run(context.Background(), []string{"weave", "callers", "global", "--scope", "catalog", "--repo", "github.com/acme/a", "--catalog", "/tmp/weave-catalog.db", "--max-repos", "4"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(app.invocations) != 1 {
+		t.Fatalf("invocations = %#v", app.invocations)
+	}
+	got := app.invocations[0]
+	if got.Scope != "catalog" || !reflect.DeepEqual(got.Repositories, []string{"github.com/acme/a"}) || got.CatalogPath != "/tmp/weave-catalog.db" || got.MaxRepos != 4 {
+		t.Fatalf("invocation = %#v", got)
+	}
+}
+
 func TestAdapterDoctorReportsMissingToolsWithoutExecutingThem(t *testing.T) {
 	t.Setenv("PATH", "")
 	t.Setenv("WEAVE_DOTNET_ADAPTER", "")

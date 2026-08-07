@@ -15,6 +15,7 @@ import (
 
 	"github.com/TheFellow/weave/internal/adapter"
 	"github.com/TheFellow/weave/internal/catalog"
+	"github.com/TheFellow/weave/internal/federation"
 	"github.com/TheFellow/weave/internal/freshness"
 	"github.com/TheFellow/weave/internal/graph"
 	"github.com/TheFellow/weave/internal/query"
@@ -43,25 +44,27 @@ type Invocation struct {
 	Repositories []string
 	Format       string
 	ConfigPath   string
+	MaxRepos     int
 }
 
 // Response is the stable application result consumed by text and JSON renderers.
 type Response struct {
-	Schema       string             `json:"schema"`
-	Command      string             `json:"command"`
-	Query        []string           `json:"query,omitempty"`
-	Truncated    bool               `json:"truncated"`
-	Symbols      []graph.Symbol     `json:"symbols,omitempty"`
-	Occurrences  []graph.Occurrence `json:"occurrences,omitempty"`
-	Edges        []graph.Edge       `json:"edges,omitempty"`
-	Nodes        []string           `json:"nodes,omitempty"`
-	Export       *graph.Snapshot    `json:"export,omitempty"`
-	Issues       []storage.Issue    `json:"issues,omitempty"`
-	Freshness    *freshness.Status  `json:"freshness,omitempty"`
-	Diagnostics  []string           `json:"diagnostics,omitempty"`
-	Adapters     []AdapterStatus    `json:"adapters,omitempty"`
-	Repositories []catalog.Entry    `json:"repositories,omitempty"`
-	Failed       bool               `json:"failed,omitempty"`
+	Schema       string              `json:"schema"`
+	Command      string              `json:"command"`
+	Query        []string            `json:"query,omitempty"`
+	Truncated    bool                `json:"truncated"`
+	Symbols      []graph.Symbol      `json:"symbols,omitempty"`
+	Occurrences  []graph.Occurrence  `json:"occurrences,omitempty"`
+	Edges        []graph.Edge        `json:"edges,omitempty"`
+	Nodes        []string            `json:"nodes,omitempty"`
+	Export       *graph.Snapshot     `json:"export,omitempty"`
+	Issues       []storage.Issue     `json:"issues,omitempty"`
+	Freshness    *freshness.Status   `json:"freshness,omitempty"`
+	Diagnostics  []string            `json:"diagnostics,omitempty"`
+	Adapters     []AdapterStatus     `json:"adapters,omitempty"`
+	Repositories []catalog.Entry     `json:"repositories,omitempty"`
+	Failed       bool                `json:"failed,omitempty"`
+	Sources      []federation.Source `json:"sources,omitempty"`
 }
 
 // AdapterStatus is a side-effect-free executable discovery result. Discovery
@@ -102,6 +105,9 @@ func (app Local) Execute(ctx context.Context, invocation Invocation) (Response, 
 	response := Response{Schema: QuerySchema, Command: invocation.Command, Query: append([]string(nil), invocation.Arguments...)}
 	if strings.HasPrefix(invocation.Command, "repos ") {
 		return app.repositories(ctx, response, invocation)
+	}
+	if invocation.Scope == "catalog" && requiresDatabase(invocation.Command) {
+		return app.federated(ctx, response, invocation)
 	}
 	if invocation.Command == "adapters list" || invocation.Command == "adapters doctor" {
 		response.Adapters = inspectAdapters(invocation.Command == "adapters doctor")
@@ -212,6 +218,79 @@ func (app Local) Execute(ctx context.Context, invocation Invocation) (Response, 
 	if err != nil {
 		return Response{}, fmt.Errorf("%s: %w", invocation.Command, err)
 	}
+	return response, nil
+}
+
+func (app Local) federated(ctx context.Context, response Response, invocation Invocation) (Response, error) {
+	path, err := catalog.DefaultPath(firstNonempty(invocation.CatalogPath, app.CatalogPath))
+	if err != nil {
+		return Response{}, err
+	}
+	maxRepos := invocation.MaxRepos
+	if maxRepos == 0 {
+		maxRepos = 32
+	}
+	store, err := federation.Open(ctx, path, invocation.Repositories, maxRepos)
+	if err != nil {
+		return Response{}, err
+	}
+	defer store.Close()
+	switch invocation.Command {
+	case "symbols":
+		response.Symbols, response.Truncated, err = store.FindSymbols(ctx, invocation.Arguments[0], invocation.Limit)
+	case "definition":
+		var values []graph.Symbol
+		values, response.Truncated, err = store.FindSymbols(ctx, invocation.Arguments[0], invocation.Limit)
+		for _, symbol := range values {
+			if symbol.DocumentID != "" {
+				response.Symbols = append(response.Symbols, symbol)
+			}
+		}
+	case "references":
+		var symbol graph.Symbol
+		if symbol, err = query.Resolve(ctx, store, invocation.Arguments[0]); err == nil {
+			response.Occurrences, response.Truncated, err = store.Occurrences(ctx, symbol.ID, []string{"reference"}, invocation.Limit)
+		}
+	case "callers", "callees":
+		var symbol graph.Symbol
+		if symbol, err = query.Resolve(ctx, store, invocation.Arguments[0]); err == nil {
+			if invocation.Command == "callers" {
+				response.Edges, response.Truncated, err = store.EdgesTo(ctx, symbol.ID, []graph.EdgeKind{graph.EdgeCalls}, invocation.Limit)
+			} else {
+				response.Edges, response.Truncated, err = store.EdgesFrom(ctx, symbol.ID, []graph.EdgeKind{graph.EdgeCalls}, invocation.Limit)
+			}
+		}
+	case "path":
+		var from, to graph.Symbol
+		if from, err = query.Resolve(ctx, store, invocation.Arguments[0]); err != nil {
+			break
+		}
+		if to, err = query.Resolve(ctx, store, invocation.Arguments[1]); err != nil {
+			break
+		}
+		var traversal query.Traversal
+		traversal, err = query.Path(ctx, store, from.ID, to.ID, invocation.Kinds, bounds(invocation))
+		response.Truncated, response.Edges, response.Nodes = traversal.Truncated, traversal.Edges, traversal.Nodes
+	case "impact":
+		var symbol graph.Symbol
+		if symbol, err = query.Resolve(ctx, store, invocation.Arguments[0]); err != nil {
+			break
+		}
+		kinds := invocation.Kinds
+		if len(kinds) == 0 {
+			kinds = []graph.EdgeKind{graph.EdgeCalls, graph.EdgeReferences, graph.EdgeDependsOn, graph.EdgeImplements, graph.EdgeImports, graph.EdgeTests}
+		}
+		var traversal query.Traversal
+		traversal, err = query.Impact(ctx, store, symbol.ID, kinds, bounds(invocation))
+		response.Truncated, response.Edges, response.Nodes = traversal.Truncated, traversal.Edges, traversal.Nodes
+	default:
+		return Response{}, fmt.Errorf("%s is not a federated query", invocation.Command)
+	}
+	if err != nil {
+		return Response{}, fmt.Errorf("%s: %w", invocation.Command, err)
+	}
+	response.Diagnostics = store.Diagnostics()
+	response.Sources = store.Sources()
 	return response, nil
 }
 
