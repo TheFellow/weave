@@ -279,6 +279,49 @@ intentionally outside Git freshness; select them explicitly with
 `--adapter-arg=--compdb=...`. Multiple build variants also require an explicit
 selection rather than silently merging incompatible semantics.
 
+## TypeScript and JavaScript adapter
+
+[`weave-typescript`](adapters/typescript/README.md) is a small Go protocol
+wrapper around the maintained `@sourcegraph/scip-typescript` producer; it does
+not parse either language. Install the locked producer closure with
+`sh adapters/typescript/scripts/install-scip-typescript.sh`, build the wrapper
+with `go install ./adapters/typescript/cmd/weave-typescript`, and select the
+printed producer using `WEAVE_SCIP_TYPESCRIPT`. A repository-root `tsconfig.json`
+or `jsconfig.json` then participates in automatic freshness.
+
+The automatic path never installs packages, invokes a package manager, infers a
+configuration, or runs generators. In particular, it does not use upstream's
+`--infer-tsconfig` because that option writes a generated configuration into
+the repository. Nested monorepo projects remain explicit selections. Once a
+root project activates the adapter, Weave conservatively fingerprints every
+Git-visible file because TypeScript configuration, project references, module
+resolution, JSON modules, and declaration inputs can extend beyond source-file
+suffixes.
+
+## JVM adapter
+
+[`weave-jvm`](adapters/jvm/README.md) delegates Java and Kotlin semantics to the
+maintained compiler-backed `scip-java` producer. The Go wrapper, protocol tests,
+`adapters list`, and `adapters doctor` do not need Java: `describe` reports a
+pinned producer contract without starting the producer. Actual indexing can use
+an externally installed `scip-java` launcher with JDK 17+ or a user-supplied
+shim around the official container.
+
+`scip-java` runs the repository's Gradle, Maven, or Bazel build and may restore
+dependencies, access the network, or execute plugins, annotation processors,
+and generators. Weave therefore does not grant it automatic query-time powers.
+Run it explicitly for a trusted checkout with all four grants:
+
+```console
+weave index --adapter weave-jvm \
+  --allow-build-tool --allow-restore --allow-network --allow-generators
+```
+
+An explicitly selected `WEAVE_ADAPTER_CONFIG` may opt `scip:scip-java` into
+query-driven freshness with a repository-appropriate conservative input set
+and the same permissions. Java and Kotlin are advertised; Scala is not, because
+the current upstream project no longer claims Scala support.
+
 ## Derived data and recovery
 
 Per-worktree state lives at the Git-resolved `git rev-parse --git-path weave`
@@ -317,9 +360,10 @@ The native Go provider covers typed declarations/references, imports,
 dependencies, interfaces/implementations, and direct static calls. C# covers
 compiler-resolved calls and project relationships; the initial F# slice omits
 call edges. Python covers compiler lexical bindings while deliberately omitting
-dynamic attribute/type resolution. Rust and C/C++ consume compiler-native SCIP,
-and explicitly registered third-party adapters can add another language without
-a Go-core change. Exact cross-language relationships use checked-in
+dynamic attribute/type resolution. Rust, C/C++, TypeScript/JavaScript, Java, and
+Kotlin consume compiler-native SCIP, and explicitly registered third-party
+adapters can add another language without a Go-core change. Exact cross-language
+relationships use checked-in
 declared/generated bridges. The workspace provider covers Git-visible topology
 and the initial CommonMark/GFM plus static Jekyll-shaped content slice.
 Finer-grained compiler refresh, build variants, fuzzy search, hooks/watch mode,

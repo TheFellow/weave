@@ -154,6 +154,15 @@ remain explicitly bounded, and work across the same local and catalog scopes as
 the underlying query. Rendering DOT to SVG, PNG, PDF, or an interactive viewer
 is the responsibility of Graphviz or another consumer.
 
+A later presentation-layer tool may turn the same bounded graph results into
+reproducible animations. It should reuse Graphviz/DOT coordinates where they
+improve legibility and drive 3Blue1Brown's open-source Manim engine from a
+versioned, deterministic scene/timeline description. Useful scenes include a
+dependency traversal unfolding, impact propagating through callers, a graph
+changing between commits, and contextual links weaving repositories together.
+Manim remains an optional consumer: indexing, querying, and DOT/JSON export do
+not acquire a Python, LaTeX, FFmpeg, or renderer dependency.
+
 ### Cross-platform without pretending runtimes do not exist
 
 The core is an idiomatic Go executable. Language adapters may use their native
