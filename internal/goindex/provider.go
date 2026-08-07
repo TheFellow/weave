@@ -98,6 +98,11 @@ func (provider Provider) Refresh(ctx context.Context, request freshness.Request)
 	// Interface satisfaction needs the single shared types universe and may
 	// connect units, so add it after each package's local symbols are known.
 	addImplementations(analyses)
+	// One exact implementation relationship can be discovered while analyzing
+	// several packages that reuse the same concrete/interface pair. Facts have
+	// globally stable IDs, so assign each duplicate to the first package in the
+	// canonical package order rather than making persistence order-dependent.
+	dedupeGlobalEdges(analyses)
 
 	result := freshness.Result{}
 	result.Units = make([]freshness.Unit, 0, len(analyses))

@@ -180,6 +180,16 @@ func TestProviderRejectsTargetNewerThanBinaryActionably(t *testing.T) {
 	}
 }
 
+func TestGlobalEdgesHaveDeterministicSingleUnitOwnership(t *testing.T) {
+	edge := graph.Edge{ID: "same-exact-edge"}
+	first := &packageAnalysis{facts: graph.UnitFacts{Unit: graph.Unit{ID: "a"}, Edges: []graph.Edge{edge}}}
+	second := &packageAnalysis{facts: graph.UnitFacts{Unit: graph.Unit{ID: "b"}, Edges: []graph.Edge{edge, {ID: "different-edge"}}}}
+	dedupeGlobalEdges([]*packageAnalysis{first, second})
+	if len(first.facts.Edges) != 1 || len(second.facts.Edges) != 1 || second.facts.Edges[0].ID != "different-edge" {
+		t.Fatalf("edge ownership = %#v, %#v", first.facts.Edges, second.facts.Edges)
+	}
+}
+
 func TestProviderLeavesNonGoRepositoryEmpty(t *testing.T) {
 	root := t.TempDir()
 	write(t, root, "README.md", "hello\n")

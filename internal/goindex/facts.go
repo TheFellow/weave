@@ -379,6 +379,21 @@ func dedupeEdges(values *[]graph.Edge) {
 	*values = result
 }
 
+func dedupeGlobalEdges(analyses []*packageAnalysis) {
+	seen := map[string]bool{}
+	for _, analysis := range analyses {
+		values := analysis.facts.Edges[:0]
+		for _, edge := range analysis.facts.Edges {
+			if seen[edge.ID] {
+				continue
+			}
+			seen[edge.ID] = true
+			values = append(values, edge)
+		}
+		analysis.facts.Edges = values
+	}
+}
+
 func (analysis *packageAnalysis) ownerAt(position token.Pos) string {
 	owner := analysis.packageID(analysis.pkg.PkgPath)
 	width := token.Pos(^uint(0) >> 1)
