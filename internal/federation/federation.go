@@ -32,6 +32,7 @@ type Store struct {
 	members     []member
 	diagnostics []string
 	sources     map[string]Source
+	partial     bool
 }
 
 // Refresher makes one catalog worktree current before its database is observed.
@@ -95,6 +96,7 @@ func open(ctx context.Context, catalogPath string, selectors []string, maxReposi
 	result := &Store{sources: map[string]Source{}}
 	for _, entry := range selected {
 		if entry.Missing {
+			result.partial = true
 			result.diagnostics = append(result.diagnostics, entry.Identity+" ["+entry.WorktreeID+"]: missing worktree")
 			continue
 		}
@@ -103,16 +105,19 @@ func open(ctx context.Context, catalogPath string, selectors []string, maxReposi
 		}
 		if requireFresh {
 			if refresh == nil {
+				result.partial = true
 				result.diagnostics = append(result.diagnostics, entry.Identity+" ["+entry.WorktreeID+"]: excluded: no freshness provider configured")
 				continue
 			}
 			if refreshErr := refresh(ctx, entry.Root); refreshErr != nil {
+				result.partial = true
 				result.diagnostics = append(result.diagnostics, entry.Identity+" ["+entry.WorktreeID+"]: excluded: refresh failed: "+refreshErr.Error())
 				continue
 			}
 		}
 		db, openErr := storage.Open(ctx, entry.DatabasePath, storage.Options{MustExist: true, Timeout: 250 * time.Millisecond})
 		if openErr != nil {
+			result.partial = true
 			result.diagnostics = append(result.diagnostics, entry.Identity+" ["+entry.WorktreeID+"]: index unavailable: "+openErr.Error())
 			continue
 		}
@@ -141,6 +146,11 @@ func (s *Store) Diagnostics() []string {
 	return slices.Compact(result)
 }
 
+// Partial reports whether at least one selected member was excluded or failed
+// while serving facts. Informational stale-catalog diagnostics alone do not make
+// a successfully refreshed result partial.
+func (s *Store) Partial() bool { return s.partial }
+
 func (s *Store) Sources() []Source {
 	result := make([]Source, 0, len(s.sources))
 	for _, source := range s.sources {
@@ -161,6 +171,27 @@ func (s *Store) Sources() []Source {
 	return result
 }
 
+// SourcesFor returns canonical repository provenance already observed for one
+// fact. Query composition layers call this only after fetching the fact.
+func (s *Store) SourcesFor(kind, id string) []Source {
+	var result []Source
+	for _, source := range s.sources {
+		if source.Kind == kind && source.FactID == id {
+			result = append(result, source)
+		}
+	}
+	slices.SortFunc(result, func(a, b Source) int {
+		if a.Repository != b.Repository {
+			return strings.Compare(a.Repository, b.Repository)
+		}
+		if a.WorktreeID != b.WorktreeID {
+			return strings.Compare(a.WorktreeID, b.WorktreeID)
+		}
+		return strings.Compare(a.Root, b.Root)
+	})
+	return result
+}
+
 func (s *Store) record(kind, id string, entry catalog.Entry) {
 	key := kind + "\x00" + id + "\x00" + entry.Key
 	s.sources[key] = Source{Kind: kind, FactID: id, Repository: entry.Identity, WorktreeID: entry.WorktreeID, Root: entry.Root}
@@ -172,6 +203,7 @@ func (s *Store) Symbol(ctx context.Context, id string) (graph.Symbol, bool, erro
 	for _, member := range s.members {
 		symbol, ok, err := member.db.Symbol(ctx, id)
 		if err != nil {
+			s.partial = true
 			s.diagnostics = append(s.diagnostics, member.entry.Identity+": "+err.Error())
 			continue
 		}
@@ -186,12 +218,36 @@ func (s *Store) Symbol(ctx context.Context, id string) (graph.Symbol, bool, erro
 	return result, found, nil
 }
 
+// Document returns the canonical materialized document while retaining every
+// repository that supplied the stable document ID as provenance.
+func (s *Store) Document(ctx context.Context, id string) (graph.Document, bool, error) {
+	var result graph.Document
+	found := false
+	for _, member := range s.members {
+		document, ok, err := member.db.Document(ctx, id)
+		if err != nil {
+			s.partial = true
+			s.diagnostics = append(s.diagnostics, member.entry.Identity+": "+err.Error())
+			continue
+		}
+		if !ok {
+			continue
+		}
+		s.record("document", document.ID, member.entry)
+		if !found || document.Path < result.Path || (document.Path == result.Path && document.UnitID < result.UnitID) {
+			result, found = document, true
+		}
+	}
+	return result, found, nil
+}
+
 func (s *Store) FindSymbols(ctx context.Context, value string, limit int) ([]graph.Symbol, bool, error) {
 	byID := map[string]graph.Symbol{}
 	truncated := false
 	for _, member := range s.members {
 		values, memberTruncated, err := member.db.FindSymbols(ctx, value, limit)
 		if err != nil {
+			s.partial = true
 			s.diagnostics = append(s.diagnostics, member.entry.Identity+": "+err.Error())
 			continue
 		}
@@ -238,6 +294,7 @@ func (s *Store) Occurrences(ctx context.Context, symbolID string, roles []string
 	for _, member := range s.members {
 		values, memberTruncated, err := member.db.Occurrences(ctx, symbolID, roles, limit)
 		if err != nil {
+			s.partial = true
 			s.diagnostics = append(s.diagnostics, member.entry.Identity+": "+err.Error())
 			continue
 		}
@@ -285,6 +342,7 @@ func (s *Store) edges(ctx context.Context, forward bool, id string, kinds []grap
 			values, memberTruncated, err = member.db.EdgesTo(ctx, id, kinds, limit)
 		}
 		if err != nil {
+			s.partial = true
 			s.diagnostics = append(s.diagnostics, member.entry.Identity+": "+err.Error())
 			continue
 		}

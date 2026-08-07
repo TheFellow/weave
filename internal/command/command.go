@@ -14,6 +14,7 @@ import (
 
 	"github.com/TheFellow/weave/internal/adapter"
 	"github.com/TheFellow/weave/internal/application"
+	"github.com/TheFellow/weave/internal/contextquery"
 	"github.com/TheFellow/weave/internal/dot"
 	"github.com/TheFellow/weave/internal/explorer"
 	"github.com/TheFellow/weave/internal/graph"
@@ -38,6 +39,7 @@ func New(app application.Service, streams Streams) *cli.Command {
 		indexCommand(app, streams),
 		lifecycle(app, streams, "status", "show index and freshness status"),
 		lookup(app, streams, "symbols", "find symbols"),
+		contextCommand(app, streams),
 		lookup(app, streams, "definition", "find symbol definitions"),
 		lookup(app, streams, "references", "find symbol references"),
 		lookup(app, streams, "callers", "find callers of a symbol"),
@@ -351,6 +353,45 @@ func lookup(app application.Service, streams Streams, name, usage string) *cli.C
 	return &cli.Command{Name: name, Usage: usage, Flags: append([]cli.Flag{jsonFlag(), limitFlag()}, federationFlags()...), Action: invoke(app, streams, name, 1, 1)}
 }
 
+func contextCommand(app application.Service, streams Streams) *cli.Command {
+	flags := []cli.Flag{
+		jsonFlag(),
+		&cli.IntFlag{Name: "limit", Value: 16, Usage: "maximum occurrences or relationships per section", Validator: func(value int) error {
+			if value < 1 || value > 512 {
+				return fmt.Errorf("must be between 1 and 512")
+			}
+			return nil
+		}},
+		&cli.IntFlag{Name: "context-lines", Value: 2, Usage: "source lines before and after each evidence range", Validator: func(value int) error {
+			if value < 0 || value > 100 {
+				return fmt.Errorf("must be between 0 and 100")
+			}
+			return nil
+		}},
+		&cli.IntFlag{Name: "max-source-bytes", Value: 64 << 10, Usage: "maximum source text bytes across all excerpts", Validator: func(value int) error {
+			if value < 1 || value > 4<<20 {
+				return fmt.Errorf("must be between 1 and 4194304")
+			}
+			return nil
+		}},
+	}
+	flags = append(flags, federationFlags()...)
+	return &cli.Command{Name: "context", Usage: "show bounded source-rich context for one exact entity", Flags: flags, Action: func(ctx context.Context, cmd *cli.Command) error {
+		if cmd.Args().Len() != 1 {
+			return cli.Exit("context expects one argument", 2)
+		}
+		response, err := app.Execute(ctx, application.Invocation{
+			Command: "context", Arguments: append([]string(nil), cmd.Args().Slice()...), JSON: cmd.Bool("json"),
+			Limit: cmd.Int("limit"), ContextLines: cmd.Int("context-lines"), MaxSourceBytes: cmd.Int("max-source-bytes"),
+			Scope: queryScope(cmd), Repositories: cmd.StringSlice("repo"), CatalogPath: cmd.String("catalog"), MaxRepos: cmd.Int("max-repos"),
+		})
+		if err != nil {
+			return err
+		}
+		return renderInvocation(streams, response, cmd.Bool("json"))
+	}}
+}
+
 func traversal(app application.Service, streams Streams, name, usage string, arguments int) *cli.Command {
 	return &cli.Command{Name: name, Usage: usage, Flags: []cli.Flag{
 		jsonFlag(), limitFlag(), &cli.IntFlag{Name: "max-depth", Value: 8, Usage: "maximum traversal depth", Validator: func(v int) error {
@@ -658,6 +699,9 @@ func render(writer io.Writer, response application.Response, jsonOutput bool) er
 	if strings.HasPrefix(response.Command, "workspace ") {
 		return renderWorkspace(writer, response)
 	}
+	if response.Command == "context" && response.Context != nil {
+		return renderContext(writer, *response.Context)
+	}
 	if strings.HasPrefix(response.Command, "links ") {
 		for _, link := range response.Links {
 			if _, err := fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%s\n", link.ID, link.Kind, link.From, link.To, strconv.Quote(link.Note)); err != nil {
@@ -760,6 +804,59 @@ func render(writer io.Writer, response application.Response, jsonOutput bool) er
 		}
 	}
 	if response.Truncated {
+		_, err := fmt.Fprintln(writer, "... truncated")
+		return err
+	}
+	return nil
+}
+
+func renderContext(writer io.Writer, result contextquery.Result) error {
+	focus := result.Focus.Symbol
+	if _, err := fmt.Fprintf(writer, "focus\t%s\t%s\t%s\n", focus.ID, focus.Kind, focus.DisplayName); err != nil {
+		return err
+	}
+	for _, evidence := range result.Evidence {
+		location := "[no document]"
+		if evidence.Document != nil {
+			location = fmt.Sprintf("%s:%d:%d", evidence.Document.Path, evidence.Range.Start.Line+1, evidence.Range.Start.Column+1)
+		} else if evidence.Source.Path != "" {
+			location = fmt.Sprintf("%s:%d:%d", evidence.Source.Path, evidence.Range.Start.Line+1, evidence.Range.Start.Column+1)
+		}
+		if _, err := fmt.Fprintf(writer, "evidence\t%s\t%s\t%s\t%s\n", evidence.Role, location, evidence.Provider, evidence.Confidence); err != nil {
+			return err
+		}
+		if evidence.Source.Status == contextquery.SourceCurrent {
+			for _, line := range evidence.Source.Lines {
+				if _, err := fmt.Fprintf(writer, "%6d | %s\n", line.Number, line.Text); err != nil {
+					return err
+				}
+			}
+		} else if evidence.Source.Status != "" {
+			if _, err := fmt.Fprintf(writer, "source\t%s\t%s\n", evidence.Source.Status, evidence.Source.Detail); err != nil {
+				return err
+			}
+		}
+	}
+	for _, relationship := range result.Incoming {
+		label := relationship.Edge.From
+		if relationship.Entity != nil {
+			label = relationship.Entity.Symbol.DisplayName
+		}
+		if _, err := fmt.Fprintf(writer, "incoming\t%s\t%s\t%s\t%s\n", relationship.Edge.Kind, label, relationship.Edge.Provider, relationship.Edge.Evidence); err != nil {
+			return err
+		}
+	}
+	for _, relationship := range result.Outgoing {
+		label := relationship.Edge.To
+		if relationship.Entity != nil {
+			label = relationship.Entity.Symbol.DisplayName
+		}
+		if _, err := fmt.Fprintf(writer, "outgoing\t%s\t%s\t%s\t%s\n", relationship.Edge.Kind, label, relationship.Edge.Provider, relationship.Edge.Evidence); err != nil {
+			return err
+		}
+	}
+	truncation := result.Metadata.Truncation
+	if truncation.Occurrences || truncation.Incoming || truncation.Outgoing || truncation.Source {
 		_, err := fmt.Fprintln(writer, "... truncated")
 		return err
 	}

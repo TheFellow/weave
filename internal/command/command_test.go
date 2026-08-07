@@ -19,6 +19,7 @@ import (
 	"github.com/TheFellow/weave/internal/application"
 	"github.com/TheFellow/weave/internal/bridge"
 	"github.com/TheFellow/weave/internal/command"
+	"github.com/TheFellow/weave/internal/contextquery"
 	"github.com/TheFellow/weave/internal/freshness"
 	"github.com/TheFellow/weave/internal/goindex"
 	"github.com/TheFellow/weave/internal/graph"
@@ -154,6 +155,76 @@ func TestGraphCommandForwardsBoundedCatalogQuery(t *testing.T) {
 	}
 	if !reflect.DeepEqual(app.invocations, []application.Invocation{want}) {
 		t.Fatalf("invocations = %#v, want %#v", app.invocations, want)
+	}
+}
+
+func TestContextCommandForwardsBoundsAndRendersSourceRichResponse(t *testing.T) {
+	t.Parallel()
+	contextResult := contextquery.Result{
+		Schema: contextquery.Schema, Target: "Handle", Focus: contextquery.Entity{Symbol: graph.Symbol{ID: "handle-id", Kind: "function", DisplayName: "Handle"}},
+		Evidence: []contextquery.Evidence{{
+			Kind: "occurrence", Role: "definition", Provider: "weave-go", Confidence: graph.EvidenceExact,
+			Range:    graph.Range{Start: graph.Position{Line: 4, Column: 5}},
+			Document: &graph.Document{ID: "doc", Path: "handler.go"},
+			Source:   contextquery.SourceExcerpt{Status: contextquery.SourceCurrent, StartLine: 5, EndLine: 5, Lines: []contextquery.SourceLine{{Number: 5, Text: "func Handle() {}"}}},
+		}},
+		Outgoing: []contextquery.Relationship{{
+			Edge:   graph.Edge{From: "handle-id", To: "store-id", Kind: graph.EdgeCalls, Provider: "weave-go", Evidence: graph.EvidenceExact},
+			Entity: &contextquery.Entity{Symbol: graph.Symbol{ID: "store-id", DisplayName: "Store"}},
+		}},
+		Metadata: contextquery.Metadata{Scope: "catalog", SourceBytes: 16},
+	}
+	app := &recordingApplication{response: application.Response{Schema: application.QuerySchema, Command: "context", Context: &contextResult}}
+	var stdout, stderr bytes.Buffer
+	root := command.New(app, command.Streams{Stdin: strings.NewReader(""), Stdout: &stdout, Stderr: &stderr})
+	err := root.Run(context.Background(), []string{
+		"weave", "context", "Handle", "--scope", "catalog", "--repo", "github.com/example/service",
+		"--limit", "7", "--context-lines", "3", "--max-source-bytes", "8192", "--max-repos", "4",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := application.Invocation{
+		Command: "context", Arguments: []string{"Handle"}, Limit: 7, ContextLines: 3, MaxSourceBytes: 8192,
+		Scope: "catalog", Repositories: []string{"github.com/example/service"}, MaxRepos: 4,
+	}
+	if !reflect.DeepEqual(app.invocations, []application.Invocation{want}) {
+		t.Fatalf("invocations = %#v, want %#v", app.invocations, want)
+	}
+	for _, value := range []string{"focus\thandle-id\tfunction\tHandle", "evidence\tdefinition\thandler.go:5:6\tweave-go\texact", "     5 | func Handle() {}", "outgoing\tcalls\tStore\tweave-go\texact"} {
+		if !strings.Contains(stdout.String(), value) {
+			t.Fatalf("stdout = %q, want %q", stdout.String(), value)
+		}
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+
+	app.invocations = nil
+	stdout.Reset()
+	root = command.New(app, command.Streams{Stdin: strings.NewReader(""), Stdout: &stdout, Stderr: &stderr})
+	if err := root.Run(context.Background(), []string{"weave", "context", "Handle", "--json"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range []string{`"schema":"weave.query/v1"`, `"context":{"schema":"weave.context/v1"`, `"status":"current"`, `"source_bytes":16`} {
+		if !strings.Contains(stdout.String(), value) {
+			t.Fatalf("JSON stdout = %q, want %q", stdout.String(), value)
+		}
+	}
+}
+
+func TestContextErrorsNeverWritePartialOutput(t *testing.T) {
+	t.Parallel()
+	want := errors.New("context: symbol query is ambiguous")
+	app := &recordingApplication{err: want}
+	var stdout, stderr bytes.Buffer
+	root := command.New(app, command.Streams{Stdin: strings.NewReader(""), Stdout: &stdout, Stderr: &stderr})
+	err := root.Run(context.Background(), []string{"weave", "context", "Handle"})
+	if !errors.Is(err, want) {
+		t.Fatalf("Run error = %v", err)
+	}
+	if stdout.Len() != 0 || stderr.Len() != 0 {
+		t.Fatalf("stdout=%q stderr=%q", stdout.String(), stderr.String())
 	}
 }
 
@@ -313,6 +384,10 @@ func TestInvalidInvocationsReturnErrors(t *testing.T) {
 		{name: "invalid adapter timeout", args: []string{"index", "--adapter", "tool", "--timeout", "0s"}},
 		{name: "missing repository selector", args: []string{"repos", "remove"}},
 		{name: "missing graph target", args: []string{"graph"}},
+		{name: "missing context target", args: []string{"context"}},
+		{name: "invalid context limit", args: []string{"context", "x", "--limit", "0"}},
+		{name: "invalid context lines", args: []string{"context", "x", "--context-lines", "101"}},
+		{name: "invalid context source bytes", args: []string{"context", "x", "--max-source-bytes", "0"}},
 		{name: "invalid graph direction", args: []string{"graph", "x", "--direction", "sideways"}},
 		{name: "invalid graph edge bound", args: []string{"graph", "x", "--max-edges", "0"}},
 		{name: "JSON graph file", args: []string{"graph", "x", "--json", "--output", "graph.dot"}},

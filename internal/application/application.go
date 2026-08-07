@@ -20,6 +20,7 @@ import (
 	"github.com/TheFellow/weave/internal/buildinfo"
 	"github.com/TheFellow/weave/internal/catalog"
 	"github.com/TheFellow/weave/internal/ci"
+	"github.com/TheFellow/weave/internal/contextquery"
 	"github.com/TheFellow/weave/internal/federation"
 	"github.com/TheFellow/weave/internal/freshness"
 	"github.com/TheFellow/weave/internal/graph"
@@ -57,6 +58,8 @@ type Invocation struct {
 	Format         string
 	ConfigPath     string
 	MaxRepos       int
+	ContextLines   int
+	MaxSourceBytes int
 	ImpactFiles    []string
 	ImpactPackages []string
 	DiffRevision   string
@@ -94,6 +97,7 @@ type Response struct {
 	CI           *ci.Status             `json:"ci,omitempty"`
 	Version      *buildinfo.Info        `json:"version,omitempty"`
 	Links        []bridge.Link          `json:"links,omitempty"`
+	Context      *contextquery.Result   `json:"context,omitempty"`
 }
 
 // AdapterStatus is an executable discovery result. List is side-effect free;
@@ -213,6 +217,18 @@ func (app Local) Execute(ctx context.Context, invocation Invocation) (Response, 
 	switch invocation.Command {
 	case "symbols":
 		response.Symbols, response.Truncated, err = db.FindSymbols(ctx, invocation.Arguments[0], invocation.Limit)
+	case "context":
+		var repo repository.Repository
+		if repo, err = app.repository(ctx); err == nil {
+			var result contextquery.Result
+			result, err = contextquery.Build(ctx, db, invocation.Arguments[0], contextOptions(invocation), localLocator(repo))
+			if err == nil {
+				result.Metadata.Freshness.Checked = response.Freshness != nil
+				result.Metadata.Freshness.Current = response.Freshness != nil && response.Freshness.Current
+				response.Context = &result
+				response.Truncated = contextTruncated(result.Metadata.Truncation)
+			}
+		}
 	case "graph":
 		err = executeGraph(ctx, db, &response, invocation)
 	case "workspace find", "workspace outline", "workspace links", "workspace backlinks":
@@ -500,6 +516,15 @@ func (app Local) federated(ctx context.Context, response Response, invocation In
 	switch invocation.Command {
 	case "symbols":
 		response.Symbols, response.Truncated, err = store.FindSymbols(ctx, invocation.Arguments[0], invocation.Limit)
+	case "context":
+		var result contextquery.Result
+		result, err = contextquery.Build(ctx, store, invocation.Arguments[0], contextOptions(invocation), federatedLocator(store))
+		if err == nil {
+			result.Metadata.Freshness.Checked = true
+			result.Metadata.Freshness.Current = true
+			response.Context = &result
+			response.Truncated = contextTruncated(result.Metadata.Truncation)
+		}
 	case "graph":
 		err = executeGraph(ctx, store, &response, invocation)
 	case "workspace find", "workspace outline", "workspace links", "workspace backlinks":
@@ -551,6 +576,9 @@ func (app Local) federated(ctx context.Context, response Response, invocation In
 	}
 	response.Diagnostics = append(freshnessDiagnostics, store.Diagnostics()...)
 	slices.Sort(response.Diagnostics)
+	if response.Context != nil {
+		response.Context.Metadata.Freshness.Partial = store.Partial()
+	}
 	response.Sources = store.Sources()
 	return response, nil
 }
@@ -918,7 +946,7 @@ func (app Local) databasePath(ctx context.Context) (string, error) {
 
 func requiresDatabase(command string) bool {
 	switch command {
-	case "symbols", "definition", "references", "callers", "callees", "dependencies", "path", "impact", "graph", "export", "verify", "workspace find", "workspace outline", "workspace links", "workspace backlinks":
+	case "symbols", "context", "definition", "references", "callers", "callees", "dependencies", "path", "impact", "graph", "export", "verify", "workspace find", "workspace outline", "workspace links", "workspace backlinks":
 		return true
 	default:
 		return false

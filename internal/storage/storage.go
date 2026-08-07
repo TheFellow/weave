@@ -376,6 +376,18 @@ func (db *DB) Symbol(ctx context.Context, id string) (graph.Symbol, bool, error)
 	return fromSymbolRecord(record), true, nil
 }
 
+// Document returns a document by stable ID.
+func (db *DB) Document(ctx context.Context, id string) (graph.Document, bool, error) {
+	record, err := bstore.QueryDB[documentRecord](ctx, db.db).FilterID(id).Get()
+	if err == bstore.ErrAbsent {
+		return graph.Document{}, false, nil
+	}
+	if err != nil {
+		return graph.Document{}, false, classify("get document", err)
+	}
+	return fromDocumentRecord(record), true, nil
+}
+
 // Symbols returns all symbols in canonical order. This is intended for export
 // and verification; user-facing searches should use FindSymbols.
 func (db *DB) Symbols(ctx context.Context) ([]graph.Symbol, error) {

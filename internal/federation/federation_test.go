@@ -57,6 +57,9 @@ func TestFederatedExactIdentityTraversalAndProvenance(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
+	if store.Partial() {
+		t.Fatalf("healthy federation unexpectedly partial: %q", store.Diagnostics())
+	}
 	resolved, err := query.Resolve(ctx, store, target)
 	if err != nil || resolved.ID != target {
 		t.Fatalf("Resolve = %#v, %v", resolved, err)
@@ -107,6 +110,9 @@ func TestFederationReportsMissingAndUnavailableMembers(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
+	if !store.Partial() {
+		t.Fatal("missing selected member did not mark federation partial")
+	}
 	values, _, err := store.FindSymbols(ctx, "Global", 10)
 	if err != nil || len(values) != 1 {
 		t.Fatalf("healthy partial result = %#v, %v", values, err)
@@ -122,6 +128,58 @@ func TestFederationReportsMissingAndUnavailableMembers(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "a-missing, z-missing") {
 		t.Fatalf("unmatched selector error = %v", err)
 	}
+}
+
+func TestFederationPartialTracksQueryFailuresButNotRefreshedStaleDiagnostics(t *testing.T) {
+	ctx := context.Background()
+	t.Run("query failure", func(t *testing.T) {
+		catalogPath := filepath.Join(t.TempDir(), "catalog.db")
+		root := makeRepo(t, "query-failure")
+		entries := register(t, catalogPath, root)
+		writeFacts(t, entries[0].DatabasePath, graph.UnitFacts{
+			Unit:    graph.Unit{ID: "unit", Provider: "fixture", ProviderVersion: "1"},
+			Symbols: []graph.Symbol{fixtureSymbol("unit", "symbol-id", "Symbol", "query")},
+		})
+		store, err := federation.Open(ctx, catalogPath, nil, 4)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer store.Close()
+		queryCtx, cancel := context.WithCancel(ctx)
+		cancel()
+		_, _, _ = store.FindSymbols(queryCtx, "Symbol", 4)
+		if !store.Partial() {
+			t.Fatal("member query failure did not mark federation partial")
+		}
+	})
+
+	t.Run("stale diagnostic with successful refresh", func(t *testing.T) {
+		catalogPath := filepath.Join(t.TempDir(), "catalog.db")
+		root := makeRepo(t, "stale-refreshed")
+		entries := register(t, catalogPath, root)
+		writeFacts(t, entries[0].DatabasePath, graph.UnitFacts{
+			Unit:    graph.Unit{ID: "unit", Provider: "fixture", ProviderVersion: "1"},
+			Symbols: []graph.Symbol{fixtureSymbol("unit", "symbol-id", "Symbol", "stale")},
+		})
+		if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("changed"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		refreshed := 0
+		store, err := federation.OpenFresh(ctx, catalogPath, nil, 4, func(context.Context, string) error {
+			refreshed++
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer store.Close()
+		if refreshed != 1 || store.Partial() {
+			t.Fatalf("refreshed=%d partial=%t diagnostics=%q", refreshed, store.Partial(), store.Diagnostics())
+		}
+		if diagnostics := strings.Join(store.Diagnostics(), "\n"); !strings.Contains(diagnostics, "stale catalog state") {
+			t.Fatalf("diagnostics = %q", diagnostics)
+		}
+	})
 }
 
 func TestOpenFreshRefreshesSelectedMembersAndExcludesFailures(t *testing.T) {
@@ -144,6 +202,9 @@ func TestOpenFreshRefreshesSelectedMembersAndExcludesFailures(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
+	if !store.Partial() {
+		t.Fatal("excluded refresh failure did not mark federation partial")
+	}
 	if len(refreshed) != 2 {
 		t.Fatalf("refreshed = %q", refreshed)
 	}

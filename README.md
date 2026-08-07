@@ -40,6 +40,7 @@ weave status
 weave symbols Handle --limit 20
 weave definition Handle
 weave references Handle --json
+weave context Handle
 weave callers Handle
 weave dependencies github.com/example/project/package
 weave path SymbolA SymbolB --kind calls --max-depth 8
@@ -62,6 +63,37 @@ coordinates in JSON facts.
 `dependencies` returns direct `depends-on` and `imports` edges. Use `path` with
 `--kind depends-on` for a bounded transitive route. Every edge includes its
 provider and evidence class in JSON/export output.
+
+## Source-rich context
+
+`weave context TARGET` uniquely resolves any indexed code or workspace entity
+and returns a compact one-hop dossier: the focus, definition/reference
+evidence, current source excerpts, direct incoming and outgoing relationships,
+materialized adjacent entities, repository provenance, freshness, and explicit
+truncation metadata.
+
+```sh
+weave context HandleRequest
+weave context README.md --context-lines 4
+weave context docs/design.md#storage --json
+weave context SharedType --scope catalog --repo github.com/example/service
+```
+
+The default independently caps occurrences and each relationship direction at
+16, includes two surrounding source lines, and returns at most 64 KiB of source
+text. Use `--limit`, `--context-lines`, and `--max-source-bytes` to lower or
+raise those bounded ceilings. JSON retains the normal `weave.query/v1`
+envelope and carries a `weave.context/v1` result under `context`.
+
+Source is re-read from the owning current worktree, not cached in the graph.
+Weave only serves canonical repository-relative, Git-visible, regular UTF-8
+files; it verifies opened-file identity and an indexed content hash when one is
+available. Missing, changed, ignored, external, oversized, non-UTF-8, unsafe,
+or byte-budgeted source is reported with a status and no guessed excerpt.
+Ambiguous names fail with exact graph IDs rather than silently choosing a
+target. Catalog context uses the existing bounded refresh-before-open
+federation and reports partial members through diagnostics and freshness
+metadata.
 
 ## Graphviz DOT
 
