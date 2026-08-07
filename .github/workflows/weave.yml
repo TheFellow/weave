@@ -41,20 +41,20 @@ jobs:
           "$RUNNER_TEMP/weave" ci index
       - name: Verify graph and architecture policy
         run: |
-          "$RUNNER_TEMP/weave" ci check --format sarif > weave.sarif
+          "$RUNNER_TEMP/weave" ci check --format sarif > "$RUNNER_TEMP/weave.sarif"
       - name: Upload policy results
-        if: always() && hashFiles('weave.sarif') != '' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+        if: always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
         uses: github/codeql-action/upload-sarif@v4
         with:
-          sarif_file: weave.sarif
+          sarif_file: ${{ runner.temp }}/weave.sarif
       - name: Preserve deterministic graph export
         if: always()
         run: |
-          "$RUNNER_TEMP/weave" export --json > weave-export.json
+          "$RUNNER_TEMP/weave" export --json > "$RUNNER_TEMP/weave-export.json"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: weave-${{ runner.os }}-${{ github.sha }}
           path: |
-            weave.sarif
-            weave-export.json
+            ${{ runner.temp }}/weave.sarif
+            ${{ runner.temp }}/weave-export.json
