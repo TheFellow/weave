@@ -38,6 +38,7 @@ public sealed class CSharpIndexer(RepositoryPaths paths, IndexRequest request)
         var diagnostics = new List<AdapterDiagnostic>();
         var workspaceFailures = new List<string>();
         using var workspace = MSBuildWorkspace.Create(BuildProperties());
+        workspace.SkipUnrecognizedProjects = true;
         workspace.WorkspaceFailed += (_, args) =>
         {
             var message = "MSBuildWorkspace: " + args.Diagnostic.Message;
