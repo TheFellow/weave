@@ -55,6 +55,11 @@ func (limits Limits) withDefaults() Limits {
 type Options struct {
 	RepositoryRoot     string
 	RepositoryIdentity string
+	// LegacyPositionEncoding is an explicit producer-specific compatibility
+	// override for documents created before SCIP required position_encoding.
+	// It must not be inferred from Metadata.text_document_encoding: that field
+	// describes source bytes on disk, not range character units.
+	LegacyPositionEncoding scip.PositionEncoding
 }
 
 // Importer reads SCIP without invoking its producer.
@@ -131,7 +136,11 @@ func (importer Importer) Import(ctx context.Context, data []byte, options Option
 		if err != nil {
 			return Result{}, fmt.Errorf("SCIP document %q: %w", path, err)
 		}
-		facts, err := normalizeDocument(document, source, identity, path, provider, providerVersion, limits)
+		positionEncoding := document.PositionEncoding
+		if positionEncoding == scip.PositionEncoding_UnspecifiedPositionEncoding {
+			positionEncoding = options.LegacyPositionEncoding
+		}
+		facts, err := normalizeDocument(document, source, identity, path, provider, providerVersion, positionEncoding, limits)
 		if err != nil {
 			return Result{}, fmt.Errorf("SCIP document %q: %w", path, err)
 		}

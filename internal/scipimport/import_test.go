@@ -83,6 +83,33 @@ func TestPositionEncodingConversion(t *testing.T) {
 	}
 }
 
+func TestLegacyPositionEncodingRequiresExplicitProducerOverride(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	document := fixtureDocument("legacy.cpp", "🚀Name\n", scip.PositionEncoding_UnspecifiedPositionEncoding, 4, 8)
+	index := fixtureIndex(document)
+	// Source encoding metadata cannot determine whether the producer counted
+	// UTF-8 bytes, UTF-16 units, or UTF-32 units in occurrence ranges.
+	index.Metadata.TextDocumentEncoding = scip.TextEncoding_UTF8
+	data, err := proto.Marshal(index)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (Importer{}).Import(context.Background(), data, Options{RepositoryRoot: root}); err == nil || !strings.Contains(err.Error(), "unspecified") {
+		t.Fatalf("legacy index without override error = %v", err)
+	}
+	result, err := (Importer{}).Import(context.Background(), data, Options{
+		RepositoryRoot: root, LegacyPositionEncoding: scip.PositionEncoding_UTF8CodeUnitOffsetFromLineStart,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := result.Units[0].Occurrences[0].Range
+	if got.Start.Column != 4 || got.End.Column != 8 {
+		t.Fatalf("legacy UTF-8 range = %#v", got)
+	}
+}
+
 func TestImportReadsRepositorySourceAndRejectsUnsafePaths(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()

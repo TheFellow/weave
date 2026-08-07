@@ -23,7 +23,7 @@ type normalizedOccurrence struct {
 	definition bool
 }
 
-func normalizeDocument(document *scip.Document, source []byte, identity, path, provider, providerVersion string, limits Limits) (graph.UnitFacts, error) {
+func normalizeDocument(document *scip.Document, source []byte, identity, path, provider, providerVersion string, positionEncoding scip.PositionEncoding, limits Limits) (graph.UnitFacts, error) {
 	if len(document.Language) > limits.MaxStringBytes || !utf8.ValidString(document.Language) {
 		return graph.UnitFacts{}, errors.New("invalid or oversized language")
 	}
@@ -54,7 +54,7 @@ func normalizeDocument(document *scip.Document, source []byte, identity, path, p
 		if !ok {
 			return graph.UnitFacts{}, fmt.Errorf("occurrence %d has no valid source range", number)
 		}
-		sourceRange, err := convertRange(source, document.PositionEncoding, scipRange)
+		sourceRange, err := convertRange(source, positionEncoding, scipRange)
 		if err != nil {
 			return graph.UnitFacts{}, fmt.Errorf("occurrence %d range: %w", number, err)
 		}
