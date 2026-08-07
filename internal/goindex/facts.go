@@ -288,6 +288,29 @@ func (analysis *packageAnalysis) calledObject(expression ast.Expr) types.Object 
 }
 
 func addImplementations(analyses []*packageAnalysis) {
+	type candidate struct {
+		analysis *packageAnalysis
+		name     types.Object
+		iface    *types.Interface
+		id       string
+	}
+	byRequiredMethod := map[string][]candidate{}
+	for _, interfacePackage := range analyses {
+		for interfaceName, iface := range interfacePackage.interfaces {
+			if iface.NumMethods() == 0 {
+				continue
+			}
+			value := candidate{
+				analysis: interfacePackage, name: interfaceName, iface: iface,
+				id: interfacePackage.objectID(interfaceName),
+			}
+			byRequiredMethod[methodKey(iface.Method(0))] = append(byRequiredMethod[methodKey(iface.Method(0))], value)
+		}
+	}
+	for key := range byRequiredMethod {
+		slices.SortFunc(byRequiredMethod[key], func(a, b candidate) int { return strings.Compare(a.id, b.id) })
+	}
+
 	for _, concretePackage := range analyses {
 		for concreteName, typ := range concretePackage.concretes {
 			named := namedType(typ)
@@ -296,36 +319,52 @@ func addImplementations(analyses []*packageAnalysis) {
 				// generic named type. Do not label an approximation Exact.
 				continue
 			}
-			for _, interfacePackage := range analyses {
-				for interfaceName, iface := range interfacePackage.interfaces {
-					if iface.NumMethods() == 0 {
+			pointerMethods := types.NewMethodSet(types.NewPointer(typ))
+			possible := map[string]candidate{}
+			for method := range pointerMethods.Methods() {
+				for _, value := range byRequiredMethod[methodKey(method.Obj())] {
+					possible[value.id] = value
+				}
+			}
+			candidates := make([]candidate, 0, len(possible))
+			for _, value := range possible {
+				candidates = append(candidates, value)
+			}
+			slices.SortFunc(candidates, func(a, b candidate) int { return strings.Compare(a.id, b.id) })
+			for _, value := range candidates {
+				implementationType := typ
+				if !types.Implements(implementationType, value.iface) {
+					implementationType = types.NewPointer(typ)
+				}
+				if !types.Implements(implementationType, value.iface) {
+					continue
+				}
+				from := concretePackage.objectID(concreteName)
+				concretePackage.facts.Edges = append(concretePackage.facts.Edges, concretePackage.edge(from, value.id, graph.EdgeImplements, "", graph.Range{}))
+				methods := types.NewMethodSet(implementationType)
+				for abstract := range value.iface.Methods() {
+					selection := methods.Lookup(abstract.Pkg(), abstract.Name())
+					if selection == nil {
 						continue
 					}
-					implementationType := typ
-					if !types.Implements(implementationType, iface) {
-						implementationType = types.NewPointer(typ)
-					}
-					if !types.Implements(implementationType, iface) {
-						continue
-					}
-					from := concretePackage.objectID(concreteName)
-					to := interfacePackage.objectID(interfaceName)
-					concretePackage.facts.Edges = append(concretePackage.facts.Edges, concretePackage.edge(from, to, graph.EdgeImplements, "", graph.Range{}))
-					methods := types.NewMethodSet(implementationType)
-					for abstract := range iface.Methods() {
-						selection := methods.Lookup(abstract.Pkg(), abstract.Name())
-						if selection == nil {
-							continue
-						}
-						concretePackage.facts.Edges = append(concretePackage.facts.Edges, concretePackage.edge(
-							concretePackage.objectID(selection.Obj()), interfacePackage.objectID(abstract),
-							graph.EdgeImplements, "", graph.Range{},
-						))
-					}
+					concretePackage.facts.Edges = append(concretePackage.facts.Edges, concretePackage.edge(
+						concretePackage.objectID(selection.Obj()), value.analysis.objectID(abstract),
+						graph.EdgeImplements, "", graph.Range{},
+					))
 				}
 			}
 		}
 	}
+}
+
+func methodKey(method types.Object) string {
+	if method.Exported() {
+		return method.Name()
+	}
+	if method.Pkg() == nil {
+		return "\x00" + method.Name()
+	}
+	return method.Pkg().Path() + "\x00" + method.Name()
 }
 
 func (analysis *packageAnalysis) finish() {
