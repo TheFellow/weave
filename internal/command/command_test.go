@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -373,6 +374,47 @@ func TestAdapterDoctorReportsMissingToolsWithoutExecutingThem(t *testing.T) {
 	}
 	if stderr.Len() != 0 {
 		t.Fatalf("stderr = %q", stderr.String())
+	}
+}
+
+func TestAdaptersListReportsRegisteredAdapterWithoutExecutingIt(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fixture uses a POSIX executable script")
+	}
+	directory := t.TempDir()
+	marker := filepath.Join(directory, "executed")
+	program := filepath.Join(directory, "custom-adapter")
+	if err := os.WriteFile(program, []byte("#!/bin/sh\nprintf executed > \"$1\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	registration := adapter.Registration{
+		Name: "custom-adapter", Command: []string{program, marker}, Inputs: adapter.Inputs{Extensions: []string{".custom"}},
+	}
+	var stdout, stderr bytes.Buffer
+	root := command.New(application.Local{Adapters: []adapter.Registration{registration}}, command.Streams{
+		Stdin: strings.NewReader(""), Stdout: &stdout, Stderr: &stderr,
+	})
+	if err := root.Run(context.Background(), []string{"weave", "adapters", "list"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("adapters list executed registered command: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "custom-adapter\tnative\tavailable") || !strings.Contains(stdout.String(), "configured by adapter registry") || stderr.Len() != 0 {
+		t.Fatalf("stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+}
+
+func TestAdaptersListSurfacesRegistryConfigurationError(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	root := command.New(application.Local{AdapterConfigError: errors.New("invalid registry fixture")}, command.Streams{
+		Stdin: strings.NewReader(""), Stdout: &stdout, Stderr: &stderr,
+	})
+	if err := root.Run(context.Background(), []string{"weave", "adapters", "list"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stdout.String(), "registry\tconfiguration\tmissing") || !strings.Contains(stdout.String(), "invalid registry fixture") || stderr.Len() != 0 {
+		t.Fatalf("stdout=%q stderr=%q", stdout.String(), stderr.String())
 	}
 }
 

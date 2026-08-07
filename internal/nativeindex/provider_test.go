@@ -113,6 +113,132 @@ func TestProviderUsesPythonInputProfileAndRuntimeVersion(t *testing.T) {
 	}
 }
 
+func TestProviderUsesConfiguredInputsForArbitraryAdapter(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "arbitrary")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, root, "main.widget", "first")
+	writeFile(t, root, "ignored.txt", "first")
+	git(t, root, "init", "-q")
+	git(t, root, "config", "user.email", "weave@example.test")
+	git(t, root, "config", "user.name", "Weave")
+	git(t, root, "add", ".")
+	git(t, root, "commit", "-qm", "initial")
+	repo, err := repository.Discover(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(t.TempDir(), "calls")
+	provider := Provider{
+		Name: "fixture-dotnet", Path: os.Args[0], Args: []string{"-test.run=TestNativeAdapterHelperProcess", "--", marker},
+		Directory: root, Profile: InputProfile("widget"), Inputs: adapter.Inputs{Extensions: []string{".widget"}},
+		ProbeProviderVersion: true, ConfigFingerprint: "fixture-config",
+	}
+	refresh := func(previous *freshness.Manifest) freshness.Result {
+		state, err := repo.Inspect(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		result, err := provider.Refresh(context.Background(), freshness.Request{Repository: repo, State: state, Previous: previous})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return result
+	}
+	first := refresh(nil)
+	if len(first.Batches) != 1 || callCount(t, marker) != 3 {
+		t.Fatalf("first refresh = %#v, calls %d", first, callCount(t, marker))
+	}
+	manifest := &freshness.Manifest{Units: first.Units}
+	writeFile(t, root, "ignored.txt", "second")
+	second := refresh(manifest)
+	if len(second.Batches) != 0 || callCount(t, marker) != 4 {
+		t.Fatalf("ignored refresh = %#v, calls %d", second, callCount(t, marker))
+	}
+	writeFile(t, root, "main.widget", "second")
+	third := refresh(manifest)
+	if len(third.Batches) != 1 || callCount(t, marker) != 7 {
+		t.Fatalf("selected refresh = %#v, calls %d", third, callCount(t, marker))
+	}
+}
+
+func TestDefaultFailsClosedWhenRegisteredCommandIsUnavailable(t *testing.T) {
+	registration := adapter.Registration{
+		Name: "missing-fixture", Command: []string{"weave-adapter-that-does-not-exist"},
+		Inputs: adapter.Inputs{Extensions: []string{".fixture"}}, ConfigFingerprint: "fixture-config",
+	}
+	composite, ok := Default(t.TempDir(), registration).(freshness.CompositeProvider)
+	if !ok {
+		t.Fatalf("Default() = %T", Default(t.TempDir(), registration))
+	}
+	for _, child := range composite.Providers {
+		if child.ID().Name != "native/missing-fixture" {
+			continue
+		}
+		if _, err := child.Refresh(context.Background(), freshness.Request{}); err == nil || !strings.Contains(err.Error(), "find registered adapter") {
+			t.Fatalf("missing registered adapter error = %v", err)
+		}
+		return
+	}
+	t.Fatal("missing registered adapter was silently omitted")
+}
+
+func TestDefaultCanonicalizesRegisteredProviderOrder(t *testing.T) {
+	registrations := []adapter.Registration{
+		{Name: "z-provider", Command: []string{os.Args[0]}, Inputs: adapter.Inputs{Extensions: []string{".z"}}, ConfigFingerprint: "z"},
+		{Name: "a-provider", Command: []string{os.Args[0]}, Inputs: adapter.Inputs{Extensions: []string{".a"}}, ConfigFingerprint: "a"},
+	}
+	composite := Default(t.TempDir(), registrations...).(freshness.CompositeProvider)
+	var owners []string
+	for _, child := range composite.Providers {
+		if child.ID().Name == "native/a-provider" || child.ID().Name == "native/z-provider" {
+			owners = append(owners, child.ID().Name)
+		}
+	}
+	if strings.Join(owners, ",") != "native/a-provider,native/z-provider" {
+		t.Fatalf("registered provider order = %q", owners)
+	}
+}
+
+func TestBuiltInRustAndCppAdaptersUseProjectActivationAndSemanticInputs(t *testing.T) {
+	t.Setenv("WEAVE_RUST_ADAPTER", os.Args[0])
+	t.Setenv("WEAVE_CPP_ADAPTER", os.Args[0])
+	composite := Default(t.TempDir()).(freshness.CompositeProvider)
+	providers := map[string]Provider{}
+	for _, child := range composite.Providers {
+		provider, ok := child.(Provider)
+		if ok {
+			providers[provider.Name] = provider
+		}
+	}
+	rust, ok := providers["weave-rust"]
+	if !ok || !rust.Permissions.BuildTool || !rust.ProbeProviderVersion {
+		t.Fatalf("Rust provider = %#v, present %v", rust, ok)
+	}
+	if rust.active([]string{"src/lib.rs"}) || !rust.active([]string{"Cargo.toml", "src/lib.rs"}) {
+		t.Fatalf("Rust activation accepted source-only repository or rejected Cargo project")
+	}
+	for _, path := range []string{"src/lib.rs", "Cargo.lock", ".cargo/config", ".cargo/config.toml", "rust-toolchain.toml", "templates/embedded.txt"} {
+		if !isSemanticInputFor(path, RustInputs, rust.Inputs) {
+			t.Fatalf("Rust semantic input %q was not selected", path)
+		}
+	}
+
+	cpp, ok := providers["scip:scip-clang"]
+	if !ok || cpp.Path != os.Args[0] || !cpp.Permissions.BuildTool || !cpp.ProbeProviderVersion {
+		t.Fatalf("C++ provider = %#v, present %v", cpp, ok)
+	}
+	if cpp.active([]string{"src/main.cpp"}) || !cpp.active([]string{"compile_commands.json", "src/main.cpp"}) {
+		t.Fatalf("C++ activation accepted source-only repository or rejected compilation database")
+	}
+	for _, path := range []string{"src/main.c", "src/main.cpp", "include/api.hpp", "include/generated.inc", "compile_commands.json", ".clangd", "build-flags.txt"} {
+		if !isSemanticInputFor(path, CppInputs, cpp.Inputs) {
+			t.Fatalf("C++ semantic input %q was not selected", path)
+		}
+	}
+}
+
 func TestProviderFingerprintIncludesAdapterIdentity(t *testing.T) {
 	inputs := "sha256:inputs"
 	first := providerFingerprint(freshness.ProviderID{Name: "native/weave-dotnet", Version: "1.binary-a"}, inputs)
@@ -169,6 +295,43 @@ func TestPythonSemanticInputsRejectSymlinks(t *testing.T) {
 	}
 	if _, _, err := semanticInputs(context.Background(), root, PythonInputs); err == nil || !strings.Contains(err.Error(), "source is a symlink") {
 		t.Fatalf("semanticInputs() error = %v, want symlink rejection", err)
+	}
+}
+
+func TestConfiguredSemanticInputsRejectSymlinks(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation may require privileges")
+	}
+	root := t.TempDir()
+	git(t, root, "init", "-q")
+	writeFile(t, root, "target.txt", "value = 1")
+	if err := os.Symlink("target.txt", filepath.Join(root, "link.widget")); err != nil {
+		t.Fatal(err)
+	}
+	inputs := adapter.Inputs{Extensions: []string{".widget"}}
+	if _, _, err := semanticInputsFor(context.Background(), root, InputProfile("widget"), inputs); err == nil || !strings.Contains(err.Error(), "source is a symlink") {
+		t.Fatalf("semanticInputsFor() error = %v, want symlink rejection", err)
+	}
+}
+
+func TestCompilerProviderActivationPrecedesConservativeFileReads(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation may require privileges")
+	}
+	root := t.TempDir()
+	git(t, root, "init", "-q")
+	writeFile(t, root, "target.txt", "pub fn value() {}")
+	if err := os.Symlink("target.txt", filepath.Join(root, "lib.rs")); err != nil {
+		t.Fatal(err)
+	}
+	activation := adapter.Inputs{Filenames: []string{"cargo.toml", "rust-project.json"}}
+	paths, _, err := semanticInputsForActivation(context.Background(), root, RustInputs, adapter.Inputs{}, activation)
+	if err != nil || len(paths) != 0 {
+		t.Fatalf("inactive Rust inputs = %q, %v", paths, err)
+	}
+	writeFile(t, root, "Cargo.toml", "[package]\nname='fixture'\nversion='0.0.0'\n")
+	if _, _, err := semanticInputsForActivation(context.Background(), root, RustInputs, adapter.Inputs{}, activation); err == nil || !strings.Contains(err.Error(), "source is a symlink") {
+		t.Fatalf("active Rust symlink error = %v", err)
 	}
 }
 

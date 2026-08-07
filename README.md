@@ -8,10 +8,10 @@ agents. There is no model, hosted service, or required daemon in the indexing
 path.
 
 > **Status:** early alpha. Native Go indexing and the query/storage lifecycle
-> are usable. The compiler-native C#/F# adapter participates in query-driven
-> freshness when installed; same-version release companions are configured but
-> have not been exercised by a tag, and the adapter advertises full rather than
-> incremental refreshes. Output schemas are
+> are usable. Installed C#/F#, Python, Rust, and C/C++ adapters participate in
+> query-driven freshness; same-version release companions are configured but
+> have not been exercised by a tag, and external adapters currently advertise
+> full rather than incremental refreshes. Output schemas are
 > versioned, but compatibility before the first tagged release is not promised.
 
 ## Install
@@ -139,6 +139,40 @@ stdout, keeps diagnostics on stderr, and atomically publishes a complete valid
 inventory. The contract fixtures are exercised by the Go test suite so adapter
 authors do not need to import Weave's Go internals.
 
+### Automatic third-party adapters
+
+An independently installed adapter can join normal query-driven freshness
+without a core code change. Put its literal command, conservative input set,
+and permissions in a user-controlled registry, then select that registry
+explicitly:
+
+```json
+{
+  "schema": "weave.adapters/v1",
+  "adapters": [{
+    "name": "example-zig-index",
+    "command": ["example-zig-index", "--target", "host debug"],
+    "inputs": {
+      "extensions": [".zig", ".zon"],
+      "filenames": ["build.zig"]
+    }
+  }]
+}
+```
+
+```sh
+export WEAVE_ADAPTER_CONFIG=/absolute/path/to/adapters.json
+weave adapters doctor
+```
+
+Weave never discovers this configuration from a repository and never scans
+`PATH` for arbitrary adapter prefixes. Selecting the registry is the trust
+decision; bare executable names inside it use normal cross-platform executable
+lookup. Command values are passed as an argv array without a shell, permissions
+default to denied, and invalid or unavailable registrations make automatic
+freshness fail closed. See the [discovery research and Rust/C++
+examples](.ai/prior-art/adapter-discovery/README.md).
+
 ## Python adapter
 
 The optional [`weave-python`](adapters/python/README.md) companion is itself
@@ -154,6 +188,37 @@ their runtime targets. The adapter never imports project modules or silently
 upgrades dynamic behavior to compiler-exact evidence. Repository Git fsmonitor
 commands and Python source symlinks are disabled so a read-only refresh cannot
 execute repository configuration or hash different bytes than it indexes.
+
+## Rust adapter
+
+[`weave-rust`](adapters/rust/README.md) delegates semantic truth to the
+maintained `rust-analyzer scip` exporter and implements the adapter protocol in
+Rust. Install it with `cargo install --locked --path ./adapters/rust` and keep a
+compatible `rust-analyzer`, Cargo, and rustc on `PATH`. Once discovered, normal
+queries automatically index repositories containing `Cargo.toml` or
+`rust-project.json`.
+
+Automatic mode grants Cargo workspace evaluation but keeps network, restore,
+build scripts, and procedural macros disabled. Only expose the adapter to
+repositories you trust; explicit `weave index --adapter weave-rust` flags can
+grant the additional capabilities when required. Definitions, references, and
+explicit implementation relationships come from rust-analyzer; ordinary SCIP
+references are not relabeled as calls.
+
+## C and C++ adapter
+
+[`weave-cpp`](adapters/cpp/README.md) is a thin wrapper around the maintained
+Clang 21-based `scip-clang` indexer. Build the wrapper with
+`go install ./adapters/cpp/cmd/weave-cpp` and install the pinned producer with
+`adapters/cpp/scripts/install-scip-clang.sh ~/.local/bin`. A repository with one
+Git-visible `compile_commands.json` then participates in automatic freshness.
+
+Rust and C/C++ conservatively fingerprint every Git-visible file once their
+project marker activates, because compiler includes and macros can consume
+files with arbitrary extensions. Ignored/generated compilation databases are
+intentionally outside Git freshness; select them explicitly with
+`--adapter-arg=--compdb=...`. Multiple build variants also require an explicit
+selection rather than silently merging incompatible semantics.
 
 ## Derived data and recovery
 
@@ -189,18 +254,18 @@ members still return bounded partial results with repository provenance.
 
 ## Scope and roadmap
 
-The native Go provider currently covers typed declarations/references, imports,
+The native Go provider covers typed declarations/references, imports,
 dependencies, interfaces/implementations, and direct static calls. C# covers
 compiler-resolved calls and project relationships; the initial F# slice omits
 call edges. Python covers compiler lexical bindings while deliberately omitting
-dynamic attribute/type resolution. Exact cross-language relationships use checked-in
-declared/generated bridges. The built-in workspace provider covers Git-visible
-topology and the initial CommonMark/GFM plus static Jekyll-shaped content slice;
-renderer-complete profiles and content diagnostics remain future work.
-Finer-grained .NET refresh, fuzzy search,
-hooks/watch mode, MCP, automatic discovery of third-party language adapters,
-additional languages, and signed package-manager distribution remain future
-work.
+dynamic attribute/type resolution. Rust and C/C++ consume compiler-native SCIP,
+and explicitly registered third-party adapters can add another language without
+a Go-core change. Exact cross-language relationships use checked-in
+declared/generated bridges. The workspace provider covers Git-visible topology
+and the initial CommonMark/GFM plus static Jekyll-shaped content slice.
+Finer-grained compiler refresh, build variants, fuzzy search, hooks/watch mode,
+MCP, renderer-complete content profiles, and signed package-manager distribution
+remain future work.
 
 The complete product contract is [.ai/vision.md](.ai/vision.md). The honest
 implementation traceability report is

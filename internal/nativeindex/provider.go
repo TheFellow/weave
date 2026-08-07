@@ -28,13 +28,37 @@ const maxInputBytes = 512 << 20
 const maxAdapterOutputBytes = 256 << 20
 const maxGitInventoryBytes = 16 << 20
 
-// Default returns the automatic provider set for a worktree. Only known
-// compiler-native adapter names or explicit environment paths are trusted.
-func Default(directory string) freshness.Provider {
+// Default returns the automatic provider set for a worktree. Third-party
+// registrations have already crossed the explicit registry trust boundary;
+// Weave never infers them by scanning PATH.
+func Default(directory string, registrations ...adapter.Registration) freshness.Provider {
 	providers := []freshness.Provider{workspaceindex.Provider{}, goindex.Provider{}, bridge.Provider{}}
 	candidates := []Provider{
 		{Name: "weave-dotnet", Path: configuredPath("WEAVE_DOTNET_ADAPTER", "weave-dotnet"), Directory: directory, Profile: DotNetInputs, Permissions: adapter.Permissions{BuildTool: true}},
 		{Name: "weave-python", Path: configuredPath("WEAVE_PYTHON_ADAPTER", "weave-python"), Directory: directory, Profile: PythonInputs, ProbeProviderVersion: true},
+		{
+			Name: "weave-rust", Path: configuredPath("WEAVE_RUST_ADAPTER", "weave-rust"), Directory: directory,
+			Profile: RustInputs, Activation: adapter.Inputs{Filenames: []string{"cargo.toml", "rust-project.json"}},
+			Permissions: adapter.Permissions{BuildTool: true}, ProbeProviderVersion: true, ConfigFingerprint: "builtin/rust-inputs/v1",
+		},
+		{
+			Name: "scip:scip-clang", Path: configuredPath("WEAVE_CPP_ADAPTER", "weave-cpp"), Directory: directory,
+			Profile: CppInputs, Activation: adapter.Inputs{Filenames: []string{"compile_commands.json"}},
+			Permissions: adapter.Permissions{BuildTool: true}, ProbeProviderVersion: true, ConfigFingerprint: "builtin/cpp-inputs/v1",
+		},
+	}
+	configured := append([]adapter.Registration(nil), registrations...)
+	slices.SortFunc(configured, func(a, b adapter.Registration) int { return strings.Compare(a.Name, b.Name) })
+	for _, registration := range configured {
+		if len(registration.Command) == 0 {
+			continue
+		}
+		candidates = append(candidates, Provider{
+			Name: registration.Name, Path: registration.Command[0], Args: append([]string(nil), registration.Command[1:]...),
+			Directory: directory, Profile: InputProfile(registration.Name), Inputs: registration.Inputs, Permissions: registration.Permissions,
+			ProbeProviderVersion: true, Timeout: registration.Timeout, ConfigFingerprint: registration.ConfigFingerprint,
+			Required: true,
+		})
 	}
 	for _, provider := range candidates {
 		if path, err := exec.LookPath(provider.Path); err == nil {
@@ -43,6 +67,8 @@ func Default(directory string) freshness.Provider {
 			}
 			provider.Path = path
 			providers = append(providers, provider)
+		} else if provider.Required {
+			providers = append(providers, unavailableProvider(provider, err))
 		}
 	}
 	return freshness.CompositeProvider{Providers: providers}
@@ -61,6 +87,8 @@ type InputProfile string
 const (
 	DotNetInputs InputProfile = "dotnet"
 	PythonInputs InputProfile = "python"
+	RustInputs   InputProfile = "rust"
+	CppInputs    InputProfile = "cpp"
 )
 
 // Provider invokes one compiler-native full-refresh adapter when its inputs change.
@@ -70,8 +98,12 @@ type Provider struct {
 	Args                 []string
 	Directory            string
 	Profile              InputProfile
+	Inputs               adapter.Inputs
+	Activation           adapter.Inputs
 	Permissions          adapter.Permissions
 	ProbeProviderVersion bool
+	ConfigFingerprint    string
+	Required             bool
 	Runner               adapter.Runner
 	Timeout              time.Duration
 }
@@ -84,16 +116,20 @@ func (provider Provider) ID() freshness.ProviderID {
 		_ = file.Close()
 		copy(digest[:], hash.Sum(nil))
 	}
+	if provider.ConfigFingerprint != "" {
+		configured := sha256.Sum256([]byte(hex.EncodeToString(digest[:]) + "\x00" + provider.ConfigFingerprint))
+		digest = configured
+	}
 	return freshness.ProviderID{Name: "native/" + provider.name(), Version: "1." + hex.EncodeToString(digest[:6])}
 }
 
 func (provider Provider) Refresh(ctx context.Context, request freshness.Request) (freshness.Result, error) {
-	paths, fingerprint, err := semanticInputs(ctx, request.Repository.Root, provider.profile())
+	paths, fingerprint, err := semanticInputsForActivation(ctx, request.Repository.Root, provider.profile(), provider.Inputs, provider.Activation)
 	if err != nil {
 		return freshness.Result{}, err
 	}
 	previous := previousUnits(request.Previous)
-	if len(paths) == 0 {
+	if len(paths) == 0 || !provider.active(paths) {
 		return freshness.Result{Removed: sortedKeys(previous), Units: []freshness.Unit{}}, nil
 	}
 	if provider.ProbeProviderVersion {
@@ -133,7 +169,7 @@ func (provider Provider) Refresh(ctx context.Context, request freshness.Request)
 	}, adapter.IndexRequest{
 		RequestID: hex.EncodeToString(requestID), RepositoryRoot: request.Repository.Root,
 		RepositoryIdentity: request.Repository.Identity,
-		ChangedPaths:       changedSemanticPaths(request.State.Changes, provider.profile()),
+		ChangedPaths:       changedSemanticPathsFor(request.State.Changes, provider.profile(), provider.Inputs),
 		Permissions:        provider.permissions(),
 	})
 	if err != nil {
@@ -177,10 +213,19 @@ func (provider Provider) profile() InputProfile {
 }
 
 func (provider Provider) permissions() adapter.Permissions {
-	if provider.Permissions != (adapter.Permissions{}) || provider.profile() != DotNetInputs {
+	if provider.Permissions != (adapter.Permissions{}) || provider.profile() != DotNetInputs || hasConfiguredInputs(provider.Inputs) {
 		return provider.Permissions
 	}
 	return adapter.Permissions{BuildTool: true}
+}
+
+func (provider Provider) active(paths []string) bool {
+	if !hasConfiguredInputs(provider.Activation) {
+		return true
+	}
+	return slices.ContainsFunc(paths, func(path string) bool {
+		return isSemanticInputFor(path, provider.Profile, provider.Activation)
+	})
 }
 
 func providerFingerprint(id freshness.ProviderID, inputs string) string {
@@ -189,6 +234,14 @@ func providerFingerprint(id freshness.ProviderID, inputs string) string {
 }
 
 func semanticInputs(ctx context.Context, root string, profile InputProfile) ([]string, string, error) {
+	return semanticInputsFor(ctx, root, profile, adapter.Inputs{})
+}
+
+func semanticInputsFor(ctx context.Context, root string, profile InputProfile, inputs adapter.Inputs) ([]string, string, error) {
+	return semanticInputsForActivation(ctx, root, profile, inputs, adapter.Inputs{})
+}
+
+func semanticInputsForActivation(ctx context.Context, root string, profile InputProfile, inputs, activation adapter.Inputs) ([]string, string, error) {
 	command := exec.CommandContext(ctx, "git", "-c", "core.fsmonitor=false", "ls-files", "-co", "--exclude-standard", "-z", "--")
 	command.Dir = root
 	var stdout, stderr cappedBuffer
@@ -210,12 +263,17 @@ func semanticInputs(ctx context.Context, root string, profile InputProfile) ([]s
 			continue
 		}
 		path := filepath.ToSlash(string(raw))
-		if isSemanticInput(path, profile) {
+		if isSemanticInputFor(path, profile, inputs) {
 			paths = append(paths, path)
 		}
 	}
 	slices.Sort(paths)
 	paths = slices.Compact(paths)
+	if hasConfiguredInputs(activation) && !slices.ContainsFunc(paths, func(path string) bool {
+		return isSemanticInputFor(path, profile, activation)
+	}) {
+		return nil, "", nil
+	}
 	hash := sha256.New()
 	var total int64
 	for _, path := range paths {
@@ -227,8 +285,8 @@ func semanticInputs(ctx context.Context, root string, profile InputProfile) ([]s
 			}
 			return nil, "", fmt.Errorf("inspect %s input %q: %w", profile, path, err)
 		}
-		if profile == PythonInputs && info.Mode()&os.ModeSymlink != 0 {
-			return nil, "", fmt.Errorf("Python source is a symlink: %s", path)
+		if (profile == PythonInputs || profile == RustInputs || profile == CppInputs || hasConfiguredInputs(inputs)) && info.Mode()&os.ModeSymlink != 0 {
+			return nil, "", fmt.Errorf("%s source is a symlink: %s", profile, path)
 		}
 		if !info.Mode().IsRegular() {
 			continue
@@ -270,8 +328,22 @@ func (buffer *cappedBuffer) Write(value []byte) (int, error) {
 }
 
 func isSemanticInput(path string, profile InputProfile) bool {
+	return isSemanticInputFor(path, profile, adapter.Inputs{})
+}
+
+func isSemanticInputFor(path string, profile InputProfile, inputs adapter.Inputs) bool {
 	base := strings.ToLower(filepath.Base(path))
 	ext := strings.ToLower(filepath.Ext(path))
+	// Rust include macros and C-family preprocessor/compiler flags can consume
+	// tracked files with arbitrary extensions. Until an adapter returns an exact
+	// dependency inventory, hash every Git-visible file once its project root
+	// activates the provider.
+	if (profile == RustInputs || profile == CppInputs) && !hasConfiguredInputs(inputs) {
+		return true
+	}
+	if hasConfiguredInputs(inputs) {
+		return slices.Contains(inputs.Extensions, ext) || slices.Contains(inputs.Filenames, base)
+	}
 	if profile == PythonInputs {
 		return ext == ".py"
 	}
@@ -283,15 +355,52 @@ func isSemanticInput(path string, profile InputProfile) bool {
 }
 
 func changedSemanticPaths(changes []repository.Change, profile InputProfile) []string {
+	return changedSemanticPathsFor(changes, profile, adapter.Inputs{})
+}
+
+func changedSemanticPathsFor(changes []repository.Change, profile InputProfile, inputs adapter.Inputs) []string {
 	var result []string
 	for _, change := range changes {
 		path := change.Path
-		if isSemanticInput(path, profile) {
+		if isSemanticInputFor(path, profile, inputs) {
 			result = append(result, filepath.ToSlash(path))
 		}
 	}
 	slices.Sort(result)
 	return slices.Compact(result)
+}
+
+func hasConfiguredInputs(inputs adapter.Inputs) bool {
+	return len(inputs.Extensions)+len(inputs.Filenames) != 0
+}
+
+type configurationErrorProvider struct {
+	err error
+	id  freshness.ProviderID
+}
+
+// ConfigurationError returns a provider that fails every attempted refresh.
+// It lets adapter inspection report a malformed registry while automatic
+// freshness remains fail-closed.
+func ConfigurationError(err error) freshness.Provider {
+	digest := sha256.Sum256([]byte(err.Error()))
+	return configurationErrorProvider{err: err, id: freshness.ProviderID{
+		Name: "native/adapter-configuration-error", Version: "1." + hex.EncodeToString(digest[:6]),
+	}}
+}
+
+func unavailableProvider(configured Provider, lookupErr error) freshness.Provider {
+	digest := sha256.Sum256([]byte(configured.ConfigFingerprint + "\x00" + configured.Path))
+	return configurationErrorProvider{
+		err: fmt.Errorf("find registered adapter %q command %q: %w", configured.name(), configured.Path, lookupErr),
+		id:  freshness.ProviderID{Name: "native/" + configured.name(), Version: "1." + hex.EncodeToString(digest[:6])},
+	}
+}
+
+func (provider configurationErrorProvider) ID() freshness.ProviderID { return provider.id }
+
+func (provider configurationErrorProvider) Refresh(context.Context, freshness.Request) (freshness.Result, error) {
+	return freshness.Result{}, fmt.Errorf("load automatic adapter registry: %w", provider.err)
 }
 
 func previousUnits(manifest *freshness.Manifest) map[string]freshness.Unit {
@@ -330,7 +439,7 @@ func sortedKeys(values map[string]freshness.Unit) []string {
 }
 
 func adapterEnvironment() []string {
-	allowed := []string{"PATH", "DOTNET_ROOT", "DOTNET_HOST_PATH", "TMPDIR", "TMP", "TEMP", "SystemRoot", "WINDIR", "HOME", "USERPROFILE", "NUGET_PACKAGES"}
+	allowed := []string{"PATH", "DOTNET_ROOT", "DOTNET_HOST_PATH", "CARGO_HOME", "RUSTUP_HOME", "RUSTUP_TOOLCHAIN", "WEAVE_RUST_ANALYZER", "WEAVE_SCIP_CLANG", "TMPDIR", "TMP", "TEMP", "SystemRoot", "WINDIR", "HOME", "USERPROFILE", "NUGET_PACKAGES"}
 	var environment []string
 	for _, name := range allowed {
 		if value, ok := os.LookupEnv(name); ok {

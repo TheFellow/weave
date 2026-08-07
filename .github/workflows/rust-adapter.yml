@@ -1,0 +1,85 @@
+name: Rust adapter
+
+on:
+  push:
+    paths:
+      - "adapters/rust/**"
+      - "cmd/weave/**"
+      - "internal/adapter/**"
+      - "internal/scipimport/**"
+      - "internal/application/**"
+      - "internal/freshness/**"
+      - "internal/graph/**"
+      - "internal/nativeindex/**"
+      - "protocol/adapter/**"
+      - ".github/workflows/rust-adapter.yml"
+  pull_request:
+    paths:
+      - "adapters/rust/**"
+      - "cmd/weave/**"
+      - "internal/adapter/**"
+      - "internal/scipimport/**"
+      - "internal/application/**"
+      - "internal/freshness/**"
+      - "internal/graph/**"
+      - "internal/nativeindex/**"
+      - "protocol/adapter/**"
+      - ".github/workflows/rust-adapter.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Formatting
+        run: cargo fmt --manifest-path adapters/rust/Cargo.toml -- --check
+      - name: Contract and semantic tests
+        run: cargo test --locked --manifest-path adapters/rust/Cargo.toml --all-targets
+      - name: Lints
+        run: cargo clippy --locked --manifest-path adapters/rust/Cargo.toml --all-targets -- -D warnings
+      - name: Package
+        run: cargo package --locked --manifest-path adapters/rust/Cargo.toml
+
+  rust-analyzer-e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rust-analyzer
+      - name: Build adapter and host
+        shell: bash
+        run: |
+          cargo build --locked --manifest-path adapters/rust/Cargo.toml
+          go build -o "$RUNNER_TEMP/weave" ./cmd/weave
+      - name: Real rust-analyzer SCIP refresh
+        shell: bash
+        run: |
+          fixture="$RUNNER_TEMP/weave-rust-fixture"
+          cp -R "$GITHUB_WORKSPACE/adapters/rust/tests/fixtures/sample" "$fixture"
+          git -C "$fixture" init --quiet
+          git -C "$fixture" config user.email weave@example.test
+          git -C "$fixture" config user.name Weave
+          git -C "$fixture" add .
+          git -C "$fixture" commit --quiet -m fixture
+          cd "$fixture"
+          export WEAVE_RUST_ADAPTER="$GITHUB_WORKSPACE/adapters/rust/target/debug/weave-rust"
+          "$RUNNER_TEMP/weave" index --json
+          "$RUNNER_TEMP/weave" symbols greet --json | jq -e \
+            '.symbols | map(select(.display_name == "greet")) | length > 0'
+      - name: Go host contract tests
+        run: go test ./internal/adapter ./internal/scipimport ./internal/application

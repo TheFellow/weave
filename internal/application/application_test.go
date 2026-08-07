@@ -48,6 +48,62 @@ func TestConfiguredAdapterPathMustExistAndBeExecutable(t *testing.T) {
 	}
 }
 
+func TestRegisteredAdapterDoctorPreservesLiteralArgumentsAndProviderIdentity(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fixture uses a POSIX executable script")
+	}
+	path := filepath.Join(t.TempDir(), "custom-adapter")
+	program := `#!/bin/sh
+[ "$1" = 'space value;$(literal)' ] || exit 9
+shift
+[ "$1" = describe ] || exit 10
+printf '%s\n' '{"protocols":["weave.adapter/v0"],"provider":{"name":"custom-adapter","version":"1.0.0"},"languages":["custom"],"operations":["index"],"refresh_modes":["full"],"fact_encoding":"weave.facts/v0","position_encodings":["utf8-byte"],"requires":{"executables":[],"may_run_build_tool":false}}'
+`
+	if err := os.WriteFile(path, []byte(program), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	registration := adapter.Registration{
+		Name: "custom-adapter", Command: []string{path, "space value;$(literal)"},
+		Inputs: adapter.Inputs{Extensions: []string{".custom"}},
+	}
+	statuses := inspectAdaptersWithError(context.Background(), true, adapter.Runner{}, nil, registration)
+	for _, status := range statuses {
+		if status.Name != registration.Name {
+			continue
+		}
+		if !status.Available || !status.Checked || !status.Compatible || status.Provider != registration.Name {
+			t.Fatalf("registered adapter status = %#v", status)
+		}
+		return
+	}
+	t.Fatal("registered adapter status is absent")
+}
+
+func TestCppDoctorSeparatesExecutableAndFactProviderNames(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fixture uses a POSIX executable script")
+	}
+	path := filepath.Join(t.TempDir(), "weave-cpp")
+	program := `#!/bin/sh
+printf '%s\n' '{"protocols":["weave.adapter/v0"],"provider":{"name":"scip:scip-clang","version":"0.4.0"},"languages":["c","cpp","cuda"],"operations":["index"],"refresh_modes":["full"],"fact_encoding":"weave.facts/v0","position_encodings":["utf8-byte"],"requires":{"executables":["scip-clang"],"may_run_build_tool":true}}'
+`
+	if err := os.WriteFile(path, []byte(program), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("WEAVE_CPP_ADAPTER", path)
+	statuses := inspectAdapters(context.Background(), true, adapter.Runner{})
+	for _, status := range statuses {
+		if status.Name != "weave-cpp" {
+			continue
+		}
+		if !status.Available || !status.Checked || !status.Compatible || status.Provider != "scip:scip-clang" || status.Version != "0.4.0" {
+			t.Fatalf("C++ adapter status = %#v", status)
+		}
+		return
+	}
+	t.Fatal("C++ adapter status is absent")
+}
+
 func TestCIFatalIssueClassification(t *testing.T) {
 	warnings := []storage.Issue{{Severity: storage.IssueWarning, Kind: "unresolved-occurrence", Record: "external"}}
 	if hasFatalIssues(warnings) {

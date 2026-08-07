@@ -1,0 +1,72 @@
+name: C and C++ adapter
+
+on:
+  push:
+    paths:
+      - "adapters/cpp/**"
+      - "cmd/weave/**"
+      - "internal/adapter/**"
+      - "internal/application/**"
+      - "internal/freshness/**"
+      - "internal/scipimport/**"
+      - "internal/graph/**"
+      - "internal/nativeindex/**"
+      - "protocol/adapter/**"
+      - ".github/workflows/cpp-adapter.yml"
+  pull_request:
+    paths:
+      - "adapters/cpp/**"
+      - "cmd/weave/**"
+      - "internal/adapter/**"
+      - "internal/application/**"
+      - "internal/freshness/**"
+      - "internal/scipimport/**"
+      - "internal/graph/**"
+      - "internal/nativeindex/**"
+      - "protocol/adapter/**"
+      - ".github/workflows/cpp-adapter.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Adapter and SCIP normalization tests
+        run: go test ./adapters/cpp/... ./internal/adapter ./internal/scipimport
+      - name: Build adapter
+        run: go build ./adapters/cpp/cmd/weave-cpp
+
+  real-indexer:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.x"
+      - name: Install pinned scip-clang
+        shell: bash
+        run: |
+          adapters/cpp/scripts/install-scip-clang.sh "${{ runner.temp }}/bin"
+          echo "${{ runner.temp }}/bin" >> "$GITHUB_PATH"
+      - name: Build Weave and adapter
+        shell: bash
+        run: |
+          go build -o "${{ runner.temp }}/weave" ./cmd/weave
+          go build -o "${{ runner.temp }}/weave-cpp" ./adapters/cpp/cmd/weave-cpp
+      - name: Real C++ semantic indexing smoke test
+        run: python adapters/cpp/tests/e2e.py "${{ runner.temp }}/weave" "${{ runner.temp }}/weave-cpp"

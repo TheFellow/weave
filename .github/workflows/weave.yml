@@ -20,6 +20,8 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: Test Go implementation
+        run: go test ./...
       - name: Build Weave
         run: go build -o "$RUNNER_TEMP/weave" ./cmd/weave
       - name: Compute semantic cache key

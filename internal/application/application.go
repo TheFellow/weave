@@ -115,13 +115,15 @@ func (Noop) Execute(_ context.Context, invocation Invocation) (Response, error) 
 // Local executes queries against one local database file. Each invocation owns
 // the file handle, which permits gc to compact offline without hidden state.
 type Local struct {
-	DatabasePath  string
-	Directory     string
-	Freshness     *freshness.Manager
-	FreshnessFor  func(string) *freshness.Manager
-	SCIPImporter  scipimport.Importer
-	AdapterRunner adapter.Runner
-	CatalogPath   string
+	DatabasePath       string
+	Directory          string
+	Freshness          *freshness.Manager
+	FreshnessFor       func(string) *freshness.Manager
+	SCIPImporter       scipimport.Importer
+	AdapterRunner      adapter.Runner
+	Adapters           []adapter.Registration
+	AdapterConfigError error
+	CatalogPath        string
 }
 
 // Execute runs one local use case.
@@ -145,7 +147,7 @@ func (app Local) Execute(ctx context.Context, invocation Invocation) (Response, 
 		return app.federated(ctx, response, invocation)
 	}
 	if invocation.Command == "adapters list" || invocation.Command == "adapters doctor" {
-		response.Adapters = inspectAdapters(ctx, invocation.Command == "adapters doctor", app.AdapterRunner)
+		response.Adapters = inspectAdaptersWithError(ctx, invocation.Command == "adapters doctor", app.AdapterRunner, app.AdapterConfigError, app.Adapters...)
 		return response, nil
 	}
 	if invocation.Command == "index" && invocation.SCIPPath != "" {
@@ -618,20 +620,41 @@ func firstNonempty(values ...string) string {
 }
 
 func inspectAdapters(ctx context.Context, doctor bool, runner adapter.Runner) []AdapterStatus {
-	type candidate struct{ name, kind, configured string }
+	return inspectAdaptersWithError(ctx, doctor, runner, nil)
+}
+
+func inspectAdaptersWithError(ctx context.Context, doctor bool, runner adapter.Runner, configErr error, registrations ...adapter.Registration) []AdapterStatus {
+	type candidate struct {
+		name, kind, configured string
+		command                []string
+		expectedProvider       string
+	}
 	candidates := []candidate{
-		{"weave-dotnet", "native", os.Getenv("WEAVE_DOTNET_ADAPTER")},
-		{"weave-python", "native", os.Getenv("WEAVE_PYTHON_ADAPTER")},
-		{"scip-dotnet", "scip-producer", os.Getenv("WEAVE_SCIP_DOTNET")},
+		{name: "weave-dotnet", kind: "native", configured: os.Getenv("WEAVE_DOTNET_ADAPTER"), expectedProvider: "weave-dotnet"},
+		{name: "weave-python", kind: "native", configured: os.Getenv("WEAVE_PYTHON_ADAPTER"), expectedProvider: "weave-python"},
+		{name: "weave-rust", kind: "native", configured: os.Getenv("WEAVE_RUST_ADAPTER"), expectedProvider: "weave-rust"},
+		{name: "weave-cpp", kind: "native", configured: os.Getenv("WEAVE_CPP_ADAPTER"), expectedProvider: "scip:scip-clang"},
+		{name: "scip-dotnet", kind: "scip-producer", configured: os.Getenv("WEAVE_SCIP_DOTNET")},
+	}
+	configured := append([]adapter.Registration(nil), registrations...)
+	slices.SortFunc(configured, func(a, b adapter.Registration) int { return strings.Compare(a.Name, b.Name) })
+	for _, registration := range configured {
+		candidates = append(candidates, candidate{
+			name: registration.Name, kind: "native", command: append([]string(nil), registration.Command...), expectedProvider: registration.Name,
+		})
 	}
 	if doctor {
-		candidates = append(candidates, candidate{"dotnet", "runtime", ""})
+		candidates = append(candidates, candidate{name: "dotnet", kind: "runtime"})
 	}
 	statuses := make([]AdapterStatus, 0, len(candidates))
 	for _, candidate := range candidates {
 		value := candidate.name
 		detail := "not found on PATH"
-		if candidate.configured != "" {
+		var args []string
+		if len(candidate.command) != 0 {
+			value, args = candidate.command[0], candidate.command[1:]
+			detail = "configured by adapter registry"
+		} else if candidate.configured != "" {
 			value = candidate.configured
 			detail = "configured by environment"
 		}
@@ -639,15 +662,17 @@ func inspectAdapters(ctx context.Context, doctor bool, runner adapter.Runner) []
 		status := AdapterStatus{Name: candidate.name, Kind: candidate.kind, Detail: detail}
 		if err == nil {
 			status.Available, status.Path = true, path
-			if candidate.configured == "" {
+			if candidate.configured == "" && len(candidate.command) == 0 {
 				status.Detail = "discovered on PATH"
 			}
+		} else if len(candidate.command) != 0 {
+			status.Detail = "registered command unavailable: " + err.Error()
 		} else if candidate.configured != "" {
 			status.Detail = "configured path unavailable: " + err.Error()
 		}
 		if doctor && status.Available && candidate.kind == "native" {
 			probeCtx, cancel := context.WithTimeout(ctx, adapterDoctorTimeout)
-			capabilities, stderr, probeErr := runner.Describe(probeCtx, adapter.Executable{Path: path, Env: adapterEnvironment()})
+			capabilities, stderr, probeErr := runner.Describe(probeCtx, adapter.Executable{Path: path, Args: append([]string(nil), args...), Env: adapterEnvironment()})
 			cancel()
 			status.Checked = true
 			if probeErr != nil {
@@ -655,6 +680,8 @@ func inspectAdapters(ctx context.Context, doctor bool, runner adapter.Runner) []
 				if stderr != "" {
 					status.Detail += ": " + stderr
 				}
+			} else if candidate.expectedProvider != "" && capabilities.Provider.Name != candidate.expectedProvider {
+				status.Detail = fmt.Sprintf("protocol check failed: adapter provider is %q, want %q", capabilities.Provider.Name, candidate.expectedProvider)
 			} else {
 				status.Compatible = true
 				status.Provider, status.Version = capabilities.Provider.Name, capabilities.Provider.Version
@@ -664,6 +691,9 @@ func inspectAdapters(ctx context.Context, doctor bool, runner adapter.Runner) []
 			}
 		}
 		statuses = append(statuses, status)
+	}
+	if configErr != nil {
+		statuses = append(statuses, AdapterStatus{Name: "registry", Kind: "configuration", Detail: configErr.Error()})
 	}
 	return statuses
 }
@@ -787,7 +817,7 @@ func resolveExecutable(value string) (string, error) {
 }
 
 func adapterEnvironment() []string {
-	allowed := []string{"PATH", "TMPDIR", "TMP", "TEMP", "SystemRoot", "WINDIR"}
+	allowed := []string{"PATH", "HOME", "USERPROFILE", "CARGO_HOME", "RUSTUP_HOME", "RUSTUP_TOOLCHAIN", "WEAVE_RUST_ANALYZER", "WEAVE_SCIP_CLANG", "TMPDIR", "TMP", "TEMP", "SystemRoot", "WINDIR"}
 	var environment []string
 	for _, name := range allowed {
 		if value, ok := os.LookupEnv(name); ok {
