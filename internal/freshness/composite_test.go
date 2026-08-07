@@ -2,8 +2,13 @@ package freshness
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
+
+	"github.com/TheFellow/weave/internal/graph"
+	"github.com/TheFellow/weave/internal/storage"
 )
 
 func TestCompositeProviderKeepsInventoriesDisjointAndRemovesAbsentOwner(t *testing.T) {
@@ -19,6 +24,41 @@ func TestCompositeProviderKeepsInventoriesDisjointAndRemovesAbsentOwner(t *testi
 	}
 	if got, want := result.Removed, []string{"gone", "old-left"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("removed = %q, want %q", got, want)
+	}
+}
+
+func TestCompositeManagerPublishesProviderFactsWithoutCrossDeletion(t *testing.T) {
+	root := freshRepository(t)
+	left := compositeFixture{id: ProviderID{Name: "left", Version: "1"}, result: Result{Batches: []graph.UnitFacts{{Unit: graph.Unit{ID: "left-unit", Provider: "left", ProviderVersion: "1"}}}, Units: []Unit{{ID: "left-unit"}}}}
+	right := compositeFixture{id: ProviderID{Name: "right", Version: "1"}, result: Result{Batches: []graph.UnitFacts{{Unit: graph.Unit{ID: "right-unit", Provider: "right", ProviderVersion: "1"}}}, Units: []Unit{{ID: "right-unit"}}}}
+	manager := Manager{Directory: root, Provider: CompositeProvider{Providers: []Provider{left, right}}, Command: "test"}
+	if _, err := manager.Ensure(context.Background(), false); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	left.result.Batches[0].Unit.InventoryDigest = "changed"
+	right.result.Batches = nil
+	manager.Provider = CompositeProvider{Providers: []Provider{left, right}}
+	if _, err := manager.Ensure(context.Background(), false); err != nil {
+		t.Fatal(err)
+	}
+	path, err := manager.DatabasePath(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := storage.Open(context.Background(), path, storage.Options{MustExist: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	snapshot, err := db.Export(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Units) != 2 || snapshot.Units[0].ID != "left-unit" || snapshot.Units[1].ID != "right-unit" {
+		t.Fatalf("units after refresh = %#v", snapshot.Units)
 	}
 }
 

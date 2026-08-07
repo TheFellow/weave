@@ -33,6 +33,9 @@ func Default(directory string) freshness.Provider {
 		configured = "weave-dotnet"
 	}
 	if path, err := exec.LookPath(configured); err == nil {
+		if absolute, absoluteErr := filepath.Abs(path); absoluteErr == nil {
+			path = absolute
+		}
 		providers = append(providers, Provider{Path: path, Directory: directory})
 	}
 	return freshness.CompositeProvider{Providers: providers}

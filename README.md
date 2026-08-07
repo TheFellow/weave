@@ -6,8 +6,9 @@ deterministic CLI queries for people and coding agents. There is no model,
 hosted service, or required daemon in the indexing path.
 
 > **Status:** early alpha. Native Go indexing and the query/storage lifecycle
-> are usable. The compiler-native C#/F# adapter works explicitly but is not yet
-> packaged with releases or query-driven incrementally. Output schemas are
+> are usable. The compiler-native C#/F# adapter participates in query-driven
+> freshness when installed, but is not yet packaged with releases and advertises
+> full rather than incremental refreshes. Output schemas are
 > versioned, but compatibility before the first tagged release is not promised.
 
 ## Install
@@ -37,6 +38,9 @@ weave callers Handle
 weave dependencies github.com/example/project/package
 weave path SymbolA SymbolB --kind calls --max-depth 8
 weave impact Handle --limit 50
+weave impact --file internal/service.go --limit 100
+weave impact --package github.com/example/project/internal/service
+weave impact --git-diff origin/main --json
 ```
 
 Every database-backed query performs a cheap Git freshness check first. A
@@ -51,6 +55,14 @@ coordinates in JSON facts.
 `--kind depends-on` for a bounded transitive route. Every edge includes its
 provider and evidence class in JSON/export output.
 
+Impact roots may be a symbol, repeated repository-relative `--file` and
+`--package` values, or `--git-diff REVISION` (which compares that revision to
+the current working tree). File roots use indexed definitions and references;
+package roots use compiler-emitted package ownership. Output is bounded and
+deterministic. An affected-tests projection is emitted only for explicit
+`tests` edges or compiler-indexed Go test declarations—Weave does not guess
+build targets from directory names.
+
 ## C# and F# adapter
 
 The optional adapter uses Roslyn/MSBuild for C# and
@@ -59,15 +71,18 @@ FSharp.Compiler.Service for F#. Restore and build it explicitly:
 ```sh
 dotnet restore adapters/dotnet/Weave.Adapter.sln
 dotnet build adapters/dotnet/Weave.Adapter.sln --no-restore
-weave index \
-  --adapter ./adapters/dotnet/src/Weave.Adapter/bin/Debug/net9.0/Weave.Adapter \
-  --allow-build-tool
+export WEAVE_DOTNET_ADAPTER="$PWD/adapters/dotnet/src/Weave.Adapter/bin/Debug/net9.0/Weave.Adapter"
+weave symbols MyType
 ```
 
 On Windows, use the generated `.exe`. The target repository must already be
-restored. `--allow-build-tool` is an explicit trust decision because MSBuild may
-execute imported targets; network, restore, and generators remain denied unless
-separately enabled. `weave adapters doctor` runs a bounded native `describe`
+restored. A discovered adapter is automatically invoked only when .NET compiler
+or project inputs changed; its complete unit inventory is composed atomically
+with Go facts. Automatic mode permits MSBuild project evaluation because that is
+required for compiler truth, so only expose `weave-dotnet` for repositories you
+trust. It never permits network, restore, or generators. The explicit `weave
+index --adapter ...` path remains available for other permission choices.
+`weave adapters doctor` runs a bounded native `describe`
 handshake and reports adapter/runtime capabilities; it does not index, build,
 restore, or install anything. See the [adapter
 guide](adapters/dotnet/README.md) for coverage and current limitations.
@@ -96,14 +111,22 @@ graph integrity and checked-in architecture rules. SARIF and deterministic
 exports are supported. See [CI](docs/ci.md), [architecture
 rules](docs/architecture-rules.md), and the [example workflow](.github/workflows/weave.yml).
 
+## Cross-repository queries
+
+`weave repos add /path/to/worktree` registers explicit local worktrees. Queries
+with `--scope catalog` or repeated `--repo` selectors refresh every selected
+member before opening its database. A member that cannot refresh is excluded and
+reported on stderr/JSON; its stale facts are never silently served. Healthy
+members still return bounded partial results with repository provenance.
+
 ## Scope and roadmap
 
 The native Go provider currently covers typed declarations/references, imports,
 dependencies, interfaces/implementations, and direct static calls. C# covers
 compiler-resolved calls and project relationships; the initial F# slice omits
 call edges. Exact cross-language relationships require declared/generated
-bridges. Automatic .NET freshness, packaged adapters, fuzzy search, diff-based
-impact, hooks/watch mode, MCP, additional languages, and signed package-manager
+bridges. Packaged adapters, finer-grained .NET refresh, fuzzy search,
+hooks/watch mode, MCP, additional languages, and signed package-manager
 distribution remain future work.
 
 The complete product contract is [.ai/vision.md](.ai/vision.md). The honest
