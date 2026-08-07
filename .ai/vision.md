@@ -147,6 +147,13 @@ Human output should be concise and legible. JSON output must be versioned,
 stable, complete, and designed for automated consumers. MCP is a thin optional
 adapter over the same application boundary, never the primary implementation.
 
+Focused graph queries also emit deterministic Graphviz DOT without requiring
+Graphviz. DOT output must use readable labels rather than opaque identities,
+retain full identities and evidence in metadata, distinguish traversal roles,
+remain explicitly bounded, and work across the same local and catalog scopes as
+the underlying query. Rendering DOT to SVG, PNG, PDF, or an interactive viewer
+is the responsibility of Graphviz or another consumer.
+
 ### Cross-platform without pretending runtimes do not exist
 
 The core is an idiomatic Go executable. Language adapters may use their native
@@ -197,13 +204,14 @@ The initial product is not:
 - An IDE replacement.
 - A full build system.
 - A universal parser maintained by this project.
-- A graph visualization product.
+- An interactive graph visualization product or Graphviz renderer.
 - A source-control system or replacement for Git.
 - A guarantee that unrelated languages can be semantically connected without
   build metadata, schemas, configuration, or declared bridges.
 
-Visualization, natural-language query translation, and hosted artifact exchange
-may be built later by other tools consuming Weave's stable interfaces.
+Interactive visualization, natural-language query translation, and hosted
+artifact exchange may be built later by other tools consuming Weave's stable
+JSON or DOT interfaces.
 
 ## System shape
 

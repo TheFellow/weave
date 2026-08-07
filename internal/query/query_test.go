@@ -55,6 +55,47 @@ func TestImpactManySortsAndSharesTraversalBounds(t *testing.T) {
 	}
 }
 
+func TestNeighborhoodInterleavesIncomingAndOutgoingWalks(t *testing.T) {
+	t.Parallel()
+	store := fakeStore{
+		forward: map[string][]graph.Edge{
+			"root":       {{ID: "root-dependency", From: "root", To: "dependency", Kind: graph.EdgeDependsOn}},
+			"dependency": {{ID: "dependency-leaf", From: "dependency", To: "leaf", Kind: graph.EdgeDependsOn}},
+		},
+		reverse: map[string][]graph.Edge{
+			"root":     {{ID: "importer-root", From: "importer", To: "root", Kind: graph.EdgeDependsOn}},
+			"importer": {{ID: "entry-importer", From: "entry", To: "importer", Kind: graph.EdgeDependsOn}},
+		},
+	}
+	got, err := query.Neighborhood(context.Background(), store, "root", []graph.EdgeKind{graph.EdgeDependsOn}, query.DirectionBoth, query.Bounds{MaxDepth: 2, MaxNodes: 10, MaxEdges: 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(got.Nodes, ",") != "root,dependency,importer,leaf,entry" || len(got.Edges) != 4 {
+		t.Fatalf("Neighborhood() = %#v", got)
+	}
+}
+
+func TestNeighborhoodSharesBoundsAndRejectsInvalidDirection(t *testing.T) {
+	t.Parallel()
+	store := fakeStore{forward: map[string][]graph.Edge{
+		"root": {
+			{ID: "root-a", From: "root", To: "a"},
+			{ID: "root-b", From: "root", To: "b"},
+		},
+	}}
+	got, err := query.Neighborhood(context.Background(), store, "root", nil, query.DirectionOutgoing, query.Bounds{MaxDepth: 2, MaxNodes: 2, MaxEdges: 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Truncated || strings.Join(got.Nodes, ",") != "root,a" || len(got.Edges) != 1 {
+		t.Fatalf("bounded Neighborhood() = %#v", got)
+	}
+	if _, err := query.Neighborhood(context.Background(), store, "root", nil, "sideways", query.Bounds{MaxDepth: 2, MaxNodes: 2, MaxEdges: 20}); err == nil {
+		t.Fatal("invalid direction succeeded")
+	}
+}
+
 type fakeStore struct{ forward, reverse map[string][]graph.Edge }
 
 func (fakeStore) FindSymbols(context.Context, string, int) ([]graph.Symbol, bool, error) {

@@ -35,6 +35,15 @@ type Traversal struct {
 	Truncated bool
 }
 
+// Direction selects which side of a focused node a neighborhood traverses.
+type Direction string
+
+const (
+	DirectionIncoming Direction = "incoming"
+	DirectionOutgoing Direction = "outgoing"
+	DirectionBoth     Direction = "both"
+)
+
 // Resolve returns the highest-ranked deterministic symbol match.
 func Resolve(ctx context.Context, store Store, value string) (graph.Symbol, error) {
 	if symbol, ok, err := store.Symbol(ctx, value); err != nil {
@@ -184,6 +193,110 @@ func ImpactMany(ctx context.Context, store Store, roots []string, kinds []graph.
 			queue = append(queue, queued{edge.From, current.depth + 1})
 		}
 	}
+	return result, nil
+}
+
+// Neighborhood returns a bounded focused subgraph. Incoming and outgoing
+// walks keep independent visited sets so a node that is both an importer and a
+// dependency remains reachable in both roles. The two queues are interleaved
+// to avoid spending every shared bound on one direction first.
+func Neighborhood(ctx context.Context, store Store, root string, kinds []graph.EdgeKind, direction Direction, bounds Bounds) (Traversal, error) {
+	if err := bounds.validate(); err != nil {
+		return Traversal{}, err
+	}
+	if root == "" {
+		return Traversal{}, errors.New("neighborhood requires a graph root")
+	}
+	if direction != DirectionIncoming && direction != DirectionOutgoing && direction != DirectionBoth {
+		return Traversal{}, fmt.Errorf("unknown neighborhood direction %q", direction)
+	}
+	type queued struct {
+		id        string
+		depth     int
+		direction Direction
+	}
+	var queue []queued
+	if direction == DirectionOutgoing || direction == DirectionBoth {
+		queue = append(queue, queued{id: root, direction: DirectionOutgoing})
+	}
+	if direction == DirectionIncoming || direction == DirectionBoth {
+		queue = append(queue, queued{id: root, direction: DirectionIncoming})
+	}
+	seenStates := make(map[string]bool, bounds.MaxNodes*2)
+	for _, item := range queue {
+		seenStates[string(item.direction)+"\x00"+item.id] = true
+	}
+	seenNodes := map[string]bool{root: true}
+	result := Traversal{Nodes: []string{root}}
+	seenEdges := make(map[string]bool, bounds.MaxEdges)
+	examined := 0
+	for len(queue) != 0 {
+		current := queue[0]
+		queue = queue[1:]
+		if current.depth >= bounds.MaxDepth {
+			remaining := bounds.MaxEdges - examined
+			if remaining <= 0 {
+				result.Truncated = true
+				continue
+			}
+			var edges []graph.Edge
+			var truncated bool
+			var err error
+			if current.direction == DirectionOutgoing {
+				edges, truncated, err = store.EdgesFrom(ctx, current.id, kinds, 1)
+			} else {
+				edges, truncated, err = store.EdgesTo(ctx, current.id, kinds, 1)
+			}
+			if err != nil {
+				return Traversal{}, err
+			}
+			examined += len(edges)
+			result.Truncated = result.Truncated || truncated || len(edges) != 0
+			continue
+		}
+		remaining := bounds.MaxEdges - examined
+		if remaining <= 0 {
+			result.Truncated = true
+			break
+		}
+		var edges []graph.Edge
+		var truncated bool
+		var err error
+		if current.direction == DirectionOutgoing {
+			edges, truncated, err = store.EdgesFrom(ctx, current.id, kinds, remaining)
+		} else {
+			edges, truncated, err = store.EdgesTo(ctx, current.id, kinds, remaining)
+		}
+		if err != nil {
+			return Traversal{}, err
+		}
+		examined += len(edges)
+		result.Truncated = result.Truncated || truncated
+		for _, edge := range edges {
+			next := edge.To
+			if current.direction == DirectionIncoming {
+				next = edge.From
+			}
+			if !seenNodes[next] {
+				if len(seenNodes) >= bounds.MaxNodes {
+					result.Truncated = true
+					continue
+				}
+				seenNodes[next] = true
+				result.Nodes = append(result.Nodes, next)
+			}
+			if !seenEdges[edge.ID] {
+				seenEdges[edge.ID] = true
+				result.Edges = append(result.Edges, edge)
+			}
+			state := string(current.direction) + "\x00" + next
+			if !seenStates[state] {
+				seenStates[state] = true
+				queue = append(queue, queued{id: next, depth: current.depth + 1, direction: current.direction})
+			}
+		}
+	}
+	slices.SortFunc(result.Edges, graph.CompareEdges)
 	return result, nil
 }
 

@@ -3,7 +3,8 @@
 Audit date: 2026-08-07
 Audited implementation: `main` through the compiler-plugin contract, Python,
 Rust, and C/C++ adapters, explicit arbitrary-adapter registration, companion
-adapter packaging, repository-scale hardening, and the workspace/content increment.
+adapter packaging, repository-scale hardening, the workspace/content increment,
+and focused DOT graph export.
 Method: read `.ai/vision.md`, ADRs, prior-art notes, implementation and tests;
 ran unit/race/static checks, bounded fuzz campaigns, microbenchmarks, .NET
 fixtures, release/action validation, and a built-executable smoke test in a real
@@ -31,7 +32,7 @@ the useful-first-release definition has been achieved.
 | Local, disposable, non-committed detailed indexes | **Implemented** | `repository.Discover`, Git-resolved storage, README recovery procedure, rebuild tests | Shared immutable snapshot storage is not implemented. |
 | Fresh before every observed answer | **Partial** | Local and selected federated worktrees call `Freshness.Ensure`; Go, .NET, Python, Rust, C/C++, and registered adapters compose freshness-owned inventories; failed catalog members are excluded | Explicit SCIP files and explicit one-shot adapter imports remain unmanaged snapshots and can become stale. |
 | Incremental work proportional to change | **Partial** | Git overlay comparison; Go input/surface/inventory fingerprints; only changed unit batches are atomically replaced | Go still loads/analyzes the package universe to calculate fingerprints; no content-addressed fact reuse across branches; no measured RIBLT use. |
-| Stable human and JSON CLI | **Partial** | urfave/cli v3 tree; injected streams; deterministic text; `weave.query/v1`; truncation; command end-to-end tests | Exit codes do not yet distinguish unavailable capability, stale/corrupt storage, and internal failure; JSON compatibility policy is not published beyond schema labels. |
+| Stable human, JSON, and DOT CLI | **Partial** | urfave/cli v3 tree; injected streams; deterministic text; `weave.query/v1`; bounded focused DOT with adversarial escaping and optional Graphviz parse test; command end-to-end tests | Exit codes do not yet distinguish unavailable capability, stale/corrupt storage, and internal failure; JSON/DOT compatibility policy is not published beyond schema labels. |
 | Cross-platform core and isolated native adapters | **Partial** | Pure-Go core; release matrix for macOS/Linux/Windows; .NET/Python/Rust contract matrices on all three OSes; C++ wrapper matrix plus real Linux scip-clang E2E; genuine `fkyeah` indexing | scip-clang has no upstream Windows or macOS x86-64 binary; no tagged release has exercised publication. |
 | Bounded evidence rather than guesses | **Implemented** | `graph.Evidence`, validation, traversal/result bounds, protocol/import limits, provider-preserving JSON/export | Some external endpoints are intentionally unmaterialized and reported by `verify` as warnings. |
 | Non-compiling workspace knowledge is first-class | **Implemented** initial slice | `internal/workspaceindex`; Git inventory, Goldmark/GFM, YAML, inert HTML, routes/topics/series, fences, generated provenance, exact cross-repo path IDs; real website and modular-monolith smoke evidence | Renderer profiles, raw-reference attributes, content-specific diagnostics, config/data-file semantics, and generated-family collapse remain future work. |
@@ -77,6 +78,7 @@ the useful-first-release definition has been achieved.
 | `symbols`, `definition`, `references`, `callers`, `callees` | **Implemented** | Bounded local/federated graph queries; local reads refresh first; definition returns every binding occurrence with singular-symbol fallback. |
 | `dependencies` | **Implemented** | Resolves one symbol/package and emits direct `depends-on`/`imports` edges; command/fixture test. |
 | `path`, `impact` | **Implemented** initial slice | Bounded symbol paths; symbol/file/package/Git-diff multi-root reverse impact; evidence-based affected-test projection; executable dirty-Go fixture | Test selection is limited to explicit `tests` edges and recognizable Go test declarations, not build targets. Deleted files absent from the current graph may be reported unmatched. |
+| `graph` | **Implemented** initial slice | Bounded incoming/outgoing neighborhood; kind filters; provider clusters; directional/evidence styling; escaped deterministic DOT to stdout/file; versioned JSON; local/catalog command tests | Provider clusters are provenance-oriented; no architecture-area grouping or built-in SVG/PNG/PDF renderer. |
 | `workspace find/outline/links/backlinks` | **Implemented** initial slice | Bounded local/federated lookup; strict ambiguity; recursive containment; section-link aggregation; command/application/provider fixtures | No `workspace check`, route collision, stale-generation, unused-asset, or canonical-representation command yet. |
 | `architecture check` | **Implemented** | Text/JSON/SARIF and policy exit status. |
 | `repos add/remove/list/status/sync` | **Implemented** | Explicit platform-data catalog with worktree identity and locking. |

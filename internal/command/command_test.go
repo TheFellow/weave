@@ -21,6 +21,7 @@ import (
 	"github.com/TheFellow/weave/internal/freshness"
 	"github.com/TheFellow/weave/internal/goindex"
 	"github.com/TheFellow/weave/internal/graph"
+	"github.com/TheFellow/weave/internal/query"
 	"github.com/TheFellow/weave/internal/storage"
 	"github.com/scip-code/scip/bindings/go/scip"
 	cli "github.com/urfave/cli/v3"
@@ -129,6 +130,28 @@ func TestWorkspaceTextRenderingUsesStableNamesNotOpaqueIDs(t *testing.T) {
 	}
 	if got, want := diagnostics.String(), "weave-workspace: degraded README.md\n"; got != want {
 		t.Fatalf("workspace diagnostics = %q, want %q", got, want)
+	}
+}
+
+func TestGraphCommandForwardsBoundedCatalogQuery(t *testing.T) {
+	t.Parallel()
+	app := &recordingApplication{response: application.Response{Command: "graph", Nodes: []string{"focus"}}}
+	root := command.New(app, command.Streams{Stdin: strings.NewReader(""), Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}})
+	err := root.Run(context.Background(), []string{
+		"weave", "graph", "Handler", "--direction", "incoming", "--kind", "calls", "--kind", "implements",
+		"--max-depth", "4", "--limit", "25", "--max-edges", "80", "--scope", "catalog",
+		"--repo", "github.com/acme/service", "--max-repos", "4",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := application.Invocation{
+		Command: "graph", Arguments: []string{"Handler"}, Limit: 25, MaxDepth: 4, MaxEdges: 80,
+		Kinds: []graph.EdgeKind{graph.EdgeCalls, graph.EdgeImplements}, Direction: query.DirectionIncoming,
+		Scope: "catalog", Repositories: []string{"github.com/acme/service"}, MaxRepos: 4,
+	}
+	if !reflect.DeepEqual(app.invocations, []application.Invocation{want}) {
+		t.Fatalf("invocations = %#v, want %#v", app.invocations, want)
 	}
 }
 
@@ -287,6 +310,10 @@ func TestInvalidInvocationsReturnErrors(t *testing.T) {
 		{name: "orphan adapter argument", args: []string{"index", "--adapter-arg", "--flag"}},
 		{name: "invalid adapter timeout", args: []string{"index", "--adapter", "tool", "--timeout", "0s"}},
 		{name: "missing repository selector", args: []string{"repos", "remove"}},
+		{name: "missing graph target", args: []string{"graph"}},
+		{name: "invalid graph direction", args: []string{"graph", "x", "--direction", "sideways"}},
+		{name: "invalid graph edge bound", args: []string{"graph", "x", "--max-edges", "0"}},
+		{name: "JSON graph file", args: []string{"graph", "x", "--json", "--output", "graph.dot"}},
 	}
 
 	for _, test := range tests {
@@ -487,6 +514,56 @@ func TestRealQueryCommands(t *testing.T) {
 				t.Errorf("stderr = %q", stderr.String())
 			}
 		})
+	}
+}
+
+func TestGraphCommandWritesReadableDOTOrVersionedJSON(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	databasePath := filepath.Join(t.TempDir(), "index.db")
+	db, err := storage.Open(ctx, databasePath, storage.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.ReplaceUnit(ctx, commandFixture()); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	run := func(args ...string) (string, string, error) {
+		var stdout, stderr bytes.Buffer
+		root := command.New(application.Local{DatabasePath: databasePath}, command.Streams{Stdin: strings.NewReader(""), Stdout: &stdout, Stderr: &stderr})
+		err := root.Run(ctx, append([]string{"weave"}, args...))
+		return stdout.String(), stderr.String(), err
+	}
+	stdout, stderr, err := run("graph", "HandleRequest", "--direction", "outgoing", "--kind", "calls", "--max-depth", "2", "--limit", "10", "--max-edges", "20")
+	if err != nil || stderr != "" {
+		t.Fatalf("graph stdout=%q stderr=%q err=%v", stdout, stderr, err)
+	}
+	for _, want := range []string{"digraph weave {", "HandleRequest", `label="calls"`, `fillcolor="#F6C85F"`, `fillcolor="#D9D2E9"`} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("DOT output = %q, want %q", stdout, want)
+		}
+	}
+	stdout, stderr, err = run("graph", "HandleRequest", "--direction", "outgoing", "--max-depth", "1", "--limit", "10", "--max-edges", "20")
+	if err != nil || stderr != "" || strings.Contains(stdout, `label="references"`) || !strings.Contains(stdout, `label="calls"`) {
+		t.Fatalf("default graph kinds stdout=%q stderr=%q err=%v", stdout, stderr, err)
+	}
+
+	stdout, stderr, err = run("graph", "HandleRequest", "--kind", "calls", "--json")
+	if err != nil || stderr != "" || !strings.Contains(stdout, `"schema":"weave.query/v1"`) || !strings.Contains(stdout, `"command":"graph"`) || !strings.Contains(stdout, `"nodes":["fixture:handle","fixture:authorize"]`) {
+		t.Fatalf("JSON graph stdout=%q stderr=%q err=%v", stdout, stderr, err)
+	}
+
+	outputPath := filepath.Join(t.TempDir(), "handler.dot")
+	stdout, stderr, err = run("graph", "HandleRequest", "--kind", "calls", "--output", outputPath)
+	if err != nil || stdout != "" || stderr != "" {
+		t.Fatalf("file graph stdout=%q stderr=%q err=%v", stdout, stderr, err)
+	}
+	content, err := os.ReadFile(outputPath)
+	if err != nil || !bytes.Contains(content, []byte("digraph weave {")) {
+		t.Fatalf("DOT file = %q, %v", content, err)
 	}
 }
 

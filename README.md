@@ -44,6 +44,7 @@ weave impact Handle --limit 50
 weave impact --file internal/service.go --limit 100
 weave impact --package github.com/example/project/internal/service
 weave impact --git-diff origin/main --json
+weave graph Handle --kind calls --kind implements --output handle.dot
 ```
 
 Every database-backed query performs a cheap Git freshness check first. A
@@ -57,6 +58,35 @@ coordinates in JSON facts.
 `dependencies` returns direct `depends-on` and `imports` edges. Use `path` with
 `--kind depends-on` for a bounded transitive route. Every edge includes its
 provider and evidence class in JSON/export output.
+
+## Graphviz DOT
+
+`weave graph` renders a bounded neighborhood around any resolvable symbol,
+package, file, document, section, route, or other indexed resource:
+
+```sh
+weave graph AuthService --kind calls --kind implements > auth.dot
+weave graph README.md --direction outgoing --max-depth 3 --output docs.dot
+weave graph Handle --scope catalog --repo github.com/example/service --json
+dot -Tsvg auth.dot -o auth.svg
+```
+
+The focus is gold, incoming nodes are green, outgoing nodes are purple, and
+nodes reachable in both directions are rose. Materialized nodes are clustered
+by provider; unresolved external endpoints remain visible with dashed borders.
+Edge labels show relationship kinds, while DOT tooltips retain stable names,
+evidence, and providers. Output ordering and generated node names are stable.
+
+The default traversal includes high-level code, dependency, hierarchy, content,
+and provenance relationships while omitting noisy occurrence-level `defines`
+and `references` edges. Repeat `--kind` to select any exact edge kind, including
+those two, and use `--direction incoming|outgoing|both`, `--max-depth`,
+`--limit`, and `--max-edges` to control the view. Equivalent parallel edges are
+collapsed visually with a count; JSON retains every source edge. All limits are
+mandatory and bounded even for catalog queries. `--output` writes DOT directly;
+without it DOT is written to stdout. Weave does not invoke Graphviz, so DOT
+generation works without a renderer installed. `--json` returns the same
+bounded neighborhood in the `weave.query/v1` envelope for agents.
 
 ## Workspace and content navigation
 

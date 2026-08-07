@@ -2,16 +2,20 @@
 package command
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/TheFellow/weave/internal/adapter"
 	"github.com/TheFellow/weave/internal/application"
+	"github.com/TheFellow/weave/internal/dot"
 	"github.com/TheFellow/weave/internal/graph"
+	"github.com/TheFellow/weave/internal/query"
 	cli "github.com/urfave/cli/v3"
 )
 
@@ -39,6 +43,7 @@ func New(app application.Service, streams Streams) *cli.Command {
 		traversal(app, streams, "path", "find a bounded path between symbols", 2),
 		impactCommand(app, streams),
 		lookup(app, streams, "dependencies", "find direct semantic dependencies"),
+		graphCommand(app, streams),
 		workspaceCommands(app, streams),
 		architectureCommand(app, streams),
 		repositoryCommands(app, streams),
@@ -50,6 +55,80 @@ func New(app application.Service, streams Streams) *cli.Command {
 		versionCommand(app, streams),
 	}
 	return root
+}
+
+func graphCommand(app application.Service, streams Streams) *cli.Command {
+	flags := []cli.Flag{
+		jsonFlag(),
+		&cli.StringFlag{Name: "output", Aliases: []string{"o"}, Usage: "write DOT to this file instead of stdout"},
+		&cli.StringFlag{Name: "direction", Value: string(query.DirectionBoth), Usage: "traversal direction: incoming, outgoing, or both", Validator: func(value string) error {
+			switch query.Direction(value) {
+			case query.DirectionIncoming, query.DirectionOutgoing, query.DirectionBoth:
+				return nil
+			default:
+				return fmt.Errorf("must be incoming, outgoing, or both")
+			}
+		}},
+		&cli.StringSliceFlag{Name: "kind", Usage: "edge kind to include (repeatable; default high-level relationships)"},
+		&cli.IntFlag{Name: "max-depth", Value: 3, Usage: "maximum traversal depth", Validator: func(value int) error {
+			if value < 1 || value > 100 {
+				return fmt.Errorf("must be between 1 and 100")
+			}
+			return nil
+		}},
+		&cli.IntFlag{Name: "limit", Value: 100, Usage: "maximum graph nodes", Validator: func(value int) error {
+			if value < 1 || value > 5000 {
+				return fmt.Errorf("must be between 1 and 5000")
+			}
+			return nil
+		}},
+		&cli.IntFlag{Name: "max-edges", Value: 400, Usage: "maximum graph edges examined", Validator: func(value int) error {
+			if value < 1 || value > 20000 {
+				return fmt.Errorf("must be between 1 and 20000")
+			}
+			return nil
+		}},
+	}
+	flags = append(flags, federationFlags()...)
+	return &cli.Command{
+		Name: "graph", Usage: "render a bounded semantic neighborhood as Graphviz DOT",
+		Flags: flags,
+		Action: func(ctx context.Context, cmd *cli.Command) error {
+			if cmd.Args().Len() != 1 {
+				return cli.Exit("graph expects one argument", 2)
+			}
+			output := cmd.String("output")
+			if cmd.Bool("json") && output != "" && output != "-" {
+				return cli.Exit("--output writes DOT and cannot be combined with --json", 2)
+			}
+			kinds, err := parseEdgeKinds(cmd.StringSlice("kind"))
+			if err != nil {
+				return cli.Exit(err.Error(), 2)
+			}
+			response, err := app.Execute(ctx, application.Invocation{
+				Command: "graph", Arguments: append([]string(nil), cmd.Args().Slice()...), JSON: cmd.Bool("json"),
+				Limit: cmd.Int("limit"), MaxDepth: cmd.Int("max-depth"), MaxEdges: cmd.Int("max-edges"), Kinds: kinds,
+				Direction: query.Direction(cmd.String("direction")), Scope: queryScope(cmd), Repositories: cmd.StringSlice("repo"),
+				CatalogPath: cmd.String("catalog"), MaxRepos: cmd.Int("max-repos"),
+			})
+			if err != nil {
+				return err
+			}
+			if output == "" || output == "-" || cmd.Bool("json") {
+				return renderInvocation(streams, response, cmd.Bool("json"))
+			}
+			var content bytes.Buffer
+			fileStreams := streams
+			fileStreams.Stdout = &content
+			if err := renderInvocation(fileStreams, response, false); err != nil {
+				return err
+			}
+			if err := os.WriteFile(output, content.Bytes(), 0o644); err != nil {
+				return fmt.Errorf("write DOT output: %w", err)
+			}
+			return nil
+		},
+	}
 }
 
 func workspaceCommands(app application.Service, streams Streams) *cli.Command {
@@ -459,6 +538,16 @@ func render(writer io.Writer, response application.Response, jsonOutput bool) er
 			}{"weave.export/v1", response.Export})
 		}
 		return encoder.Encode(response)
+	}
+	if response.Command == "graph" {
+		focus := ""
+		if len(response.Nodes) != 0 {
+			focus = response.Nodes[0]
+		}
+		return dot.Write(writer, dot.View{
+			Focus: focus, Nodes: response.Nodes, Symbols: response.Symbols,
+			Edges: response.Edges, Truncated: response.Truncated,
+		})
 	}
 	if response.Command == "status" && response.Freshness != nil {
 		status := response.Freshness

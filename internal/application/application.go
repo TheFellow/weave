@@ -42,7 +42,9 @@ type Invocation struct {
 	JSON           bool
 	Limit          int
 	MaxDepth       int
+	MaxEdges       int
 	Kinds          []graph.EdgeKind
+	Direction      query.Direction
 	SCIPPath       string
 	AdapterPath    string
 	AdapterArgs    []string
@@ -198,6 +200,8 @@ func (app Local) Execute(ctx context.Context, invocation Invocation) (Response, 
 	switch invocation.Command {
 	case "symbols":
 		response.Symbols, response.Truncated, err = db.FindSymbols(ctx, invocation.Arguments[0], invocation.Limit)
+	case "graph":
+		err = executeGraph(ctx, db, &response, invocation)
 	case "workspace find", "workspace outline", "workspace links", "workspace backlinks":
 		err = executeWorkspace(ctx, db, &response, invocation)
 	case "definition":
@@ -483,6 +487,8 @@ func (app Local) federated(ctx context.Context, response Response, invocation In
 	switch invocation.Command {
 	case "symbols":
 		response.Symbols, response.Truncated, err = store.FindSymbols(ctx, invocation.Arguments[0], invocation.Limit)
+	case "graph":
+		err = executeGraph(ctx, store, &response, invocation)
 	case "workspace find", "workspace outline", "workspace links", "workspace backlinks":
 		err = executeWorkspace(ctx, store, &response, invocation)
 	case "definition":
@@ -539,6 +545,52 @@ func (app Local) federated(ctx context.Context, response Response, invocation In
 type definitionStore interface {
 	FindSymbols(context.Context, string, int) ([]graph.Symbol, bool, error)
 	Occurrences(context.Context, string, []string, int) ([]graph.Occurrence, bool, error)
+}
+
+func executeGraph(ctx context.Context, store query.Store, response *Response, invocation Invocation) error {
+	focus, err := query.Resolve(ctx, store, invocation.Arguments[0])
+	if err != nil {
+		return err
+	}
+	direction := invocation.Direction
+	if direction == "" {
+		direction = query.DirectionBoth
+	}
+	kinds := invocation.Kinds
+	if len(kinds) == 0 {
+		kinds = defaultGraphKinds()
+	}
+	traversal, err := query.Neighborhood(ctx, store, focus.ID, kinds, direction, bounds(invocation))
+	if err != nil {
+		return err
+	}
+	response.Nodes, response.Edges, response.Truncated = traversal.Nodes, traversal.Edges, traversal.Truncated
+	for _, id := range traversal.Nodes {
+		symbol, ok, err := store.Symbol(ctx, id)
+		if err != nil {
+			return err
+		}
+		if ok {
+			response.Symbols = append(response.Symbols, symbol)
+		}
+	}
+	slices.SortFunc(response.Symbols, func(a, b graph.Symbol) int {
+		if a.StableName != b.StableName {
+			return strings.Compare(a.StableName, b.StableName)
+		}
+		return strings.Compare(a.ID, b.ID)
+	})
+	return nil
+}
+
+func defaultGraphKinds() []graph.EdgeKind {
+	return []graph.EdgeKind{
+		graph.EdgeCalls, graph.EdgeImports, graph.EdgeContains, graph.EdgeExtends,
+		graph.EdgeImplements, graph.EdgeInstantiates, graph.EdgeDependsOn, graph.EdgeTests,
+		graph.EdgeGenerates, graph.EdgeDocuments, graph.EdgeExposes, graph.EdgeHandles,
+		graph.EdgeReads, graph.EdgeWrites, graph.EdgeLinksTo, graph.EdgeEmbeds,
+		graph.EdgeMemberOf, graph.EdgeResolvesTo,
+	}
 }
 
 // findDefinitions returns every compiler-reported binding occurrence. The
@@ -847,7 +899,7 @@ func (app Local) databasePath(ctx context.Context) (string, error) {
 
 func requiresDatabase(command string) bool {
 	switch command {
-	case "symbols", "definition", "references", "callers", "callees", "dependencies", "path", "impact", "export", "verify", "workspace find", "workspace outline", "workspace links", "workspace backlinks":
+	case "symbols", "definition", "references", "callers", "callees", "dependencies", "path", "impact", "graph", "export", "verify", "workspace find", "workspace outline", "workspace links", "workspace backlinks":
 		return true
 	default:
 		return false
@@ -855,9 +907,12 @@ func requiresDatabase(command string) bool {
 }
 
 func bounds(invocation Invocation) query.Bounds {
-	maxEdges := invocation.Limit * 100
-	if maxEdges < 1000 {
-		maxEdges = 1000
+	maxEdges := invocation.MaxEdges
+	if maxEdges == 0 {
+		maxEdges = invocation.Limit * 100
+		if maxEdges < 1000 {
+			maxEdges = 1000
+		}
 	}
 	return query.Bounds{MaxDepth: invocation.MaxDepth, MaxNodes: invocation.Limit, MaxEdges: maxEdges}
 }
