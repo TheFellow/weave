@@ -28,6 +28,24 @@ Status meanings:
 This is a traceability report, not a declaration that the complete vision or
 the useful-first-release definition has been achieved.
 
+## Approved completion pass
+
+The nine-item completion pass in `.ai/vision.md` is complete at its documented
+scope. This does not erase the broader partials and deferred work recorded
+below.
+
+| # | Increment | Status | Durable evidence |
+| ---: | --- | --- | --- |
+| 1 | Release readiness | **Complete** | `a59e40a`; reproducible cross-platform archives, checksums, SPDX SBOMs, release inspection, draft publication/provenance workflow, installation/recovery guide, release-readiness CI. Actual public prerelease publication remains an explicit product milestone. |
+| 2 | Bounded source-rich context | **Complete** | `1f1cfdc`; `weave.context/v1`, shared local/federated query path, current bounded excerpts, evidence, provenance, one-hop relationships, CLI/explorer tests. |
+| 3 | Machine-wide aggregate | **Complete** | `279c55b`, `13d78ba`; immutable generation-keyed bstore aggregate under platform state, authoritative per-worktree revalidation/fallback, corruption/concurrency tests. |
+| 4 | Compact storage v2 | **Complete** | `ca8aee9`, `808ff3a`; interned numeric hot paths, split detail records, rebuild-only version boundary, retained v1 fixture, deterministic logical exports, recorded benchmark. |
+| 5 | Semantic snapshot diffs | **Complete** | `4ad4d9e`, `910f70d`, `d24070b`; Git-aware graph/API/impact/test diffs, stable snapshot identities, explorer transitions, real-browser and repository fixture tests. |
+| 6 | Optional watch warmer | **Complete** | `f7f45a2`; foreground bounded polling/coalescing/backoff/cancellation over the same authoritative freshness path, human/NDJSON tests. |
+| 7 | Source-rich human explorer | **Complete** | `a1b150a`; inspect/search/expand/pin/hide/snapshot comparison and revision-guarded contextual-link authoring over the shared graph/context APIs. |
+| 8 | Managed adapter ecosystem | **Complete** | `4aff063`, `0ecf38f`, `ea6280b`; install/update/remove/list/doctor/conformance, integrity and capability pins, explicit claim routing, independent packages and cross-platform contract/producer CI. `8e409b6`, `0fa395c`, and `d6bb7b3` add bounded native caches, stale-run cancellation, and worktree-clean reporting. |
+| 9 | Schema and build providers | **Complete** | `db82a7e`; maintained-parser Protobuf/OpenAPI 3/GraphQL/PostgreSQL/Terraform/build-manifest facts, bounded source-only trust boundary, category reuse, shared relationship contract, behavioral and real-CLI tests. |
+
 ## Product and architecture promises
 
 | Vision promise | Status | Implemented evidence | Remaining gap |
