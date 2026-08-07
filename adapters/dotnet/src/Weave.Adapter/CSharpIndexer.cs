@@ -42,8 +42,11 @@ public sealed class CSharpIndexer(RepositoryPaths paths, IndexRequest request)
         workspace.WorkspaceFailed += (_, args) =>
         {
             var message = "MSBuildWorkspace: " + args.Diagnostic.Message;
-            diagnostics.Add(new(args.Diagnostic.Kind == WorkspaceDiagnosticKind.Failure ? "error" : "warning", message));
-            if (args.Diagnostic.Kind == WorkspaceDiagnosticKind.Failure) workspaceFailures.Add(message);
+            var delegatedFSharpProject = args.Diagnostic.Message.Contains(".fsproj", StringComparison.OrdinalIgnoreCase) &&
+                                         args.Diagnostic.Message.Contains("not associated with a language", StringComparison.OrdinalIgnoreCase);
+            var fatal = args.Diagnostic.Kind == WorkspaceDiagnosticKind.Failure && !delegatedFSharpProject;
+            diagnostics.Add(new(fatal ? "error" : "warning", message));
+            if (fatal) workspaceFailures.Add(message);
         };
 
         var projects = await LoadProjectsAsync(workspace, cancellationToken);
