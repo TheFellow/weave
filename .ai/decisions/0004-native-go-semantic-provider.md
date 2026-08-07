@@ -42,10 +42,12 @@ rather than publishing partial facts.
   command selected by the user.
 - Exact definitions, references, imports, methods, implementations, and direct
   calls are available without SSA.
+- Uninstantiated generic declarations and uses are indexed, but implementation
+  edges for uninstantiated generic named types are omitted because `go/types`
+  does not specify that predicate.
 - Public API changes conservatively replace dependent units; implementation
   changes normally replace only their unit.
 - Initial provider refresh still runs one package metadata/type load after a
   Git-visible change. Persistent parse/type caches are a future optimization.
 - Missing dependencies may require a populated module cache; no restore or
   source mutation is initiated explicitly by Weave.
-

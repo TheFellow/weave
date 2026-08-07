@@ -126,6 +126,8 @@ Adopted:
 Deferred with explicit boundaries:
 
 - Whole-program pointer analysis and guessed dynamic call targets.
+- Implementation edges for uninstantiated generic named types; `go/types`
+  explicitly leaves `Implements` behavior unspecified for those types.
 - Serialized gopls internal indexes; they are excellent prior art but internal
   APIs and unnecessary for the first durable implementation.
 - Alternate build variants beyond the active environment and normal tests.
@@ -146,4 +148,3 @@ Deferred with explicit boundaries:
 - [gopls architecture and caches](https://go.googlesource.com/tools/+/master/gopls/doc/design/implementation.md)
 - [gopls package-handle precise pruning](https://go.googlesource.com/tools/+/master/gopls/internal/cache/check.go)
 - [SCIP Go indexer](https://github.com/sourcegraph/scip-go)
-

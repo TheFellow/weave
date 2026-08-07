@@ -57,6 +57,9 @@ func TestProviderEmitsCompilerResolvedGoFacts(t *testing.T) {
 	if !hasEdge(edges, graph.EdgeImplements, "Service", "Handler", symbols) {
 		t.Error("missing compiler-resolved Service implements Handler edge")
 	}
+	if countKind(edges, graph.EdgeImplements) < 2 {
+		t.Error("missing concrete-method to interface-method implementation edge")
+	}
 	if !hasEdge(edges, graph.EdgeCalls, "Run", "Invoke", symbols) {
 		t.Error("missing static Run -> Invoke call")
 	}

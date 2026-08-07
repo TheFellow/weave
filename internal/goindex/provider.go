@@ -324,7 +324,11 @@ func inputFingerprint(root string, pkg *packages.Package, surfaces map[string]st
 			content, err := os.ReadFile(name)
 			if err == nil {
 				digest := sha256.Sum256(content)
-				records = append(records, "module-manifest="+filepath.ToSlash(name)+":"+hex.EncodeToString(digest[:]))
+				path, ok := relativePath(root, name)
+				if !ok {
+					path = filepath.Base(name)
+				}
+				records = append(records, "module-manifest="+path+":"+hex.EncodeToString(digest[:]))
 			} else if !errors.Is(err, os.ErrNotExist) {
 				return "", fmt.Errorf("read module manifest: %w", err)
 			}

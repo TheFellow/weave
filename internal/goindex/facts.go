@@ -290,14 +290,38 @@ func (analysis *packageAnalysis) calledObject(expression ast.Expr) types.Object 
 func addImplementations(analyses []*packageAnalysis) {
 	for _, concretePackage := range analyses {
 		for concreteName, typ := range concretePackage.concretes {
+			named := namedType(typ)
+			if named == nil || named.TypeParams().Len() != 0 {
+				// Implements is intentionally unspecified for an uninstantiated
+				// generic named type. Do not label an approximation Exact.
+				continue
+			}
 			for _, interfacePackage := range analyses {
 				for interfaceName, iface := range interfacePackage.interfaces {
-					if !types.Implements(typ, iface) && !types.Implements(types.NewPointer(typ), iface) {
+					if iface.NumMethods() == 0 {
+						continue
+					}
+					implementationType := typ
+					if !types.Implements(implementationType, iface) {
+						implementationType = types.NewPointer(typ)
+					}
+					if !types.Implements(implementationType, iface) {
 						continue
 					}
 					from := concretePackage.objectID(concreteName)
 					to := interfacePackage.objectID(interfaceName)
 					concretePackage.facts.Edges = append(concretePackage.facts.Edges, concretePackage.edge(from, to, graph.EdgeImplements, "", graph.Range{}))
+					methods := types.NewMethodSet(implementationType)
+					for abstract := range iface.Methods() {
+						selection := methods.Lookup(abstract.Pkg(), abstract.Name())
+						if selection == nil {
+							continue
+						}
+						concretePackage.facts.Edges = append(concretePackage.facts.Edges, concretePackage.edge(
+							concretePackage.objectID(selection.Obj()), interfacePackage.objectID(abstract),
+							graph.EdgeImplements, "", graph.Range{},
+						))
+					}
 				}
 			}
 		}
