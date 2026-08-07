@@ -14,6 +14,7 @@ import (
 	"github.com/TheFellow/weave/internal/application"
 	"github.com/TheFellow/weave/internal/command"
 	"github.com/TheFellow/weave/internal/freshness"
+	"github.com/TheFellow/weave/internal/goindex"
 	"github.com/TheFellow/weave/internal/graph"
 	"github.com/TheFellow/weave/internal/storage"
 )
@@ -256,6 +257,41 @@ func TestLifecycleAndQueriesRefreshRepositoryBeforeReading(t *testing.T) {
 	stdout, stderr = run("symbols", "handle")
 	if !strings.Contains(stdout, "fixture:handle") || !strings.Contains(stderr, "index: refreshed 1 changed paths") || provider.calls != 2 {
 		t.Fatalf("dirty query stdout=%q stderr=%q calls=%d", stdout, stderr, provider.calls)
+	}
+}
+
+func TestNativeGoProviderRefreshesBeforeEndToEndQuery(t *testing.T) {
+	ctx := context.Background()
+	root := commandRepository(t)
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.test/commandfixture\n\ngo 1.24.0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package fixture\n\nfunc HandleRequest() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	manager := &freshness.Manager{Directory: root, Provider: goindex.Provider{}, Command: "weave test"}
+	app := application.Local{Freshness: manager}
+
+	run := func(query string) (string, string) {
+		t.Helper()
+		var stdout, stderr bytes.Buffer
+		rootCommand := command.New(app, command.Streams{Stdin: strings.NewReader(""), Stdout: &stdout, Stderr: &stderr})
+		if err := rootCommand.Run(ctx, []string{"weave", "symbols", query}); err != nil {
+			t.Fatalf("symbols %q: %v", query, err)
+		}
+		return stdout.String(), stderr.String()
+	}
+
+	stdout, stderr := run("HandleRequest")
+	if !strings.Contains(stdout, "HandleRequest") || !strings.Contains(stdout, "function") || !strings.Contains(stderr, "index: refreshed") {
+		t.Fatalf("initial query stdout=%q stderr=%q", stdout, stderr)
+	}
+	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package fixture\n\nfunc HandleRequest() {}\nfunc AddedLater() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr = run("AddedLater")
+	if !strings.Contains(stdout, "AddedLater") || !strings.Contains(stderr, "index: refreshed 2 changed paths") {
+		t.Fatalf("query after edit stdout=%q stderr=%q", stdout, stderr)
 	}
 }
 

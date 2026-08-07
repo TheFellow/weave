@@ -8,6 +8,7 @@ import (
 	"github.com/TheFellow/weave/internal/application"
 	"github.com/TheFellow/weave/internal/command"
 	"github.com/TheFellow/weave/internal/freshness"
+	"github.com/TheFellow/weave/internal/goindex"
 	cli "github.com/urfave/cli/v3"
 )
 
@@ -15,7 +16,7 @@ func main() {
 	database := os.Getenv("WEAVE_DATABASE")
 	local := application.Local{DatabasePath: database}
 	if database == "" {
-		manager := &freshness.Manager{Directory: ".", Provider: freshness.EmptyProvider{}, Command: "weave"}
+		manager := &freshness.Manager{Directory: ".", Provider: goindex.Provider{}, Command: "weave"}
 		local = application.Local{Freshness: manager}
 	}
 	app := command.New(local, command.Streams{
