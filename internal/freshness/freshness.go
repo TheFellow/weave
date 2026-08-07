@@ -24,8 +24,9 @@ import (
 )
 
 const (
-	manifestSchema = "weave.freshness/v1"
-	defaultTimeout = 2 * time.Second
+	manifestSchema           = "weave.freshness/v1"
+	defaultTimeout           = 2 * time.Second
+	generationMismatchReason = "graph database generation does not match the freshness manifest"
 	// The workspace provider can legitimately own hundreds of thousands of
 	// path units. Publication and reading must enforce the same encoded bound.
 	maxManifestBytes int64 = 256 << 20
@@ -100,19 +101,24 @@ func (EmptyProvider) Refresh(context.Context, Request) (Result, error) {
 // Status is a cheap comparison between current Git state and the last complete
 // manifest.
 type Status struct {
-	Initialized        bool     `json:"initialized"`
-	Current            bool     `json:"current"`
-	Refreshed          bool     `json:"refreshed,omitempty"`
-	Reason             string   `json:"reason,omitempty"`
-	RepositoryIdentity string   `json:"repository_identity"`
-	WorktreeID         string   `json:"worktree_id"`
-	Commit             string   `json:"commit,omitempty"`
-	Tree               string   `json:"tree,omitempty"`
-	Dirty              bool     `json:"dirty"`
-	ChangeCount        int      `json:"change_count"`
-	DatabasePath       string   `json:"database_path"`
-	ManifestPath       string   `json:"manifest_path"`
-	Diagnostics        []string `json:"diagnostics,omitempty"`
+	Initialized        bool   `json:"initialized"`
+	Current            bool   `json:"current"`
+	Refreshed          bool   `json:"refreshed,omitempty"`
+	Reason             string `json:"reason,omitempty"`
+	RepositoryIdentity string `json:"repository_identity"`
+	WorktreeID         string `json:"worktree_id"`
+	Commit             string `json:"commit,omitempty"`
+	Tree               string `json:"tree,omitempty"`
+	Dirty              bool   `json:"dirty"`
+	ChangeCount        int    `json:"change_count"`
+	DatabasePath       string `json:"database_path"`
+	ManifestPath       string `json:"manifest_path"`
+	// Generation is a deterministic digest of the complete authoritative
+	// freshness manifest, excluding publication time and diagnostics. It lets
+	// disposable read caches prove that they represent this exact worktree
+	// generation without treating the cache as a freshness authority.
+	Generation  string   `json:"generation,omitempty"`
+	Diagnostics []string `json:"diagnostics,omitempty"`
 }
 
 // Manager owns freshness for one directory/repository.
@@ -134,7 +140,18 @@ func (m Manager) Ensure(ctx context.Context, force bool) (Status, error) {
 		return Status{}, err
 	}
 	if status.Current && !force {
-		return status, nil
+		matches, matchErr := databaseGenerationMatches(ctx, status, m.timeout())
+		if matchErr == nil {
+			if matches {
+				return status, nil
+			}
+			status.Current = false
+			status.Reason = generationMismatchReason
+			manifest = nil
+		}
+		// A concurrent refresher holds the database before it releases the
+		// refresh lock. Verification errors therefore proceed through that lock
+		// and are decided authoritatively by the second inspection below.
 	}
 	lock, err := acquire(ctx, filepath.Join(repo.StorageDir, "refresh.lock"), m.timeout(), m.Command)
 	if err != nil {
@@ -148,7 +165,14 @@ func (m Manager) Ensure(ctx context.Context, force bool) (Status, error) {
 		return Status{}, err
 	}
 	if status.Current && !force {
-		return status, nil
+		matches, matchErr := databaseGenerationMatches(ctx, status, m.timeout())
+		if matchErr != nil {
+			return Status{}, matchErr
+		}
+		if matches {
+			return status, nil
+		}
+		manifest = nil
 	}
 	provider := m.provider()
 	result, err := provider.Refresh(ctx, Request{Repository: repo, State: state, Previous: manifest, Force: force})
@@ -169,10 +193,19 @@ func (m Manager) Ensure(ctx context.Context, force bool) (Status, error) {
 	if err != nil {
 		return Status{}, err
 	}
+	newManifest := buildManifest(repo, state, provider.ID(), result.Units, result.Diagnostics)
+	if err := db.InvalidateGeneration(ctx); err != nil {
+		_ = db.Close()
+		return Status{}, err
+	}
 	// Large compiler universes can contain hundreds of thousands of indexed
 	// facts. Bound each storage transaction while the unpublished manifest makes
 	// an interrupted refresh observably stale and safely replayable.
 	if err := db.ReplaceUnitsIncremental(ctx, result.Batches, result.Removed, 25_000); err != nil {
+		_ = db.Close()
+		return Status{}, err
+	}
+	if err := db.SetGeneration(ctx, manifestGeneration(newManifest)); err != nil {
 		_ = db.Close()
 		return Status{}, err
 	}
@@ -182,13 +215,28 @@ func (m Manager) Ensure(ctx context.Context, force bool) (Status, error) {
 	if err := requireUnchangedState(ctx, repo, state, "graph publication"); err != nil {
 		return Status{}, err
 	}
-	newManifest := buildManifest(repo, state, provider.ID(), result.Units, result.Diagnostics)
 	if err := writeManifest(filepath.Join(repo.StorageDir, "manifest.json"), newManifest); err != nil {
 		return Status{}, err
 	}
 	status = statusFor(repo, state, &newManifest, provider.ID())
 	status.Refreshed = true
 	return status, nil
+}
+
+func databaseGenerationMatches(ctx context.Context, status Status, timeout time.Duration) (bool, error) {
+	db, err := storage.Open(ctx, status.DatabasePath, storage.Options{MustExist: true, Timeout: timeout})
+	if err != nil {
+		return false, err
+	}
+	generation, generationErr := db.Generation(ctx)
+	closeErr := db.Close()
+	if generationErr != nil {
+		return false, generationErr
+	}
+	if closeErr != nil {
+		return false, closeErr
+	}
+	return generation != "" && generation == status.Generation, nil
 }
 
 func requireUnchangedState(ctx context.Context, repo repository.Repository, expected repository.State, phase string) error {
@@ -206,7 +254,23 @@ func requireUnchangedState(ctx context.Context, repo repository.Repository, expe
 // Inspect reports freshness without changing repository state.
 func (m Manager) Inspect(ctx context.Context) (Status, error) {
 	_, _, _, status, err := m.inspect(ctx)
-	return status, err
+	if err != nil || !status.Current {
+		return status, err
+	}
+	matches, generationErr := databaseGenerationMatches(ctx, status, m.timeout())
+	if generationErr != nil {
+		// Inspect is a read-only status surface: preserve the useful repository
+		// status and report unverifiable derived state as non-current. Ensure's
+		// locked second check remains responsible for returning persistent errors.
+		status.Current = false
+		status.Reason = "graph database generation could not be verified: " + generationErr.Error()
+		return status, nil
+	}
+	if !matches {
+		status.Current = false
+		status.Reason = generationMismatchReason
+	}
+	return status, nil
 }
 
 // DatabasePath resolves the worktree-specific derived graph path.
@@ -269,7 +333,33 @@ func statusFor(repo repository.Repository, state repository.State, manifest *Man
 		return status
 	}
 	status.Current = true
+	status.Generation = manifestGeneration(*manifest)
 	return status
+}
+
+func manifestGeneration(manifest Manifest) string {
+	// UpdatedAt is publication metadata and diagnostics do not change graph
+	// facts. All semantic source and provider inputs remain in this projection.
+	projection := struct {
+		Schema             string
+		Complete           bool
+		RepositoryIdentity string
+		WorktreeID         string
+		Provider           ProviderID
+		Commit             string
+		Tree               string
+		Branch             string
+		Detached           bool
+		OverlayDigest      string
+		Units              []Unit
+	}{
+		manifest.Schema, manifest.Complete, manifest.RepositoryIdentity,
+		manifest.WorktreeID, manifest.Provider, manifest.Commit, manifest.Tree,
+		manifest.Branch, manifest.Detached, manifest.OverlayDigest, manifest.Units,
+	}
+	encoded, _ := json.Marshal(projection)
+	digest := sha256.Sum256(encoded)
+	return "sha256:" + hex.EncodeToString(digest[:])
 }
 
 func buildManifest(repo repository.Repository, state repository.State, provider ProviderID, units []Unit, diagnostics []string) Manifest {

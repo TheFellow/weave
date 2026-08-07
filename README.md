@@ -397,7 +397,11 @@ linked or bundled into the wrapper artifact.
 
 Per-worktree state lives at the Git-resolved `git rev-parse --git-path weave`
 location (normally `.git/weave`). The cross-repository catalog uses the
-platform user data directory. Neither belongs in source control.
+platform user state directory. Catalog-scoped symbol and graph queries also
+materialize an immutable, generation-named machine aggregate beside the
+catalog. It contains only symbols, token postings, edges, and worktree
+provenance; per-worktree indexes remain the freshness authorities. None of
+these files belongs in source control.
 
 ```sh
 weave verify          # logical graph checks; warnings are non-fatal
@@ -426,6 +430,21 @@ with `--scope catalog` or repeated `--repo` selectors refresh every selected
 member before opening its database. A member that cannot refresh is excluded and
 reported on stderr/JSON; its stale facts are never silently served. Healthy
 members still return bounded partial results with repository provenance.
+
+After those authoritative checks, `symbols`, `callers`, `callees`,
+`dependencies`, `path`, `impact`, and `graph` reuse the exact machine aggregate
+generation when available. A missing, mismatched, corrupt, interrupted, or
+locked aggregate is rebuilt atomically or falls back to the already validated
+worktree federation. Deleting the aggregate directory is always safe. Defaults:
+
+- macOS: `~/Library/Application Support/weave/aggregate/`
+- Linux: `${XDG_STATE_HOME:-~/.local/state}/weave/aggregate/`
+- Windows: `%LOCALAPPDATA%\weave\aggregate\`
+
+`WEAVE_AGGREGATE` accepts an absolute directory override. An explicit
+`--catalog /absolute/path/catalog.db` relocates the default aggregate to the
+adjacent `aggregate/` directory, which keeps isolated catalog installations
+self-contained.
 
 ## Scope and roadmap
 

@@ -104,6 +104,21 @@ location. Prefer `weave repos remove` for one stale registration. If the catalog
 itself is corrupt, move that one file aside, then re-register worktrees with
 `weave repos add`; per-worktree indexes remain independently rebuildable.
 
+Catalog symbol-search and graph-traversal commands maintain a disposable hot
+aggregate in immutable `graph-<generation>.db` files under:
+
+- macOS: `~/Library/Application Support/weave/aggregate/`
+- Linux: `${XDG_STATE_HOME:-~/.local/state}/weave/aggregate/`
+- Windows: `%LOCALAPPDATA%\weave\aggregate\` (with the same platform fallback as the catalog)
+
+`WEAVE_AGGREGATE` may override this with an absolute directory. When `--catalog`
+or `WEAVE_CATALOG` selects another catalog file, the default is an `aggregate`
+directory beside that file. The cache contains only search/traversal facts and
+provenance and is never a freshness authority. It can be recovered by moving or
+deleting that exact `aggregate` directory; the next eligible catalog query
+revalidates every selected worktree and rebuilds it. Do not delete the parent
+state directory unless you also intend to discard `catalog.db` registrations.
+
 When reporting a packaging or recovery failure, include `weave version --json`,
 the host OS/architecture, the archive filename and checksum, and the failing
 command. Do not attach an index that may contain private repository identities

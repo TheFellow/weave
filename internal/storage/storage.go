@@ -45,6 +45,11 @@ type metadataRecord struct {
 	Version uint32
 }
 
+type generationRecord struct {
+	ID         uint8 `bstore:"typename WeaveGeneration,noauto"`
+	Generation string
+}
+
 type unitRecord struct {
 	ID                 string `bstore:"typename WeaveUnit"`
 	Provider           string
@@ -110,7 +115,7 @@ type tokenRecord struct {
 }
 
 var recordTypes = []any{
-	metadataRecord{}, unitRecord{}, documentRecord{}, symbolRecord{},
+	metadataRecord{}, generationRecord{}, unitRecord{}, documentRecord{}, symbolRecord{},
 	occurrenceRecord{}, edgeRecord{}, tokenRecord{},
 }
 
@@ -169,6 +174,52 @@ func (db *DB) Close() error {
 
 // Path returns the database file path.
 func (db *DB) Path() string { return db.path }
+
+// Generation returns the freshness manifest generation atomically associated
+// with the stored facts. Empty means legacy, explicitly invalidated, or not
+// managed by the freshness lifecycle.
+func (db *DB) Generation(ctx context.Context) (string, error) {
+	record, err := bstore.QueryDB[generationRecord](ctx, db.db).FilterID(uint8(1)).Get()
+	if err == bstore.ErrAbsent {
+		return "", nil
+	}
+	if err != nil {
+		return "", classify("read database generation", err)
+	}
+	return record.Generation, nil
+}
+
+// SetGeneration atomically associates the complete current fact set with one
+// authoritative freshness generation.
+func (db *DB) SetGeneration(ctx context.Context, generation string) error {
+	if generation == "" {
+		return fmt.Errorf("%w: database generation is empty", ErrInvalid)
+	}
+	return db.setGeneration(ctx, generation)
+}
+
+// InvalidateGeneration prevents any derived aggregate from trusting facts
+// while a multi-transaction refresh is in progress.
+func (db *DB) InvalidateGeneration(ctx context.Context) error {
+	return db.setGeneration(ctx, "")
+}
+
+func (db *DB) setGeneration(ctx context.Context, generation string) error {
+	record := generationRecord{ID: 1, Generation: generation}
+	return classify("write database generation", db.db.Write(ctx, func(tx *bstore.Tx) error {
+		current, err := bstore.QueryTx[generationRecord](tx).FilterID(uint8(1)).Get()
+		if err == bstore.ErrAbsent {
+			return tx.Insert(&record)
+		}
+		if err != nil {
+			return err
+		}
+		if current.Generation == generation {
+			return nil
+		}
+		return tx.Update(&record)
+	}))
+}
 
 // ReplaceUnit atomically replaces every fact owned by one compilation unit.
 func (db *DB) ReplaceUnit(ctx context.Context, facts graph.UnitFacts) error {
@@ -396,6 +447,27 @@ func (db *DB) Symbols(ctx context.Context) ([]graph.Symbol, error) {
 		return nil, classify("list symbols", err)
 	}
 	return mapSlice(records, fromSymbolRecord), nil
+}
+
+// ScanHotFacts visits the compact projection used by machine-wide symbol
+// search and graph traversal. It deliberately excludes units, documents,
+// occurrences, source text, and verbose evidence. Callbacks run in canonical
+// order and must not retain bstore transaction state.
+func (db *DB) ScanHotFacts(ctx context.Context, symbol func(graph.Symbol) error, edge func(graph.Edge) error) error {
+	if symbol == nil || edge == nil {
+		return fmt.Errorf("%w: hot-fact callbacks are required", ErrInvalid)
+	}
+	if err := bstore.QueryDB[symbolRecord](ctx, db.db).SortAsc("ID").ForEach(func(record symbolRecord) error {
+		return symbol(fromSymbolRecord(record))
+	}); err != nil {
+		return classify("scan symbols", err)
+	}
+	if err := bstore.QueryDB[edgeRecord](ctx, db.db).SortAsc("ID").ForEach(func(record edgeRecord) error {
+		return edge(fromEdgeRecord(record))
+	}); err != nil {
+		return classify("scan edges", err)
+	}
+	return nil
 }
 
 // FindSymbols performs bounded exact, name-prefix, and token-prefix lookup.

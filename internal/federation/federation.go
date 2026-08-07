@@ -3,11 +3,13 @@ package federation
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
 	"time"
 
+	"github.com/TheFellow/weave/internal/aggregate"
 	"github.com/TheFellow/weave/internal/catalog"
 	"github.com/TheFellow/weave/internal/graph"
 	"github.com/TheFellow/weave/internal/storage"
@@ -23,8 +25,9 @@ type Source struct {
 }
 
 type member struct {
-	entry catalog.Entry
-	db    *storage.DB
+	entry      catalog.Entry
+	generation string
+	db         *storage.DB
 }
 
 // Store implements query.Store by merging independent member databases.
@@ -33,23 +36,46 @@ type Store struct {
 	diagnostics []string
 	sources     map[string]Source
 	partial     bool
+	accelerator *aggregate.DB
+	cacheStatus aggregate.Status
+	refresh     GenerationRefresher
 }
 
 // Refresher makes one catalog worktree current before its database is observed.
 type Refresher func(context.Context, string) error
 
+// GenerationRefresher makes a worktree current and returns the deterministic
+// authoritative freshness generation used to validate a disposable aggregate.
+type GenerationRefresher func(context.Context, string) (string, error)
+
 // Open selects and opens at most maxRepositories independent catalog members.
 func Open(ctx context.Context, catalogPath string, selectors []string, maxRepositories int) (*Store, error) {
-	return open(ctx, catalogPath, selectors, maxRepositories, nil, false)
+	return open(ctx, catalogPath, selectors, maxRepositories, nil, false, "")
 }
 
 // OpenFresh refreshes every selected member and excludes any member that cannot
 // prove freshness. Healthy members remain available as explicit partial results.
 func OpenFresh(ctx context.Context, catalogPath string, selectors []string, maxRepositories int, refresh Refresher) (*Store, error) {
-	return open(ctx, catalogPath, selectors, maxRepositories, refresh, true)
+	var withGeneration GenerationRefresher
+	if refresh != nil {
+		withGeneration = func(ctx context.Context, root string) (string, error) {
+			return "uncached", refresh(ctx, root)
+		}
+	}
+	return open(ctx, catalogPath, selectors, maxRepositories, withGeneration, true, "")
 }
 
-func open(ctx context.Context, catalogPath string, selectors []string, maxRepositories int, refresh Refresher, requireFresh bool) (*Store, error) {
+// OpenFreshAccelerated proves freshness for every selected worktree, then uses
+// or materializes an exact disposable hot read projection. Cache failures are
+// reported diagnostically and fall back to authoritative federation.
+func OpenFreshAccelerated(ctx context.Context, catalogPath string, selectors []string, maxRepositories int, aggregateDirectory string, refresh GenerationRefresher) (*Store, error) {
+	if aggregateDirectory == "" {
+		return nil, fmt.Errorf("aggregate directory is required")
+	}
+	return open(ctx, catalogPath, selectors, maxRepositories, refresh, true, aggregateDirectory)
+}
+
+func open(ctx context.Context, catalogPath string, selectors []string, maxRepositories int, refresh GenerationRefresher, requireFresh bool, aggregateDirectory string) (*Store, error) {
 	if maxRepositories < 1 || maxRepositories > 256 {
 		return nil, fmt.Errorf("max repositories must be between 1 and 256")
 	}
@@ -93,7 +119,7 @@ func open(ctx context.Context, catalogPath string, selectors []string, maxReposi
 	if len(selected) > maxRepositories {
 		return nil, fmt.Errorf("catalog query selects %d repositories, exceeds --max-repos %d", len(selected), maxRepositories)
 	}
-	result := &Store{sources: map[string]Source{}}
+	result := &Store{sources: map[string]Source{}, refresh: refresh}
 	for _, entry := range selected {
 		if entry.Missing {
 			result.partial = true
@@ -109,29 +135,151 @@ func open(ctx context.Context, catalogPath string, selectors []string, maxReposi
 				result.diagnostics = append(result.diagnostics, entry.Identity+" ["+entry.WorktreeID+"]: excluded: no freshness provider configured")
 				continue
 			}
-			if refreshErr := refresh(ctx, entry.Root); refreshErr != nil {
+			generation, refreshErr := refresh(ctx, entry.Root)
+			if refreshErr != nil {
 				result.partial = true
 				result.diagnostics = append(result.diagnostics, entry.Identity+" ["+entry.WorktreeID+"]: excluded: refresh failed: "+refreshErr.Error())
 				continue
 			}
+			if aggregateDirectory != "" && generation == "" {
+				result.partial = true
+				result.diagnostics = append(result.diagnostics, entry.Identity+" ["+entry.WorktreeID+"]: excluded: freshness returned no aggregate generation")
+				continue
+			}
+			result.members = append(result.members, member{entry: entry, generation: generation})
+		} else {
+			result.members = append(result.members, member{entry: entry})
 		}
-		db, openErr := storage.Open(ctx, entry.DatabasePath, storage.Options{MustExist: true, Timeout: 250 * time.Millisecond})
+	}
+	if aggregateDirectory != "" && len(result.members) != 0 {
+		sources := result.aggregateSources(false)
+		if db, status, cacheErr := aggregate.Open(ctx, aggregateDirectory, sources, 250*time.Millisecond); cacheErr == nil {
+			result.accelerator, result.cacheStatus = db, status
+			slices.Sort(result.diagnostics)
+			return result, nil
+		}
+	}
+	healthy := result.members[:0]
+	for _, pending := range result.members {
+		db, openErr := storage.Open(ctx, pending.entry.DatabasePath, storage.Options{MustExist: true, Timeout: 250 * time.Millisecond})
 		if openErr != nil {
 			result.partial = true
-			result.diagnostics = append(result.diagnostics, entry.Identity+" ["+entry.WorktreeID+"]: index unavailable: "+openErr.Error())
+			result.diagnostics = append(result.diagnostics, pending.entry.Identity+" ["+pending.entry.WorktreeID+"]: index unavailable: "+openErr.Error())
 			continue
 		}
-		result.members = append(result.members, member{entry: entry, db: db})
+		pending.db = db
+		if aggregateDirectory != "" {
+			databaseGeneration, generationErr := db.Generation(ctx)
+			if generationErr != nil || databaseGeneration != pending.generation {
+				_ = db.Close()
+				result.partial = true
+				detail := fmt.Sprintf("database generation %q does not match freshness generation %q", databaseGeneration, pending.generation)
+				if generationErr != nil {
+					detail = generationErr.Error()
+				}
+				result.diagnostics = append(result.diagnostics, pending.entry.Identity+" ["+pending.entry.WorktreeID+"]: index generation unavailable: "+detail)
+				continue
+			}
+		}
+		healthy = append(healthy, pending)
+	}
+	result.members = healthy
+	if aggregateDirectory != "" && len(result.members) != 0 {
+		db, status, cacheErr := aggregate.Ensure(ctx, aggregateDirectory, result.aggregateSources(true), 2*time.Second)
+		if cacheErr == nil {
+			result.accelerator, result.cacheStatus = db, status
+			for i := range result.members {
+				if result.members[i].db != nil {
+					_ = result.members[i].db.Close()
+					result.members[i].db = nil
+				}
+			}
+		} else {
+			result.diagnostics = append(result.diagnostics, "machine aggregate unavailable; using authoritative federation: "+cacheErr.Error())
+			result.restoreReleasedMembers(ctx)
+		}
 	}
 	slices.Sort(result.diagnostics)
 	return result, nil
 }
 
+func (s *Store) aggregateSources(withStores bool) []aggregate.Source {
+	result := make([]aggregate.Source, 0, len(s.members))
+	for i := range s.members {
+		member := &s.members[i]
+		source := aggregate.Source{
+			Key: member.entry.Key, Repository: member.entry.Identity, WorktreeID: member.entry.WorktreeID,
+			Root: member.entry.Root, DatabasePath: member.entry.DatabasePath, Generation: member.generation,
+		}
+		if withStores {
+			source.Store = member.db
+			source.Release = func() error {
+				if member.db == nil {
+					return nil
+				}
+				err := member.db.Close()
+				member.db = nil
+				return err
+			}
+			source.Validate = func(ctx context.Context) (string, error) {
+				if s.refresh == nil {
+					return "", errors.New("freshness generation revalidation is unavailable")
+				}
+				return s.refresh(ctx, member.entry.Root)
+			}
+		}
+		result = append(result, source)
+	}
+	return result
+}
+
+func (s *Store) restoreReleasedMembers(ctx context.Context) {
+	healthy := s.members[:0]
+	for _, member := range s.members {
+		if member.db == nil {
+			generation, err := s.refresh(ctx, member.entry.Root)
+			if err != nil {
+				s.partial = true
+				s.diagnostics = append(s.diagnostics, member.entry.Identity+" ["+member.entry.WorktreeID+"]: excluded after aggregate failure: "+err.Error())
+				continue
+			}
+			member.generation = generation
+			db, err := storage.Open(ctx, member.entry.DatabasePath, storage.Options{MustExist: true, Timeout: 250 * time.Millisecond})
+			if err != nil {
+				s.partial = true
+				s.diagnostics = append(s.diagnostics, member.entry.Identity+" ["+member.entry.WorktreeID+"]: index unavailable after aggregate failure: "+err.Error())
+				continue
+			}
+			databaseGeneration, generationErr := db.Generation(ctx)
+			if generationErr != nil || databaseGeneration != generation {
+				_ = db.Close()
+				s.partial = true
+				detail := fmt.Sprintf("database generation %q does not match freshness generation %q", databaseGeneration, generation)
+				if generationErr != nil {
+					detail = generationErr.Error()
+				}
+				s.diagnostics = append(s.diagnostics, member.entry.Identity+" ["+member.entry.WorktreeID+"]: excluded after aggregate failure: "+detail)
+				continue
+			}
+			member.db = db
+		}
+		healthy = append(healthy, member)
+	}
+	s.members = healthy
+}
+
 func (s *Store) Close() error {
 	var failures []string
-	for _, member := range s.members {
-		if err := member.db.Close(); err != nil {
+	if s.accelerator != nil {
+		if err := s.accelerator.Close(); err != nil {
 			failures = append(failures, err.Error())
+		}
+	}
+	for _, member := range s.members {
+		if member.db != nil {
+			if err := member.db.Close(); err != nil {
+				failures = append(failures, err.Error())
+			}
 		}
 	}
 	if len(failures) > 0 {
@@ -152,6 +300,14 @@ func (s *Store) Diagnostics() []string {
 func (s *Store) Partial() bool { return s.partial }
 
 func (s *Store) Sources() []Source {
+	if s.accelerator != nil {
+		values := s.accelerator.Sources()
+		result := make([]Source, len(values))
+		for i, value := range values {
+			result[i] = Source(value)
+		}
+		return result
+	}
 	result := make([]Source, 0, len(s.sources))
 	for _, source := range s.sources {
 		result = append(result, source)
@@ -171,11 +327,18 @@ func (s *Store) Sources() []Source {
 	return result
 }
 
+// Accelerated reports whether this store is serving the exact validated
+// machine aggregate rather than fanning queries out to worktree databases.
+func (s *Store) Accelerated() bool { return s.accelerator != nil }
+
+// CacheStatus describes the validated aggregate generation, when accelerated.
+func (s *Store) CacheStatus() aggregate.Status { return s.cacheStatus }
+
 // SourcesFor returns canonical repository provenance already observed for one
 // fact. Query composition layers call this only after fetching the fact.
 func (s *Store) SourcesFor(kind, id string) []Source {
 	var result []Source
-	for _, source := range s.sources {
+	for _, source := range s.Sources() {
 		if source.Kind == kind && source.FactID == id {
 			result = append(result, source)
 		}
@@ -198,6 +361,15 @@ func (s *Store) record(kind, id string, entry catalog.Entry) {
 }
 
 func (s *Store) Symbol(ctx context.Context, id string) (graph.Symbol, bool, error) {
+	if s.accelerator != nil {
+		value, ok, err := s.accelerator.Symbol(ctx, id)
+		if err == nil {
+			return value, ok, nil
+		}
+		if err := s.fallbackAccelerator(ctx, err); err != nil {
+			return graph.Symbol{}, false, err
+		}
+	}
 	var result graph.Symbol
 	found := false
 	for _, member := range s.members {
@@ -221,6 +393,9 @@ func (s *Store) Symbol(ctx context.Context, id string) (graph.Symbol, bool, erro
 // Document returns the canonical materialized document while retaining every
 // repository that supplied the stable document ID as provenance.
 func (s *Store) Document(ctx context.Context, id string) (graph.Document, bool, error) {
+	if s.accelerator != nil {
+		return graph.Document{}, false, fmt.Errorf("machine aggregate does not contain documents")
+	}
 	var result graph.Document
 	found := false
 	for _, member := range s.members {
@@ -242,6 +417,15 @@ func (s *Store) Document(ctx context.Context, id string) (graph.Document, bool, 
 }
 
 func (s *Store) FindSymbols(ctx context.Context, value string, limit int) ([]graph.Symbol, bool, error) {
+	if s.accelerator != nil {
+		values, truncated, err := s.accelerator.FindSymbols(ctx, value, limit)
+		if err == nil {
+			return values, truncated, nil
+		}
+		if err := s.fallbackAccelerator(ctx, err); err != nil {
+			return nil, false, err
+		}
+	}
 	byID := map[string]graph.Symbol{}
 	truncated := false
 	for _, member := range s.members {
@@ -289,6 +473,9 @@ func (s *Store) FindSymbols(ctx context.Context, value string, limit int) ([]gra
 }
 
 func (s *Store) Occurrences(ctx context.Context, symbolID string, roles []string, limit int) ([]graph.Occurrence, bool, error) {
+	if s.accelerator != nil {
+		return nil, false, fmt.Errorf("machine aggregate does not contain occurrences")
+	}
 	byID := map[string]graph.Occurrence{}
 	truncated := false
 	for _, member := range s.members {
@@ -330,6 +517,22 @@ func (s *Store) EdgesTo(ctx context.Context, id string, kinds []graph.EdgeKind, 
 }
 
 func (s *Store) edges(ctx context.Context, forward bool, id string, kinds []graph.EdgeKind, limit int) ([]graph.Edge, bool, error) {
+	if s.accelerator != nil {
+		var values []graph.Edge
+		var truncated bool
+		var err error
+		if forward {
+			values, truncated, err = s.accelerator.EdgesFrom(ctx, id, kinds, limit)
+		} else {
+			values, truncated, err = s.accelerator.EdgesTo(ctx, id, kinds, limit)
+		}
+		if err == nil {
+			return values, truncated, nil
+		}
+		if err := s.fallbackAccelerator(ctx, err); err != nil {
+			return nil, false, err
+		}
+	}
 	byKey := map[string]graph.Edge{}
 	truncated := false
 	for _, member := range s.members {
@@ -366,6 +569,23 @@ func (s *Store) edges(ctx context.Context, forward bool, id string, kinds []grap
 		results, truncated = results[:limit], true
 	}
 	return results, truncated, nil
+}
+
+func (s *Store) fallbackAccelerator(ctx context.Context, cause error) error {
+	if ctx.Err() != nil {
+		return cause
+	}
+	if s.accelerator != nil {
+		_ = s.accelerator.Close()
+		s.accelerator = nil
+	}
+	selected := len(s.members)
+	s.diagnostics = append(s.diagnostics, "machine aggregate query failed; using authoritative federation: "+cause.Error())
+	s.restoreReleasedMembers(ctx)
+	if selected != 0 && len(s.members) == 0 {
+		return fmt.Errorf("machine aggregate query failed and authoritative federation could not be restored: %w", cause)
+	}
+	return nil
 }
 
 func symbolKey(symbol graph.Symbol) string {

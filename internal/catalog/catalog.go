@@ -81,28 +81,55 @@ func DefaultPath(override string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolve user home: %w", err)
 	}
-	var base string
-	switch runtime.GOOS {
-	case "windows":
-		base = os.Getenv("LOCALAPPDATA")
-		if base == "" {
-			base, err = os.UserConfigDir()
-		}
-	case "darwin":
-		base = filepath.Join(home, "Library", "Application Support")
-	default:
-		base = os.Getenv("XDG_STATE_HOME")
-		if base != "" && !filepath.IsAbs(base) {
-			base = ""
-		}
-		if base == "" {
-			base = filepath.Join(home, ".local", "state")
-		}
-	}
+	base, err := stateBase(runtime.GOOS, home, os.Getenv, os.UserConfigDir)
 	if err != nil {
 		return "", fmt.Errorf("resolve user state: %w", err)
 	}
 	return filepath.Join(base, "weave", "catalog.db"), nil
+}
+
+// DefaultAggregateDirectory returns the platform user-state directory for
+// immutable machine aggregate generations. An explicit catalog path relocates
+// the aggregate beside that catalog, preserving isolated/test installations.
+// WEAVE_AGGREGATE may explicitly override the directory and must be absolute.
+func DefaultAggregateDirectory(catalogPath, override string) (string, error) {
+	if override == "" {
+		override = os.Getenv("WEAVE_AGGREGATE")
+	}
+	if override != "" {
+		if !filepath.IsAbs(override) {
+			return "", fmt.Errorf("%w: aggregate directory must be absolute", ErrInvalid)
+		}
+		return filepath.Clean(override), nil
+	}
+	if catalogPath == "" {
+		var err error
+		catalogPath, err = DefaultPath("")
+		if err != nil {
+			return "", err
+		}
+	}
+	if !filepath.IsAbs(catalogPath) {
+		return "", fmt.Errorf("%w: catalog path must be absolute", ErrInvalid)
+	}
+	return filepath.Join(filepath.Dir(filepath.Clean(catalogPath)), "aggregate"), nil
+}
+
+func stateBase(goos, home string, getenv func(string) string, userConfigDir func() (string, error)) (string, error) {
+	switch goos {
+	case "windows":
+		if base := getenv("LOCALAPPDATA"); base != "" {
+			return base, nil
+		}
+		return userConfigDir()
+	case "darwin":
+		return filepath.Join(home, "Library", "Application Support"), nil
+	default:
+		if base := getenv("XDG_STATE_HOME"); base != "" && filepath.IsAbs(base) {
+			return base, nil
+		}
+		return filepath.Join(home, ".local", "state"), nil
+	}
 }
 
 func Open(ctx context.Context, path string, timeout time.Duration) (*DB, error) {

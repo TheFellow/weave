@@ -40,6 +40,9 @@ func TestEnsureRefreshesOnlyReturnedUnitsAndPublishesCompleteState(t *testing.T)
 	if !first.Current || !first.Refreshed || provider.Calls() != 1 || !slices.Equal(first.Diagnostics, []string{"fixture warning"}) {
 		t.Fatalf("first Ensure() = %#v, calls %d", first, provider.Calls())
 	}
+	if !strings.HasPrefix(first.Generation, "sha256:") {
+		t.Fatalf("first generation = %q", first.Generation)
+	}
 	manifest, err := readManifest(first.ManifestPath)
 	if err != nil {
 		t.Fatal(err)
@@ -55,6 +58,9 @@ func TestEnsureRefreshesOnlyReturnedUnitsAndPublishesCompleteState(t *testing.T)
 	if !second.Current || second.Refreshed || provider.Calls() != 1 || !slices.Equal(second.Diagnostics, []string{"fixture warning"}) {
 		t.Fatalf("unchanged Ensure() = %#v, calls %d", second, provider.Calls())
 	}
+	if second.Generation != first.Generation {
+		t.Fatalf("unchanged generation %q != %q", second.Generation, first.Generation)
+	}
 
 	writeFreshFile(t, root, "untracked.go", "package fixture\n")
 	third, err := manager.Ensure(ctx, false)
@@ -63,6 +69,9 @@ func TestEnsureRefreshesOnlyReturnedUnitsAndPublishesCompleteState(t *testing.T)
 	}
 	if !third.Current || !third.Refreshed || !third.Dirty || provider.Calls() != 2 {
 		t.Fatalf("dirty Ensure() = %#v, calls %d", third, provider.Calls())
+	}
+	if third.Generation == first.Generation {
+		t.Fatalf("changed worktree retained generation %q", third.Generation)
 	}
 	requests := provider.Requests()
 	if requests[1].Previous == nil || len(requests[1].Previous.Units) != 2 || len(requests[1].State.Changes) != 1 || requests[1].State.Changes[0].ContentHash == "" {
@@ -116,6 +125,104 @@ func TestFailedRefreshNeverPublishesCurrentManifest(t *testing.T) {
 	}
 	if status.Current || status.Reason != "repository state changed" {
 		t.Fatalf("status after failed refresh = %#v", status)
+	}
+}
+
+func TestGenerationMismatchForcesCompleteReplay(t *testing.T) {
+	ctx := context.Background()
+	root := freshRepository(t)
+	provider := &fakeProvider{id: ProviderID{Name: "fixture", Version: "1"}, results: []Result{
+		{Batches: []graph.UnitFacts{facts("a", "Alpha")}, Units: []Unit{{ID: "a", InventoryDigest: "a1"}}},
+		{Batches: []graph.UnitFacts{facts("a", "Alpha")}, Units: []Unit{{ID: "a", InventoryDigest: "a1"}}},
+	}}
+	manager := Manager{Directory: root, Provider: provider, Command: "test"}
+	first, err := manager.Ensure(ctx, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := storage.Open(ctx, first.DatabasePath, storage.Options{MustExist: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.InvalidateGeneration(ctx); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	inspected, err := manager.Inspect(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inspected.Current || inspected.Reason != generationMismatchReason {
+		t.Fatalf("Inspect after generation invalidation = %#v", inspected)
+	}
+	second, err := manager.Ensure(ctx, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !second.Current || !second.Refreshed || provider.Calls() != 2 || second.Generation != first.Generation {
+		t.Fatalf("replayed status=%#v first=%#v calls=%d", second, first, provider.Calls())
+	}
+	requests := provider.Requests()
+	if requests[1].Previous != nil {
+		t.Fatalf("generation mismatch reused previous manifest: %#v", requests[1].Previous)
+	}
+}
+
+func TestEnsureWaitsForConcurrentRefreshAfterTransientGenerationVerification(t *testing.T) {
+	ctx := context.Background()
+	root := freshRepository(t)
+	provider := &fakeProvider{id: ProviderID{Name: "fixture", Version: "1"}, results: []Result{{
+		Batches: []graph.UnitFacts{facts("a", "Alpha")}, Units: []Unit{{ID: "a", InventoryDigest: "a1"}},
+	}}}
+	manager := Manager{Directory: root, Provider: provider, LockTimeout: 250 * time.Millisecond, Command: "contender"}
+	first, err := manager.Ensure(ctx, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo, err := repositoryDiscover(ctx, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	heldLock, err := acquire(ctx, filepath.Join(repo.StorageDir, "refresh.lock"), time.Second, "holder")
+	if err != nil {
+		t.Fatal(err)
+	}
+	heldDB, err := storage.Open(ctx, first.DatabasePath, storage.Options{MustExist: true})
+	if err != nil {
+		heldLock.release()
+		t.Fatal(err)
+	}
+	inspected, err := manager.Inspect(ctx)
+	if err != nil || inspected.Current || !strings.Contains(inspected.Reason, "generation could not be verified") {
+		heldDB.Close()
+		heldLock.release()
+		t.Fatalf("Inspect during refresh = %#v, %v", inspected, err)
+	}
+
+	type ensureResult struct {
+		status Status
+		err    error
+	}
+	result := make(chan ensureResult, 1)
+	go func() {
+		status, err := manager.Ensure(ctx, false)
+		result <- ensureResult{status, err}
+	}()
+	// The first generation check times out at 250 ms. Release while Ensure is
+	// waiting on the authoritative refresh lock so its second check can succeed.
+	time.Sleep(350 * time.Millisecond)
+	if err := heldDB.Close(); err != nil {
+		heldLock.release()
+		t.Fatal(err)
+	}
+	heldLock.release()
+	select {
+	case got := <-result:
+		if got.err != nil || !got.status.Current || got.status.Refreshed || got.status.Generation != first.Generation || provider.Calls() != 1 {
+			t.Fatalf("Ensure after concurrent refresh = %#v, %v; calls=%d", got.status, got.err, provider.Calls())
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Ensure did not complete after concurrent refresh released its locks")
 	}
 }
 

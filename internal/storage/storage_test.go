@@ -344,4 +344,28 @@ func TestQueryUsesIndexes(t *testing.T) {
 	}
 }
 
+func TestDatabaseGenerationLifecycle(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t, filepath.Join(t.TempDir(), "index.db"))
+	defer db.Close()
+	if got, err := db.Generation(ctx); err != nil || got != "" {
+		t.Fatalf("initial Generation = %q, %v", got, err)
+	}
+	if err := db.SetGeneration(ctx, "sha256:first"); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := db.Generation(ctx); err != nil || got != "sha256:first" {
+		t.Fatalf("set Generation = %q, %v", got, err)
+	}
+	if err := db.InvalidateGeneration(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := db.Generation(ctx); err != nil || got != "" {
+		t.Fatalf("invalidated Generation = %q, %v", got, err)
+	}
+	if err := db.SetGeneration(ctx, ""); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("empty SetGeneration error = %v", err)
+	}
+}
+
 var _ = bstore.ErrAbsent // Keep fixture tests explicit about the storage dependency.

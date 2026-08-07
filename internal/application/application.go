@@ -495,20 +495,33 @@ func (app Local) federated(ctx context.Context, response Response, invocation In
 		maxRepos = 32
 	}
 	var freshnessDiagnostics []string
-	store, err := federation.OpenFresh(ctx, path, invocation.Repositories, maxRepos, func(ctx context.Context, root string) error {
+	refresh := func(ctx context.Context, root string) (string, error) {
 		if app.FreshnessFor == nil {
-			return errors.New("automatic freshness is unavailable in this application")
+			return "", errors.New("automatic freshness is unavailable in this application")
 		}
 		manager := app.FreshnessFor(root)
 		if manager == nil {
-			return errors.New("freshness manager is unavailable")
+			return "", errors.New("freshness manager is unavailable")
 		}
 		status, err := manager.Ensure(ctx, false)
 		for _, diagnostic := range status.Diagnostics {
 			freshnessDiagnostics = append(freshnessDiagnostics, status.RepositoryIdentity+": "+diagnostic)
 		}
-		return err
-	})
+		return status.Generation, err
+	}
+	var store *federation.Store
+	if aggregateEligible(invocation.Command) {
+		aggregateDirectory, pathErr := catalog.DefaultAggregateDirectory(path, "")
+		if pathErr != nil {
+			return Response{}, pathErr
+		}
+		store, err = federation.OpenFreshAccelerated(ctx, path, invocation.Repositories, maxRepos, aggregateDirectory, refresh)
+	} else {
+		store, err = federation.OpenFresh(ctx, path, invocation.Repositories, maxRepos, func(ctx context.Context, root string) error {
+			_, refreshErr := refresh(ctx, root)
+			return refreshErr
+		})
+	}
 	if err != nil {
 		return Response{}, err
 	}
@@ -545,6 +558,11 @@ func (app Local) federated(ctx context.Context, response Response, invocation In
 				response.Edges, response.Truncated, err = store.EdgesFrom(ctx, symbol.ID, []graph.EdgeKind{graph.EdgeCalls}, invocation.Limit)
 			}
 		}
+	case "dependencies":
+		var symbol graph.Symbol
+		if symbol, err = query.Resolve(ctx, store, invocation.Arguments[0]); err == nil {
+			response.Edges, response.Truncated, err = store.EdgesFrom(ctx, symbol.ID, []graph.EdgeKind{graph.EdgeDependsOn, graph.EdgeImports}, invocation.Limit)
+		}
 	case "path":
 		var from, to graph.Symbol
 		if from, err = query.Resolve(ctx, store, invocation.Arguments[0]); err != nil {
@@ -576,11 +594,21 @@ func (app Local) federated(ctx context.Context, response Response, invocation In
 	}
 	response.Diagnostics = append(freshnessDiagnostics, store.Diagnostics()...)
 	slices.Sort(response.Diagnostics)
+	response.Diagnostics = slices.Compact(response.Diagnostics)
 	if response.Context != nil {
 		response.Context.Metadata.Freshness.Partial = store.Partial()
 	}
 	response.Sources = store.Sources()
 	return response, nil
+}
+
+func aggregateEligible(command string) bool {
+	switch command {
+	case "symbols", "callers", "callees", "dependencies", "path", "impact", "graph":
+		return true
+	default:
+		return false
+	}
 }
 
 type definitionStore interface {
