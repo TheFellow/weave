@@ -1,0 +1,21 @@
+{
+  "protocol": "weave.adapter/v0",
+  "request_id": "fixture-request",
+  "repository_root": "/workspace/repository",
+  "repository_identity": "example.com/fixture/repository",
+  "variant": "default",
+  "changed_paths": ["src/main.fixture"],
+  "environment": {"TARGET_OS": "fixture-os", "TARGET_ARCH": "fixture-arch"},
+  "permissions": {
+    "network": false,
+    "restore": false,
+    "build_tool": false,
+    "run_generators": false
+  },
+  "limits": {
+    "max_frame_bytes": 1048576,
+    "max_total_bytes": 33554432,
+    "max_frames": 100000,
+    "max_facts": 1000000
+  }
+}

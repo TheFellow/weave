@@ -94,6 +94,15 @@ handshake and reports adapter/runtime capabilities; it does not index, build,
 restore, or install anything. See the [adapter
 guide](adapters/dotnet/README.md) for coverage and current limitations.
 
+This is an open process extension point, not a .NET-specific hook. Any
+executable may implement the language-neutral
+[`weave.adapter/v0` contract](protocol/adapter/v0/README.md) using its
+ecosystem's compiler APIs and can be invoked with `weave index --adapter PATH`.
+The core sends a bounded request on stdin, accepts protocol frames only on
+stdout, keeps diagnostics on stderr, and atomically publishes a complete valid
+inventory. The contract fixtures are exercised by the Go test suite so adapter
+authors do not need to import Weave's Go internals.
+
 ## Derived data and recovery
 
 Per-worktree state lives at the Git-resolved `git rev-parse --git-path weave`
@@ -133,8 +142,9 @@ dependencies, interfaces/implementations, and direct static calls. C# covers
 compiler-resolved calls and project relationships; the initial F# slice omits
 call edges. Exact cross-language relationships use checked-in
 declared/generated bridges. Finer-grained .NET refresh, fuzzy search,
-hooks/watch mode, MCP, additional languages, and signed package-manager
-distribution remain future work.
+hooks/watch mode, MCP, automatic discovery of third-party language adapters,
+additional languages, and signed package-manager distribution remain future
+work.
 
 The complete product contract is [.ai/vision.md](.ai/vision.md). The honest
 implementation traceability report is

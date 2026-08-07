@@ -1,0 +1,1 @@
+{"protocol":"weave.adapter/v0","request_id":"fixture-request","kind":"run.begin","payload":{"provider":{"name":"fixture-adapter","version":"1.0.0"},"fact_encoding":"weave.facts/v0"}}

@@ -1,8 +1,9 @@
 # ADR 0001: Semantic interchange and adapter process boundary
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-08-06
 - Research: [semantic indexing prior art](../prior-art/semantic-indexing/README.md)
+- Refined by: [ADR 0008: Protoc-style compiler plugin process model](0008-compiler-plugin-process-model.md)
 
 ## Context
 

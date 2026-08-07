@@ -1,0 +1,10 @@
+{
+  "protocols": ["weave.adapter/v0"],
+  "provider": {"name": "fixture-adapter", "version": "1.0.0"},
+  "languages": ["fixture"],
+  "operations": ["index"],
+  "refresh_modes": ["full"],
+  "fact_encoding": "weave.facts/v0",
+  "position_encodings": ["utf8-byte"],
+  "requires": {"executables": [], "may_run_build_tool": false}
+}

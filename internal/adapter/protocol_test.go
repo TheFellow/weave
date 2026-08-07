@@ -107,6 +107,66 @@ func TestDotnetCapabilityFixtureMatchesProtocol(t *testing.T) {
 	}
 }
 
+func TestPublishedV0ContractFixtures(t *testing.T) {
+	t.Parallel()
+	root := filepath.Join("..", "..", "protocol", "adapter", "v0")
+
+	encoded, err := os.ReadFile(filepath.Join(root, "describe.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var capabilities Capabilities
+	if err := decodeStrict(encoded, &capabilities); err != nil {
+		t.Fatalf("decode published capabilities: %v", err)
+	}
+	if capabilities.Provider != (Provider{Name: "fixture-adapter", Version: "1.0.0"}) ||
+		!slices.Contains(capabilities.Protocols, Protocol) || capabilities.FactEncoding != FactEncoding {
+		t.Fatalf("published capabilities = %#v", capabilities)
+	}
+
+	encoded, err = os.ReadFile(filepath.Join(root, "index-request.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var request IndexRequest
+	if err := decodeStrict(encoded, &request); err != nil {
+		t.Fatalf("decode published request: %v", err)
+	}
+	if request.Protocol != Protocol || request.RequestID != "fixture-request" || request.RepositoryRoot == "" {
+		t.Fatalf("published request = %#v", request)
+	}
+
+	response, err := os.Open(filepath.Join(root, "index-response.ndjson"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, parseErr := parseFrames(response, request.RequestID, capabilities, (Limits{}).withDefaults())
+	closeErr := response.Close()
+	if parseErr != nil {
+		t.Fatalf("parse published response: %v", parseErr)
+	}
+	if closeErr != nil {
+		t.Fatal(closeErr)
+	}
+	if len(result.Units) != 1 || len(result.Units[0].Documents) != 1 || len(result.Units[0].Symbols) != 1 ||
+		len(result.Diagnostics) != 1 {
+		t.Fatalf("published response = %#v", result)
+	}
+
+	malformed, err := os.Open(filepath.Join(root, "malformed-truncated.ndjson"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, parseErr = parseFrames(malformed, request.RequestID, capabilities, (Limits{}).withDefaults())
+	closeErr = malformed.Close()
+	if parseErr == nil || !strings.Contains(parseErr.Error(), "before run.end") {
+		t.Fatalf("parse malformed published response error = %v", parseErr)
+	}
+	if closeErr != nil {
+		t.Fatal(closeErr)
+	}
+}
+
 func helperExecutable(scenario string) Executable {
 	return Executable{
 		Path: os.Args[0], Args: []string{"-test.run=TestAdapterHelperProcess", "--"},

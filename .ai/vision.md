@@ -87,6 +87,27 @@ Use the semantic tooling maintained with a language whenever practical:
 Every fact records its provider and evidence quality. A syntactic guess must
 never masquerade as a compiler-resolved edge.
 
+### A compiler-driver core with language-native plugins
+
+Treat language support like `protoc` treats code generators: the core owns
+discovery, version negotiation, process supervision, normalization, storage,
+and queries; an open-ended set of subordinate executables owns language truth.
+The normal extension boundary is a bounded request on stdin, protocol-only
+facts on stdout, bounded diagnostics on stderr, and a terminal process status.
+Adapters may be written in any language and use the compiler, build system, or
+language service native to their ecosystem.
+
+No public adapter contract may require importing a Go package, sharing Go
+memory, or reimplementing a compiler in Go. The bundled Go provider is a
+language-native convenience, not a precedent for absorbing other languages
+into the core. New language work begins by finding or wrapping maintained
+semantic tooling and implementing the process contract.
+
+One-shot execution is the correctness baseline. Persistent workers,
+multiplexing, and richer transports are optional negotiated optimizations; an
+adapter that implements only the simple request/response lifecycle remains a
+first-class implementation.
+
 ### Reuse prior art
 
 Before implementing a major capability, research existing open-source work and
@@ -132,6 +153,12 @@ runtimes and are isolated behind a versioned protocol. Packaging must support
 macOS, Linux, and Windows, with clear capability discovery when a toolchain or
 adapter is unavailable.
 
+Host platform, target platform, toolchain, build variant, and adapter version
+are explicit inputs. Adapters should use compiler cross-targeting support when
+available and must not assume that indexing requires running produced target
+binaries. Cross-platform support means supervising the appropriate native
+toolchain consistently, not translating every language into Go.
+
 ### Evidence over confidence theater
 
 Every relationship carries a kind, source location when available, provider,
@@ -162,13 +189,13 @@ may be built later by other tools consuming Weave's stable interfaces.
 ```text
                   Language-native semantic providers
         ┌────────────────┬────────────────┬────────────────┐
-        │ Go analysis    │ Roslyn / SCIP  │ F# Compiler    │
-        │                │                │ Service        │
+        │ Bundled Go     │ Roslyn / SCIP  │ F# Compiler    │
+        │ analysis       │ executables    │ Service process│
         ├────────────────┼────────────────┼────────────────┤
         │ Existing SCIP indexers          │ Syntax fallback│
         └────────────────┴────────────────┴────────────────┘
                                │
-                      versioned fact stream
+       provider contract; processes use stdin · stdout · stderr
                                │
                                ▼
                     Weave normalization core
@@ -200,6 +227,27 @@ Adapters own language-specific truth. They should be replaceable processes, not
 plugins loaded into the Go address space. This keeps runtime, dependency, crash,
 and licensing boundaries explicit.
 
+The process architecture is modeled after compiler plugin systems rather than
+an in-process extension API. The core sends repository, variant, permissions,
+limits, and prior-inventory context. An adapter returns only normalized facts,
+fingerprints, capabilities, and diagnostics. It does not write the database or
+call another adapter. The core validates the complete response and publishes it
+atomically.
+
+Every public adapter generation includes:
+
+- a language-neutral wire specification and compatibility rules;
+- recorded request, response, and malformed-stream fixtures;
+- a reusable conformance suite runnable against any executable;
+- capability negotiation rather than provider-name conditionals;
+- literal executable plus argument discovery on macOS, Linux, and Windows;
+- explicit permissions, resource bounds, cancellation, and stderr rules.
+
+Adapters are independently implementable and distributable. Bundled companions
+may share Weave's release version, while compatible third-party adapters may
+ship on their own cadence. Provider identity and semantic-toolchain versions
+remain part of every freshness decision.
+
 ## Open semantic formats
 
 SCIP is the first interchange format to support. It is language-neutral,
@@ -212,9 +260,10 @@ do not express every build target, repository relationship, dirty overlay,
 confidence class, API fingerprint, or architecture rule Weave needs. The core
 will normalize SCIP and native adapter output into its own versioned fact model.
 
-The first adapter protocol may use newline-delimited JSON to accelerate
-experimentation. Before third-party adapters are promised compatibility, define
-a framed protobuf protocol with:
+The experimental adapter v0 uses newline-delimited JSON to accelerate
+experimentation and publishes cross-language fixtures under
+`protocol/adapter/v0/`. Before third-party adapters are promised stable
+compatibility, define a framed protobuf protocol with:
 
 - Handshake and capability negotiation.
 - Schema and adapter versions.
@@ -223,6 +272,12 @@ a framed protobuf protocol with:
 - Public-surface and dependency fingerprints.
 - Diagnostics and partial-failure reporting.
 - Cancellation and bounded resource behavior.
+
+The protobuf schema, not generated Go types, will be the v1 source of truth.
+Generated bindings may be offered for convenience, but any implementation that
+obeys the wire contract is equally valid. Preserve the simple protoc-like
+one-request/one-response mode even if a Bazel-worker-like persistent mode is
+added later.
 
 ## Language strategy
 
@@ -265,7 +320,12 @@ independent syntax units.
 
 ### Other languages
 
-Adopt existing SCIP or compiler-native producers. A Tree-sitter adapter may
+Adopt existing SCIP or compiler-native producers behind executable adapters.
+Prefer implementing each adapter in the ecosystem best supported by its
+compiler APIs: for example, JVM tooling for JVM languages, Rust tooling for
+Rust, and TypeScript tooling where the TypeScript compiler API is authoritative.
+The Go core coordinates these tools; it does not become their parser host.
+A Tree-sitter adapter may
 provide best-effort declarations, imports, and syntactic calls for otherwise
 unsupported languages. Its provider and `Syntactic` evidence class are visible
 in every affected result.
@@ -739,6 +799,8 @@ Benchmarks must include `go-modular-monolith`, `arch-lint`, `cedar-dotnet`, and
 - Preserve prior-art research for SCIP, compiler APIs, local graph stores, Git
   caches, incremental build systems, and agent-facing code indexes.
 - Define vocabulary, evidence classes, stable identities, and adapter protocol.
+- Publish language-neutral adapter fixtures and a cross-language conformance
+  contract modeled on protoc plugins.
 - Record architectural decisions.
 
 ### Milestone 1: CLI skeleton
@@ -824,6 +886,8 @@ The first release is useful when a user can:
 - No required daemon.
 - No checked-in binary database.
 - No universal hand-maintained language parser.
+- No public language adapter API that requires Go or in-process loading.
+- No provider-name special case where a negotiated capability suffices.
 - No Roslyn claim for F#.
 - No syntax-derived relationship labeled as compiler-exact.
 - No separate implementation behind MCP.
