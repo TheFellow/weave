@@ -406,6 +406,24 @@ func validRequest(root string) adapter.IndexRequest {
 	}
 }
 
+func TestSelectInputPathsRestrictsFallbackInventory(t *testing.T) {
+	visible := []string{"main.go", "script.lua", "schema.proto"}
+	selected, err := selectInputPaths(visible, []string{"script.lua", "missing.lua"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(selected, []string{"script.lua"}) {
+		t.Fatalf("selected paths = %#v", selected)
+	}
+	if _, err := selectInputPaths(visible, []string{"../escape.lua"}); err == nil {
+		t.Fatal("unsafe routed path was accepted")
+	}
+	all, err := selectInputPaths(visible, nil)
+	if err != nil || !slices.Equal(all, visible) {
+		t.Fatalf("unscoped paths = %#v, %v", all, err)
+	}
+}
+
 func runGit(t *testing.T, root, git string, arguments ...string) {
 	t.Helper()
 	command := exec.Command(git, arguments...)

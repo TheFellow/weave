@@ -20,8 +20,8 @@ import (
 
 	"github.com/TheFellow/weave/internal/freshness"
 	"github.com/TheFellow/weave/internal/graph"
+	"github.com/TheFellow/weave/internal/processlock"
 	"github.com/TheFellow/weave/internal/relationship"
-	bolt "go.etcd.io/bbolt"
 )
 
 const (
@@ -126,17 +126,7 @@ func Edit(ctx context.Context, path, lockPath string, edit func(*Config) error) 
 	if err := os.MkdirAll(filepath.Dir(lockPath), 0o700); err != nil {
 		return fmt.Errorf("create bridge edit lock directory: %w", err)
 	}
-	timeout := 2 * time.Second
-	if deadline, ok := ctx.Deadline(); ok {
-		remaining := time.Until(deadline)
-		if remaining <= 0 {
-			return ctx.Err()
-		}
-		if remaining < timeout {
-			timeout = remaining
-		}
-	}
-	lock, err := bolt.Open(lockPath, 0o600, &bolt.Options{Timeout: timeout})
+	lock, err := processlock.Acquire(ctx, lockPath, 0o600, 2*time.Second)
 	if err != nil {
 		return fmt.Errorf("acquire bridge edit lock: %w", err)
 	}

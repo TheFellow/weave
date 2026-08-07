@@ -5,6 +5,7 @@
   "repository_identity": "example.com/fixture/repository",
   "variant": "default",
   "changed_paths": ["src/main.fixture"],
+  "input_paths": ["src/main.fixture"],
   "environment": {"TARGET_OS": "fixture-os", "TARGET_ARCH": "fixture-arch"},
   "permissions": {
     "network": false,

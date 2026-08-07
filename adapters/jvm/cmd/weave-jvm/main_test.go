@@ -126,7 +126,7 @@ func TestDescribeIsDeclarativeAndDoesNotResolveJava(t *testing.T) {
 	if capabilities.Provider.Name != providerName || capabilities.Provider.Version != "9.8.7" {
 		t.Fatalf("provider = %#v", capabilities.Provider)
 	}
-	if !slices.Equal(capabilities.Languages, []string{"java", "kotlin"}) || !capabilities.Requires.MayRunBuildTool {
+	if !slices.Equal(capabilities.Languages, []string{"java", "kotlin"}) || !capabilities.Requires.MayRunBuildTool || !capabilities.Claims.InvalidationAllFiles {
 		t.Fatalf("capabilities = %#v", capabilities)
 	}
 	if !slices.Equal(capabilities.Requires.Executables, []string{"scip-java"}) {

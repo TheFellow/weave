@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path"
 	"slices"
 	"strings"
 	"sync"
@@ -84,6 +85,16 @@ type Capabilities struct {
 	FactEncoding     string       `json:"fact_encoding"`
 	PositionEncoding []string     `json:"position_encodings"`
 	Requires         Requirements `json:"requires"`
+	Claims           Claims       `json:"claims"`
+}
+
+// Claims are the stable, host-routable inputs and evidence an adapter may
+// produce. They are negotiated independently of executable/provider names.
+type Claims struct {
+	Inputs               Inputs   `json:"inputs"`
+	Evidence             []string `json:"evidence"`
+	Fallback             bool     `json:"fallback,omitempty"`
+	InvalidationAllFiles bool     `json:"invalidation_all_files,omitempty"`
 }
 
 // Requirements disclose external runtime behavior during capability discovery.
@@ -108,6 +119,7 @@ type IndexRequest struct {
 	RepositoryIdentity string            `json:"repository_identity,omitempty"`
 	Variant            string            `json:"variant,omitempty"`
 	ChangedPaths       []string          `json:"changed_paths,omitempty"`
+	InputPaths         []string          `json:"input_paths,omitempty"`
 	Environment        map[string]string `json:"environment,omitempty"`
 	Permissions        Permissions       `json:"permissions"`
 	Limits             RequestLimits     `json:"limits"`
@@ -158,6 +170,10 @@ func (runner Runner) Describe(ctx context.Context, executable Executable) (Capab
 	if !slices.Contains(capabilities.Operations, "index") || capabilities.FactEncoding != FactEncoding {
 		return Capabilities{}, stderr, fmt.Errorf("adapter does not support index with %s", FactEncoding)
 	}
+	capabilities, err = NormalizeCapabilities(capabilities)
+	if err != nil {
+		return Capabilities{}, stderr, fmt.Errorf("validate adapter capabilities: %w", err)
+	}
 	return capabilities, stderr, nil
 }
 
@@ -166,6 +182,15 @@ func (runner Runner) Index(ctx context.Context, executable Executable, request I
 	limits := runner.Limits.withDefaults()
 	if request.RequestID == "" || request.RepositoryRoot == "" {
 		return Result{}, errors.New("request ID and repository root are required")
+	}
+	var err error
+	request.ChangedPaths, err = normalizeRequestPaths("changed_paths", request.ChangedPaths)
+	if err != nil {
+		return Result{}, err
+	}
+	request.InputPaths, err = normalizeRequestPaths("input_paths", request.InputPaths)
+	if err != nil {
+		return Result{}, err
 	}
 	request.Protocol = Protocol
 	request.Limits = RequestLimits{limits.MaxFrameBytes, limits.MaxTotalBytes, limits.MaxFrames, limits.MaxFacts}
@@ -184,7 +209,45 @@ func (runner Runner) Index(ctx context.Context, executable Executable, request I
 	if err != nil {
 		return Result{}, fmt.Errorf("index with adapter %s: %w%s", capabilities.Provider.Name, err, stderrSuffix(result.Stderr))
 	}
+	if err := validateFallbackScope(result, capabilities, request.InputPaths); err != nil {
+		return Result{}, fmt.Errorf("index with adapter %s: %w", capabilities.Provider.Name, err)
+	}
 	return result, nil
+}
+
+func normalizeRequestPaths(label string, values []string) ([]string, error) {
+	if len(values) > 100_000 {
+		return nil, fmt.Errorf("%s exceeds 100000 paths", label)
+	}
+	result := append([]string(nil), values...)
+	for _, value := range result {
+		if !utf8.ValidString(value) || strings.ContainsRune(value, 0) || len(value) > 4096 || value == "." || path.IsAbs(value) || path.Clean(value) != value || strings.HasPrefix(value, "../") {
+			return nil, fmt.Errorf("%s contains invalid repository path %q", label, value)
+		}
+	}
+	slices.Sort(result)
+	return slices.Compact(result), nil
+}
+
+func validateFallbackScope(result Result, capabilities Capabilities, inputPaths []string) error {
+	if !capabilities.Claims.Fallback || inputPaths == nil {
+		return nil
+	}
+	allowed := make(map[string]bool, len(inputPaths))
+	for _, path := range inputPaths {
+		allowed[path] = true
+	}
+	for _, unit := range result.Units {
+		if len(unit.Documents) == 0 && len(unit.Symbols)+len(unit.Occurrences)+len(unit.Edges) != 0 {
+			return fmt.Errorf("fallback unit %q emitted semantic facts without a routed document", unit.Unit.ID)
+		}
+		for _, document := range unit.Documents {
+			if !allowed[document.Path] {
+				return fmt.Errorf("fallback emitted document %q outside its routed input paths", document.Path)
+			}
+		}
+	}
+	return nil
 }
 
 func runIndex(ctx context.Context, executable Executable, request IndexRequest, capabilities Capabilities, input []byte, limits Limits) (Result, string, error) {
@@ -287,6 +350,29 @@ func (writer *limitWriter) Write(value []byte) (int, error) {
 		return 0, writer.err
 	}
 	return writer.Buffer.Write(value)
+}
+
+// ReadFrom must not inherit bytes.Buffer.ReadFrom: os/exec's copy loop prefers
+// io.ReaderFrom and would otherwise bypass Write's byte limit entirely.
+func (writer *limitWriter) ReadFrom(reader io.Reader) (int64, error) {
+	buffer := make([]byte, 32<<10)
+	var total int64
+	for {
+		count, readErr := reader.Read(buffer)
+		if count > 0 {
+			written, writeErr := writer.Write(buffer[:count])
+			total += int64(written)
+			if writeErr != nil {
+				return total, writeErr
+			}
+		}
+		if readErr != nil {
+			if errors.Is(readErr, io.EOF) {
+				return total, nil
+			}
+			return total, readErr
+		}
+	}
 }
 
 func readBounded(reader io.Reader, maximum int64) ([]byte, error) {

@@ -86,6 +86,28 @@ func TestDiscoverAndInspectRepositoryStates(t *testing.T) {
 	}
 }
 
+func TestVisiblePathsUsesTrackedAndNonIgnoredGitInventory(t *testing.T) {
+	root := newRepository(t)
+	writeFile(t, root, ".gitignore", "ignored.txt\n")
+	writeFile(t, root, "tracked.go", "package fixture\n")
+	git(t, root, "add", ".")
+	git(t, root, "commit", "-m", "initial")
+	writeFile(t, root, "untracked.lua", "return 1\n")
+	writeFile(t, root, "ignored.txt", "ignore me\n")
+	repo, err := Discover(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths, err := repo.VisiblePaths(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{".gitignore", "tracked.go", "untracked.lua"}
+	if !slices.Equal(paths, want) {
+		t.Fatalf("visible paths = %#v, want %#v", paths, want)
+	}
+}
+
 func TestLinkedWorktreeUsesPrivateGitPathAndSharedIdentity(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

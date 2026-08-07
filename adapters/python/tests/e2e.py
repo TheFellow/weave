@@ -37,9 +37,6 @@ def main():
         raise RuntimeError("installed weave-python executable is not on PATH")
     environment = dict(os.environ)
     environment["WEAVE_PYTHON_ADAPTER"] = adapter
-    environment["WEAVE_DOTNET_ADAPTER"] = str(
-        Path(tempfile.gettempdir()) / "weave-dotnet-not-installed"
-    )
 
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)

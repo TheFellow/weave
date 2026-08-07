@@ -60,6 +60,8 @@ pub struct IndexRequest {
     #[serde(default)]
     changed_paths: Vec<String>,
     #[serde(default)]
+    input_paths: Vec<String>,
+    #[serde(default)]
     environment: BTreeMap<String, String>,
     permissions: Permissions,
     limits: RequestLimits,
@@ -202,6 +204,15 @@ pub fn describe(analyzer: &OsStr, output: &mut dyn Write) -> Result<()> {
             "requires": {
                 "executables": ["rust-analyzer", "cargo", "rustc"],
                 "may_run_build_tool": true
+            },
+            "claims": {
+                "inputs": {
+                    "extensions": [".rs"],
+                    "filenames": ["Cargo.lock", "Cargo.toml", "rust-project.json", "rust-toolchain", "rust-toolchain.toml"],
+                    "project_markers": ["Cargo.toml", "rust-project.json"]
+                },
+                "evidence": ["exact"],
+                "invalidation_all_files": true
             }
         }),
     )
@@ -324,6 +335,7 @@ fn validate_request(request: &IndexRequest) -> Result<()> {
         .changed_paths
         .iter()
         .any(|value| value.contains('\0'))
+        || request.input_paths.iter().any(|value| value.contains('\0'))
         || request
             .environment
             .iter()

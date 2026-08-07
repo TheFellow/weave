@@ -168,6 +168,10 @@ func describe(output io.Writer, configuration options) error {
 			"executables":        []string{"git", "Universal Ctags"},
 			"may_run_build_tool": false,
 		},
+		"claims": map[string]any{
+			"inputs":   map[string]any{"extensions": []string{".*"}},
+			"evidence": []string{"syntactic"}, "fallback": true,
+		},
 	})
 }
 
@@ -279,6 +283,10 @@ func index(ctx context.Context, request adapter.IndexRequest, tool producer, git
 	if err != nil {
 		return indexResult{}, err
 	}
+	paths, err = selectInputPaths(paths, request.InputPaths)
+	if err != nil {
+		return indexResult{}, err
+	}
 	temporary, err := os.MkdirTemp("", "weave-ctags-")
 	if err != nil {
 		return indexResult{}, fmt.Errorf("create private Ctags snapshot: %w", err)
@@ -314,6 +322,27 @@ func index(ctx context.Context, request adapter.IndexRequest, tool producer, git
 		}
 	}
 	return indexResult{units: units, diagnostics: diagnostics}, nil
+}
+
+func selectInputPaths(visible, requested []string) ([]string, error) {
+	if requested == nil {
+		return visible, nil
+	}
+	selected := make(map[string]bool, len(requested))
+	for _, path := range requested {
+		normalized, err := normalizeRepositoryPath(path)
+		if err != nil || normalized != path {
+			return nil, fmt.Errorf("invalid routed input path %q", path)
+		}
+		selected[path] = true
+	}
+	result := make([]string, 0, min(len(visible), len(selected)))
+	for _, path := range visible {
+		if selected[path] {
+			result = append(result, path)
+		}
+	}
+	return result, nil
 }
 
 func gitVisibleFiles(ctx context.Context, root, gitPath string, run commandRunner) ([]string, error) {

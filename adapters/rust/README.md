@@ -22,8 +22,8 @@ cargo install --locked --path ./adapters/rust
 weave-rust describe --protocol weave.adapter/v0
 ```
 
-When `weave-rust` is on `PATH`, or `WEAVE_RUST_ADAPTER` points to it, ordinary
-queries automatically refresh repositories containing a Git-visible
+When `weave-rust` is added with `weave adapters install` or selected explicitly
+by `WEAVE_RUST_ADAPTER`, ordinary queries automatically refresh repositories containing a Git-visible
 `Cargo.toml` or `rust-project.json`. Automatic mode grants build-tool evaluation
 but keeps network, restore, build scripts, and procedural macros disabled.
 Weave conservatively fingerprints every Git-visible file because Rust include

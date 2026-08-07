@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -20,19 +21,26 @@ func main() {
 	defer stop()
 
 	database := os.Getenv("WEAVE_DATABASE")
-	registrations, registryErr := adapter.LoadRegistry(os.Getenv(adapter.RegistryEnvironment))
-	local := application.Local{DatabasePath: database, Adapters: registrations, AdapterConfigError: registryErr}
+	store, storeErr := adapter.DefaultStore()
+	managed, _, managedErr := store.Registrations(ctx)
+	environment, environmentErr := adapter.EnvironmentRegistrations(os.Getenv)
+	explicit, registryErr := adapter.LoadRegistry(os.Getenv(adapter.RegistryEnvironment))
+	registrations, environmentMergeErr := adapter.MergeRegistrations(managed, environment)
+	registrations, explicitMergeErr := adapter.MergeRegistrations(registrations, explicit)
+	automaticClaimsErr := adapter.ValidateAutomaticClaims(registrations)
+	configurationErr := errors.Join(storeErr, managedErr, environmentErr, registryErr, environmentMergeErr, explicitMergeErr, automaticClaimsErr)
+	local := application.Local{DatabasePath: database, Adapters: registrations, AdapterConfigError: configurationErr, AdapterStore: store}
 	if database == "" {
 		managerFor := func(directory string) *freshness.Manager {
 			provider := nativeindex.Default(directory, registrations...)
-			if registryErr != nil {
-				provider = nativeindex.ConfigurationError(registryErr)
+			if configurationErr != nil {
+				provider = nativeindex.ConfigurationError(configurationErr)
 			}
 			return &freshness.Manager{Directory: directory, Provider: provider, Command: "weave"}
 		}
 		local = application.Local{
 			Freshness: managerFor("."), FreshnessFor: managerFor,
-			Adapters: registrations, AdapterConfigError: registryErr,
+			Adapters: registrations, AdapterConfigError: configurationErr, AdapterStore: store,
 		}
 	}
 	app := command.New(local, command.Streams{

@@ -163,6 +163,14 @@ func describe(output io.Writer, configuration options) error {
 			"executables":        []string{"scip-java"},
 			"may_run_build_tool": true,
 		},
+		"claims": map[string]any{
+			"inputs": map[string]any{
+				"extensions":      []string{".java", ".kt", ".kts"},
+				"filenames":       []string{"build.gradle", "build.gradle.kts", "pom.xml", "settings.gradle", "settings.gradle.kts"},
+				"project_markers": []string{"build.gradle", "build.gradle.kts", "pom.xml", "settings.gradle", "settings.gradle.kts"},
+			},
+			"evidence": []string{"exact"}, "invalidation_all_files": true,
+		},
 	})
 }
 

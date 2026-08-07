@@ -297,11 +297,12 @@ weave symbols MyType
 ```
 
 On Windows, use the generated `.exe`. The target repository must already be
-restored. A discovered adapter is automatically invoked only when .NET compiler
-or project inputs changed; its complete unit inventory is composed atomically
-with Go facts. Automatic mode permits MSBuild project evaluation because that is
-required for compiler truth, so only expose `weave-dotnet` for repositories you
-trust. It never permits network, restore, or generators. The explicit `weave
+restored. The selected adapter is automatically invoked only when its
+negotiated .NET compiler or project inputs changed; its complete unit inventory
+is composed atomically with Go facts. Automatic mode permits MSBuild project
+evaluation because that is required for compiler truth, so only expose
+`weave-dotnet` for repositories you trust. It never permits network, restore,
+or generators. The explicit `weave
 index --adapter ...` path remains available for other permission choices.
 `weave adapters doctor` runs a bounded native `describe`
 handshake and reports adapter/runtime capabilities; it does not index, build,
@@ -317,12 +318,34 @@ stdout, keeps diagnostics on stderr, and atomically publishes a complete valid
 inventory. The contract fixtures are exercised by the Go test suite so adapter
 authors do not need to import Weave's Go internals.
 
-### Automatic third-party adapters
+### Managed and third-party adapters
 
-An independently installed adapter can join normal query-driven freshness
-without a core code change. Put its literal command, conservative input set,
-and permissions in a user-controlled registry, then select that registry
-explicitly:
+An independently compiled adapter can join normal query-driven freshness
+without a core code change. Install an explicit local regular-file artifact;
+Weave copies it into platform user state, negotiates its claims, and pins both
+the executable and normalized capabilities with SHA-256:
+
+```sh
+weave adapters install /absolute/path/to/weave-zig --allow-build-tool
+weave adapters list
+weave adapters doctor
+weave adapters update example-zig-index /absolute/path/to/new/weave-zig
+weave adapters remove example-zig-index
+```
+
+Install/update never downloads, extracts, builds, restores, or invokes a
+package manager. Produce a relocatable executable with `go install`, Cargo,
+`dotnet publish`, or the ecosystem's normal tool first. The manifest and artifacts
+live under the same platform user-state root as Weave's catalog. Manifest
+mutation is locked and atomic; `list` executes nothing; `doctor` verifies file
+integrity, protocol compatibility, claim drift, requirements, permissions, and
+activation inputs without indexing a repository.
+`update` preserves existing literal arguments, permissions, and timeout unless
+replacement flags are supplied explicitly.
+
+For externally managed commands, a user-controlled registry remains an
+explicit higher-precedence override. `claims` and `capability_digest` pin the
+authority observed by `doctor --json`:
 
 ```json
 {
@@ -333,6 +356,14 @@ explicitly:
     "inputs": {
       "extensions": [".zig", ".zon"],
       "filenames": ["build.zig"]
+    },
+    "claims": {
+      "inputs": {
+        "extensions": [".zig", ".zon"],
+        "filenames": ["build.zig"],
+        "project_markers": ["build.zig"]
+      },
+      "evidence": ["exact"]
     }
   }]
 }
@@ -340,24 +371,34 @@ explicitly:
 
 ```sh
 export WEAVE_ADAPTER_CONFIG=/absolute/path/to/adapters.json
-weave adapters doctor
+weave adapters doctor --json
 ```
 
-Weave never discovers this configuration from a repository and never scans
-`PATH` for arbitrary adapter prefixes. Selecting the registry is the trust
-decision; bare executable names inside it use normal cross-platform executable
-lookup. Command values are passed as an argv array without a shell, permissions
-default to denied, and invalid or unavailable registrations make automatic
-freshness fail closed. See the [discovery research and Rust/C++
-examples](.ai/prior-art/adapter-discovery/README.md).
+The first doctor run reports that the configuration is unpinned and returns the
+observed `capability_digest`. Add that exact value to the entry before enabling
+automatic execution.
+
+Weave never discovers configuration from a repository and never scans `PATH`
+for adapter prefixes. The established `WEAVE_DOTNET_ADAPTER`,
+`WEAVE_PYTHON_ADAPTER`, `WEAVE_RUST_ADAPTER`, `WEAVE_CPP_ADAPTER`, and
+`WEAVE_TYPESCRIPT_ADAPTER` variables remain explicit automatic selections;
+their negotiated claims must match Weave's fixed compatibility claims. An
+explicit registry overrides an identical environment or managed provider name;
+cross-name precise-claim overlap still fails closed. Precise claims win over an
+explicitly marked syntactic fallback, which receives a concrete per-file
+allowlist for otherwise-unclaimed inputs. Command values remain literal argv,
+permissions default denied, and artifact/capability drift prevents automatic
+publication. Use `weave adapters conformance` with a genuine fixture before
+installation. See the [ecosystem research](.ai/prior-art/adapter-ecosystem/README.md).
 
 ## Python adapter
 
 The optional [`weave-python`](adapters/python/README.md) companion is itself
 written in Python and uses CPython's parser and compiler symbol tables. Install
-it from source with `python -m pip install ./adapters/python`; once the
-`weave-python` executable is on `PATH`, normal queries refresh Git-visible `.py`
-files automatically.
+it from source with `python -m pip install ./adapters/python`; select the
+resulting environment-owned launcher with `WEAVE_PYTHON_ADAPTER` to enable
+automatic refresh of Git-visible `.py` files. A separately packaged relocatable
+Python executable may instead use the managed store.
 
 Lexical declarations and scope-slot references are exact facts about the
 recorded interpreter. Repeated bindings retain every definition occurrence.
@@ -372,9 +413,10 @@ execute repository configuration or hash different bytes than it indexes.
 [`weave-rust`](adapters/rust/README.md) delegates semantic truth to the
 maintained `rust-analyzer scip` exporter and implements the adapter protocol in
 Rust. Install it with `cargo install --locked --path ./adapters/rust` and keep a
-compatible `rust-analyzer`, Cargo, and rustc on `PATH`. Once discovered, normal
-queries automatically index repositories containing `Cargo.toml` or
-`rust-project.json`.
+compatible `rust-analyzer`, Cargo, and rustc on `PATH`. Add the resulting binary
+with `weave adapters install --allow-build-tool "$(command -v weave-rust)"` or
+select it with `WEAVE_RUST_ADAPTER`; normal queries then automatically index
+repositories containing `Cargo.toml` or `rust-project.json`.
 
 Automatic mode grants Cargo workspace evaluation but keeps network, restore,
 build scripts, and procedural macros disabled. Only expose the adapter to
@@ -388,8 +430,10 @@ references are not relabeled as calls.
 [`weave-cpp`](adapters/cpp/README.md) is a thin wrapper around the maintained
 Clang 21-based `scip-clang` indexer. Build the wrapper with
 `go install ./adapters/cpp/cmd/weave-cpp` and install the pinned producer with
-`adapters/cpp/scripts/install-scip-clang.sh ~/.local/bin`. A repository with one
-Git-visible `compile_commands.json` then participates in automatic freshness.
+`adapters/cpp/scripts/install-scip-clang.sh ~/.local/bin`. Manage the wrapper
+with `weave adapters install --allow-build-tool "$(command -v weave-cpp)"` or
+select it with `WEAVE_CPP_ADAPTER`. A repository with one Git-visible
+`compile_commands.json` then participates in automatic freshness.
 
 Rust and C/C++ conservatively fingerprint every Git-visible file once their
 project marker activates, because compiler includes and macros can consume
@@ -405,8 +449,10 @@ wrapper around the maintained `@sourcegraph/scip-typescript` producer; it does
 not parse either language. Install the locked producer closure with
 `sh adapters/typescript/scripts/install-scip-typescript.sh`, build the wrapper
 with `go install ./adapters/typescript/cmd/weave-typescript`, and select the
-printed producer using `WEAVE_SCIP_TYPESCRIPT`. A repository-root `tsconfig.json`
-or `jsconfig.json` then participates in automatic freshness.
+printed producer using `WEAVE_SCIP_TYPESCRIPT`. Manage the wrapper with
+`weave adapters install "$(command -v weave-typescript)"` or select it with
+`WEAVE_TYPESCRIPT_ADAPTER`. A repository-root `tsconfig.json` or
+`jsconfig.json` then participates in automatic freshness.
 
 The automatic path never installs packages, invokes a package manager, infers a
 configuration, or runs generators. In particular, it does not use upstream's

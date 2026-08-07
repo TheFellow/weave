@@ -154,6 +154,14 @@ func describe(output io.Writer, tool producer) error {
 			"executables":        []string{"node", "scip-typescript"},
 			"may_run_build_tool": false,
 		},
+		"claims": map[string]any{
+			"inputs": map[string]any{
+				"extensions":      []string{".js", ".jsx", ".ts", ".tsx"},
+				"filenames":       []string{"jsconfig.json", "package.json", "tsconfig.json"},
+				"project_markers": []string{"jsconfig.json", "tsconfig.json"},
+			},
+			"evidence": []string{"exact"}, "invalidation_all_files": true,
+		},
 	})
 }
 

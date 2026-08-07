@@ -164,10 +164,121 @@ func TestProviderUsesConfiguredInputsForArbitraryAdapter(t *testing.T) {
 	}
 }
 
+func TestRegisteredProviderRejectsClaimDriftBeforeIndex(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "main.widget", "fixture")
+	git(t, root, "init", "-q")
+	git(t, root, "config", "user.email", "weave@example.test")
+	git(t, root, "config", "user.name", "Weave")
+	git(t, root, "add", ".")
+	git(t, root, "commit", "-qm", "initial")
+	repo, err := repository.Discover(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := repo.Inspect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(t.TempDir(), "calls")
+	claims := adapter.Claims{Inputs: adapter.Inputs{Extensions: []string{".widget"}}, Evidence: []string{"exact"}}
+	provider := Provider{
+		Name: "fixture-dotnet", Path: os.Args[0], Args: []string{"-test.run=TestNativeAdapterHelperProcess", "--", marker},
+		Inputs: claims.Inputs, Claims: claims, ProbeProviderVersion: true,
+	}
+	_, err = provider.Refresh(context.Background(), freshness.Request{Repository: repo, State: state})
+	if err == nil || !strings.Contains(err.Error(), "claim drift") {
+		t.Fatalf("claim drift error = %v", err)
+	}
+	if calls := callCount(t, marker); calls != 1 {
+		t.Fatalf("claim drift invoked index; calls = %d", calls)
+	}
+}
+
+func TestManagedProviderRejectsCapabilityAndArtifactDriftBeforeIndex(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "main.widget", "fixture")
+	git(t, root, "init", "-q")
+	git(t, root, "config", "user.email", "weave@example.test")
+	git(t, root, "config", "user.name", "Weave")
+	git(t, root, "add", ".")
+	git(t, root, "commit", "-qm", "initial")
+	repo, err := repository.Discover(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := repo.Inspect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(t.TempDir(), "calls")
+	claims := adapter.Claims{Inputs: adapter.Inputs{Extensions: []string{".cs", ".py", ".widget"}}, Evidence: []string{"exact"}}
+	provider := Provider{
+		Name: "fixture-dotnet", Path: os.Args[0], Args: []string{"-test.run=TestNativeAdapterHelperProcess", "--", marker},
+		Inputs: adapter.Inputs{Extensions: []string{".widget"}}, Claims: claims, ProbeProviderVersion: true,
+		CapabilityDigest: "sha256:" + strings.Repeat("0", 64),
+	}
+	_, err = provider.Refresh(context.Background(), freshness.Request{Repository: repo, State: state})
+	if err == nil || !strings.Contains(err.Error(), "capability drift") || callCount(t, marker) != 1 {
+		t.Fatalf("capability drift error/calls = %v/%d", err, callCount(t, marker))
+	}
+	provider.ArtifactDigest = "sha256:" + strings.Repeat("0", 64)
+	_, err = provider.Refresh(context.Background(), freshness.Request{Repository: repo, State: state})
+	if err == nil || !strings.Contains(err.Error(), "artifact changed") || callCount(t, marker) != 1 {
+		t.Fatalf("artifact drift error/calls = %v/%d", err, callCount(t, marker))
+	}
+}
+
+func TestFallbackRoutingSelectsOnlyOtherwiseUnclaimedPaths(t *testing.T) {
+	root := t.TempDir()
+	for name, content := range map[string]string{
+		"main.go": "package fixture\n", "main.py": "VALUE = 1\n", "script.lua": "return 1\n",
+	} {
+		writeFile(t, root, name, content)
+	}
+	git(t, root, "init", "-q")
+	registrations := []adapter.Registration{
+		{Name: "python", Claims: adapter.Claims{Inputs: adapter.Inputs{Extensions: []string{".py"}}, Evidence: []string{"exact"}}},
+		{Name: "ctags", Claims: adapter.Claims{Inputs: adapter.Inputs{Extensions: []string{".*"}}, Evidence: []string{"syntactic"}, Fallback: true}},
+	}
+	provider := Provider{Name: "ctags", Routing: append(adapter.BuiltinRoutingClaims(), registrations...)}
+	paths, err := provider.routedPaths(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(paths, []string{"script.lua"}) {
+		t.Fatalf("fallback routed paths = %#v", paths)
+	}
+}
+
+func TestInactiveRegisteredProviderDoesNotVerifyBrokenArtifact(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "main.go", "package fixture\n")
+	git(t, root, "init", "-q")
+	repo, err := repository.Discover(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := repo.Inspect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims := adapter.Claims{Inputs: adapter.Inputs{Extensions: []string{".rs"}, ProjectMarkers: []string{"cargo.toml"}}, Evidence: []string{"exact"}}
+	registration := adapter.Registration{Name: "rust-fixture", Claims: claims}
+	provider := Provider{
+		Name: "rust-fixture", Path: filepath.Join(root, "missing-adapter"), Claims: claims,
+		Routing: append(adapter.BuiltinRoutingClaims(), registration), IntegrityError: "fixture corruption",
+	}
+	result, err := provider.Refresh(context.Background(), freshness.Request{Repository: repo, State: state})
+	if err != nil || len(result.Batches)+len(result.Removed)+len(result.Units) != 0 {
+		t.Fatalf("inactive provider result = %#v, %v", result, err)
+	}
+}
+
 func TestDefaultFailsClosedWhenRegisteredCommandIsUnavailable(t *testing.T) {
 	registration := adapter.Registration{
 		Name: "missing-fixture", Command: []string{"weave-adapter-that-does-not-exist"},
-		Inputs: adapter.Inputs{Extensions: []string{".fixture"}}, ConfigFingerprint: "fixture-config",
+		Claims: adapter.Claims{Inputs: adapter.Inputs{Extensions: []string{".fixture"}}, Evidence: []string{"exact"}}, ConfigFingerprint: "fixture-config",
 	}
 	composite, ok := Default(t.TempDir(), registration).(freshness.CompositeProvider)
 	if !ok {
@@ -187,8 +298,8 @@ func TestDefaultFailsClosedWhenRegisteredCommandIsUnavailable(t *testing.T) {
 
 func TestDefaultCanonicalizesRegisteredProviderOrder(t *testing.T) {
 	registrations := []adapter.Registration{
-		{Name: "z-provider", Command: []string{os.Args[0]}, Inputs: adapter.Inputs{Extensions: []string{".z"}}, ConfigFingerprint: "z"},
-		{Name: "a-provider", Command: []string{os.Args[0]}, Inputs: adapter.Inputs{Extensions: []string{".a"}}, ConfigFingerprint: "a"},
+		{Name: "z-provider", Command: []string{os.Args[0]}, Claims: adapter.Claims{Inputs: adapter.Inputs{Extensions: []string{".z"}}, Evidence: []string{"exact"}}, ConfigFingerprint: "z"},
+		{Name: "a-provider", Command: []string{os.Args[0]}, Claims: adapter.Claims{Inputs: adapter.Inputs{Extensions: []string{".a"}}, Evidence: []string{"exact"}}, ConfigFingerprint: "a"},
 	}
 	composite := Default(t.TempDir(), registrations...).(freshness.CompositeProvider)
 	var owners []string
@@ -202,10 +313,12 @@ func TestDefaultCanonicalizesRegisteredProviderOrder(t *testing.T) {
 	}
 }
 
-func TestBuiltInRustAndCppAdaptersUseProjectActivationAndSemanticInputs(t *testing.T) {
-	t.Setenv("WEAVE_RUST_ADAPTER", os.Args[0])
-	t.Setenv("WEAVE_CPP_ADAPTER", os.Args[0])
-	composite := Default(t.TempDir()).(freshness.CompositeProvider)
+func TestRegisteredRustAndCppClaimsDriveActivationAndInvalidation(t *testing.T) {
+	registrations := []adapter.Registration{
+		{Name: "weave-rust", Command: []string{os.Args[0]}, Claims: adapter.Claims{Inputs: adapter.Inputs{Extensions: []string{".rs"}, ProjectMarkers: []string{"cargo.toml", "rust-project.json"}}, Evidence: []string{"exact"}, InvalidationAllFiles: true}, Permissions: adapter.Permissions{BuildTool: true}},
+		{Name: "scip:scip-clang", Command: []string{os.Args[0]}, Claims: adapter.Claims{Inputs: adapter.Inputs{Extensions: []string{".c", ".cpp", ".h", ".hpp"}, ProjectMarkers: []string{"compile_commands.json"}}, Evidence: []string{"exact"}, InvalidationAllFiles: true}, Permissions: adapter.Permissions{BuildTool: true}},
+	}
+	composite := Default(t.TempDir(), registrations...).(freshness.CompositeProvider)
 	providers := map[string]Provider{}
 	for _, child := range composite.Providers {
 		provider, ok := child.(Provider)
@@ -240,9 +353,9 @@ func TestBuiltInRustAndCppAdaptersUseProjectActivationAndSemanticInputs(t *testi
 	}
 }
 
-func TestBuiltInTypeScriptAdapterUsesRootProjectAndConservativeInputs(t *testing.T) {
-	t.Setenv("WEAVE_TYPESCRIPT_ADAPTER", os.Args[0])
-	composite := Default(t.TempDir()).(freshness.CompositeProvider)
+func TestRegisteredTypeScriptClaimsUseProjectMarkersAndConservativeInvalidation(t *testing.T) {
+	registration := adapter.Registration{Name: "scip:scip-typescript", Command: []string{os.Args[0]}, Claims: adapter.Claims{Inputs: adapter.Inputs{Extensions: []string{".js", ".jsx", ".ts", ".tsx"}, ProjectMarkers: []string{"tsconfig.json", "jsconfig.json"}}, Evidence: []string{"exact"}, InvalidationAllFiles: true}}
+	composite := Default(t.TempDir(), registration).(freshness.CompositeProvider)
 	var typescript Provider
 	for _, child := range composite.Providers {
 		provider, ok := child.(Provider)
@@ -254,10 +367,10 @@ func TestBuiltInTypeScriptAdapterUsesRootProjectAndConservativeInputs(t *testing
 	if typescript.Path != os.Args[0] || typescript.Permissions != (adapter.Permissions{}) || !typescript.ProbeProviderVersion {
 		t.Fatalf("TypeScript provider = %#v", typescript)
 	}
-	if typescript.active([]string{"src/main.ts", "packages/web/tsconfig.json"}) ||
+	if !typescript.active([]string{"src/main.ts", "packages/web/tsconfig.json"}) ||
 		!typescript.active([]string{"tsconfig.json", "src/main.ts"}) ||
 		!typescript.active([]string{"jsconfig.json", "src/main.js"}) {
-		t.Fatal("TypeScript automatic activation did not require a root project configuration")
+		t.Fatal("TypeScript claim activation did not recognize a project marker")
 	}
 	for _, path := range []string{"src/main.ts", "src/view.tsx", "package.json", "pnpm-lock.yaml", "assets/schema.graphql"} {
 		if !isSemanticInputFor(path, TypeScriptInputs, typescript.Inputs) {
@@ -382,6 +495,47 @@ func TestCompilerProviderActivationPrecedesConservativeFileReads(t *testing.T) {
 	}
 }
 
+func TestProjectMarkerActivatesWithoutBecomingOwnedInput(t *testing.T) {
+	root := t.TempDir()
+	git(t, root, "init", "-q")
+	writeFile(t, root, "fixture.project", "configuration")
+	writeFile(t, root, "src.fixture", "symbol Fixture")
+	inputs := adapter.Inputs{Extensions: []string{".fixture"}}
+	activation := adapter.Inputs{Filenames: []string{"fixture.project"}}
+	paths, _, err := semanticInputsForActivation(context.Background(), root, InputProfile("fixture"), inputs, activation)
+	if err != nil || !slices.Equal(paths, []string{"src.fixture"}) {
+		t.Fatalf("marker-activated inputs = %q, %v", paths, err)
+	}
+}
+
+func TestProviderRefreshUsesMarkerOutsideOwnedInputs(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "fixture.project", "configuration")
+	writeFile(t, root, "src.fixture", "symbol Fixture")
+	git(t, root, "init", "-q")
+	git(t, root, "config", "user.email", "weave@example.test")
+	git(t, root, "config", "user.name", "Weave")
+	git(t, root, "add", ".")
+	git(t, root, "commit", "-qm", "fixture")
+	repo, err := repository.Discover(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := repo.Inspect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(t.TempDir(), "calls")
+	provider := Provider{
+		Name: "fixture-dotnet", Path: os.Args[0], Args: []string{"-test.run=TestNativeAdapterHelperProcess", "--", marker},
+		Inputs: adapter.Inputs{Extensions: []string{".fixture"}}, Activation: adapter.Inputs{Filenames: []string{"fixture.project"}},
+	}
+	result, err := provider.Refresh(context.Background(), freshness.Request{Repository: repo, State: state})
+	if err != nil || len(result.Batches) != 1 || callCount(t, marker) != 2 {
+		t.Fatalf("marker-activated refresh = %#v, calls=%d, err=%v", result, callCount(t, marker), err)
+	}
+}
+
 func TestNativeAdapterHelperProcess(t *testing.T) {
 	separator := -1
 	for i, arg := range os.Args {
@@ -405,6 +559,7 @@ func TestNativeAdapterHelperProcess(t *testing.T) {
 		"languages": []string{"csharp"}, "operations": []string{"index"}, "refresh_modes": []string{"full"},
 		"fact_encoding": adapter.FactEncoding, "position_encodings": []string{"utf8-byte"},
 		"requires": map[string]any{"executables": []string{}, "may_run_build_tool": true},
+		"claims":   map[string]any{"inputs": map[string]any{"extensions": []string{".cs", ".py", ".widget"}}, "evidence": []string{"exact"}},
 	}
 	if operation == "describe" {
 		_ = json.NewEncoder(os.Stdout).Encode(capabilities)

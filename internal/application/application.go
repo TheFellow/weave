@@ -41,41 +41,46 @@ const adapterDoctorTimeout = 15 * time.Second
 
 // Invocation is a validated operation from a delivery surface.
 type Invocation struct {
-	Command        string
-	Arguments      []string
-	JSON           bool
-	Limit          int
-	MaxDepth       int
-	MaxEdges       int
-	Kinds          []graph.EdgeKind
-	Direction      query.Direction
-	SCIPPath       string
-	AdapterPath    string
-	AdapterArgs    []string
-	Timeout        time.Duration
-	Permissions    adapter.Permissions
-	CatalogPath    string
-	Scope          string
-	Repositories   []string
-	Format         string
-	ConfigPath     string
-	MaxRepos       int
-	ContextLines   int
-	MaxSourceBytes int
-	ImpactFiles    []string
-	ImpactPackages []string
-	DiffRevision   string
-	DiffBase       string
-	DiffHead       string
-	LinkFrom       string
-	LinkTo         string
-	LinkNote       string
-	LinkKind       graph.EdgeKind
-	LinkFromSet    bool
-	LinkToSet      bool
-	LinkNoteSet    bool
-	LinkKindSet    bool
-	LinkRevision   string
+	Command           string
+	Arguments         []string
+	JSON              bool
+	Limit             int
+	MaxDepth          int
+	MaxEdges          int
+	Kinds             []graph.EdgeKind
+	Direction         query.Direction
+	SCIPPath          string
+	AdapterPath       string
+	AdapterArgs       []string
+	Timeout           time.Duration
+	Permissions       adapter.Permissions
+	CatalogPath       string
+	Scope             string
+	Repositories      []string
+	Format            string
+	ConfigPath        string
+	MaxRepos          int
+	ContextLines      int
+	MaxSourceBytes    int
+	ImpactFiles       []string
+	ImpactPackages    []string
+	DiffRevision      string
+	DiffBase          string
+	DiffHead          string
+	LinkFrom          string
+	LinkTo            string
+	LinkNote          string
+	LinkKind          graph.EdgeKind
+	LinkFromSet       bool
+	LinkToSet         bool
+	LinkNoteSet       bool
+	LinkKindSet       bool
+	LinkRevision      string
+	AdapterName       string
+	AdapterSource     string
+	AdapterArgsSet    bool
+	AdapterPolicySet  bool
+	AdapterTimeoutSet bool
 }
 
 // Response is the stable application result consumed by text and JSON renderers.
@@ -111,16 +116,30 @@ type Response struct {
 // doctor may run a bounded native describe handshake but never indexes,
 // installs, restores, or builds.
 type AdapterStatus struct {
-	Name       string   `json:"name"`
-	Kind       string   `json:"kind"`
-	Available  bool     `json:"available"`
-	Checked    bool     `json:"checked,omitempty"`
-	Compatible bool     `json:"compatible,omitempty"`
-	Path       string   `json:"path,omitempty"`
-	Provider   string   `json:"provider,omitempty"`
-	Version    string   `json:"version,omitempty"`
-	Languages  []string `json:"languages,omitempty"`
-	Detail     string   `json:"detail,omitempty"`
+	Name              string                     `json:"name"`
+	Kind              string                     `json:"kind"`
+	Available         bool                       `json:"available"`
+	Checked           bool                       `json:"checked,omitempty"`
+	Compatible        bool                       `json:"compatible,omitempty"`
+	Path              string                     `json:"path,omitempty"`
+	Provider          string                     `json:"provider,omitempty"`
+	Version           string                     `json:"version,omitempty"`
+	Languages         []string                   `json:"languages,omitempty"`
+	Detail            string                     `json:"detail,omitempty"`
+	Source            string                     `json:"source,omitempty"`
+	Integrity         string                     `json:"integrity,omitempty"`
+	Claims            *adapter.Claims            `json:"claims,omitempty"`
+	Requires          *adapter.Requirements      `json:"requires,omitempty"`
+	CapabilityDigest  string                     `json:"capability_digest,omitempty"`
+	RequirementStatus []AdapterRequirementStatus `json:"requirement_status,omitempty"`
+	Permissions       adapter.Permissions        `json:"permissions,omitempty"`
+	Activation        string                     `json:"activation,omitempty"`
+}
+
+type AdapterRequirementStatus struct {
+	Name      string `json:"name"`
+	Available bool   `json:"available"`
+	Detail    string `json:"detail,omitempty"`
 }
 
 // Service executes Weave use cases.
@@ -146,6 +165,7 @@ type Local struct {
 	AdapterRunner      adapter.Runner
 	Adapters           []adapter.Registration
 	AdapterConfigError error
+	AdapterStore       adapter.Store
 	CatalogPath        string
 }
 
@@ -185,8 +205,18 @@ func (app Local) Execute(ctx context.Context, invocation Invocation) (Response, 
 		return app.federated(ctx, response, invocation)
 	}
 	if invocation.Command == "adapters list" || invocation.Command == "adapters doctor" {
-		response.Adapters = inspectAdaptersWithError(ctx, invocation.Command == "adapters doctor", app.AdapterRunner, app.AdapterConfigError, app.Adapters...)
+		directory := app.Directory
+		if app.Freshness != nil {
+			directory = app.Freshness.Directory
+		}
+		if directory == "" {
+			directory = "."
+		}
+		response.Adapters = inspectAdaptersWithErrorAt(ctx, invocation.Command == "adapters doctor", app.AdapterRunner, app.AdapterConfigError, directory, app.Adapters...)
 		return response, nil
+	}
+	if strings.HasPrefix(invocation.Command, "adapters ") {
+		return app.manageAdapter(ctx, response, invocation)
 	}
 	if invocation.Command == "index" && invocation.SCIPPath != "" {
 		return app.importSCIP(ctx, response, invocation)
@@ -764,10 +794,16 @@ func inspectAdapters(ctx context.Context, doctor bool, runner adapter.Runner) []
 }
 
 func inspectAdaptersWithError(ctx context.Context, doctor bool, runner adapter.Runner, configErr error, registrations ...adapter.Registration) []AdapterStatus {
+	return inspectAdaptersWithErrorAt(ctx, doctor, runner, configErr, ".", registrations...)
+}
+
+func inspectAdaptersWithErrorAt(ctx context.Context, doctor bool, runner adapter.Runner, configErr error, directory string, registrations ...adapter.Registration) []AdapterStatus {
 	type candidate struct {
 		name, kind, configured string
 		command                []string
 		expectedProvider       string
+		registration           *adapter.Registration
+		discover               bool
 	}
 	candidates := []candidate{
 		{name: "weave-dotnet", kind: "native", configured: os.Getenv("WEAVE_DOTNET_ADAPTER"), expectedProvider: "weave-dotnet"},
@@ -780,28 +816,76 @@ func inspectAdaptersWithError(ctx context.Context, doctor bool, runner adapter.R
 	}
 	configured := append([]adapter.Registration(nil), registrations...)
 	slices.SortFunc(configured, func(a, b adapter.Registration) int { return strings.Compare(a.Name, b.Name) })
+	activations := map[string]string{}
+	if doctor && len(configured) != 0 {
+		activations = inspectAdapterActivations(ctx, directory, configured)
+	}
 	for _, registration := range configured {
+		registration := registration
+		candidates = slices.DeleteFunc(candidates, func(value candidate) bool {
+			return value.name == registration.Name || value.expectedProvider == registration.Name
+		})
 		candidates = append(candidates, candidate{
-			name: registration.Name, kind: "native", command: append([]string(nil), registration.Command...), expectedProvider: registration.Name,
+			name: registration.Name, kind: "native", command: append([]string(nil), registration.Command...), expectedProvider: registration.Name, registration: &registration,
 		})
 	}
 	if doctor {
-		candidates = append(candidates, candidate{name: "dotnet", kind: "runtime"})
+		candidates = append(candidates, candidate{name: "dotnet", kind: "runtime", discover: true})
 	}
 	statuses := make([]AdapterStatus, 0, len(candidates))
 	for _, candidate := range candidates {
-		value := candidate.name
-		detail := "not found on PATH"
+		value := ""
+		detail := "not configured or managed"
 		var args []string
 		if len(candidate.command) != 0 {
 			value, args = candidate.command[0], candidate.command[1:]
 			detail = "configured by adapter registry"
+			if candidate.registration != nil {
+				switch candidate.registration.Source {
+				case "managed":
+					detail = "managed adapter"
+				case "environment":
+					detail = "configured by environment"
+				}
+			}
 		} else if candidate.configured != "" {
 			value = candidate.configured
 			detail = "configured by environment"
+		} else if candidate.discover {
+			value = candidate.name
+			detail = "not found on PATH"
 		}
-		path, err := resolveExecutable(value)
+		var path string
+		var err error
+		if value != "" {
+			path, err = resolveExecutable(value)
+		} else {
+			err = errors.New("not configured")
+		}
 		status := AdapterStatus{Name: candidate.name, Kind: candidate.kind, Detail: detail}
+		if candidate.registration != nil {
+			status.Source = candidate.registration.Source
+			status.Permissions = candidate.registration.Permissions
+			claims := candidate.registration.Claims
+			status.Claims = &claims
+			if candidate.registration.IntegrityError != "" {
+				status.Integrity = "unverified"
+				if candidate.registration.ArtifactDigest != "" {
+					status.Integrity = "failed"
+				}
+				status.Detail = candidate.registration.IntegrityError
+			}
+			status.CapabilityDigest = candidate.registration.CapabilityDigest
+			status.Activation = activations[candidate.registration.Name]
+			if candidate.registration.ArtifactDigest != "" && status.Integrity == "" {
+				status.Integrity = "pinned"
+			}
+			if candidate.registration.PinnedCapabilities != nil {
+				requires := candidate.registration.PinnedCapabilities.Requires
+				status.Requires = &requires
+				status.RequirementStatus = adapterRequirementStatuses(requires)
+			}
+		}
 		if err == nil {
 			status.Available, status.Path = true, path
 			if candidate.configured == "" && len(candidate.command) == 0 {
@@ -812,7 +896,20 @@ func inspectAdaptersWithError(ctx context.Context, doctor bool, runner adapter.R
 		} else if candidate.configured != "" {
 			status.Detail = "configured path unavailable: " + err.Error()
 		}
-		if doctor && status.Available && candidate.kind == "native" {
+		managedIntegrityFailure := candidate.registration != nil && candidate.registration.ArtifactDigest != "" && candidate.registration.IntegrityError != ""
+		if doctor && candidate.registration != nil && candidate.registration.ArtifactDigest != "" {
+			if !status.Available {
+				managedIntegrityFailure = true
+				status.Integrity = "failed"
+			} else if verifyErr := adapter.VerifyArtifact(path, candidate.registration.ArtifactDigest); verifyErr != nil {
+				managedIntegrityFailure = true
+				status.Integrity = "failed"
+				status.Detail = "artifact integrity failed: " + verifyErr.Error()
+			} else {
+				status.Integrity = "verified"
+			}
+		}
+		if doctor && status.Available && candidate.kind == "native" && !managedIntegrityFailure {
 			probeCtx, cancel := context.WithTimeout(ctx, adapterDoctorTimeout)
 			capabilities, stderr, probeErr := runner.Describe(probeCtx, adapter.Executable{Path: path, Args: append([]string(nil), args...), Env: adapterEnvironment()})
 			cancel()
@@ -825,11 +922,36 @@ func inspectAdaptersWithError(ctx context.Context, doctor bool, runner adapter.R
 			} else if candidate.expectedProvider != "" && capabilities.Provider.Name != candidate.expectedProvider {
 				status.Detail = fmt.Sprintf("protocol check failed: adapter provider is %q, want %q", capabilities.Provider.Name, candidate.expectedProvider)
 			} else {
-				status.Compatible = true
+				digest, _ := adapter.CapabilityDigest(capabilities)
+				status.CapabilityDigest = digest
+				claimDrift := ""
+				if candidate.registration != nil && registrationHasClaims(*candidate.registration) {
+					wantClaims, wantErr := adapter.ClaimsDigest(candidate.registration.Claims)
+					gotClaims, gotErr := adapter.ClaimsDigest(capabilities.Claims)
+					if wantErr != nil || gotErr != nil {
+						claimDrift = errors.Join(wantErr, gotErr).Error()
+					} else if wantClaims != gotClaims {
+						claimDrift = fmt.Sprintf("got %s, configured %s", gotClaims, wantClaims)
+					}
+				}
+				if claimDrift != "" {
+					status.Detail = "claim drift: " + claimDrift
+				} else if candidate.registration != nil && candidate.registration.CapabilityDigest != "" && digest != candidate.registration.CapabilityDigest {
+					status.Detail = fmt.Sprintf("capability/claim drift: got %s, installed %s", digest, candidate.registration.CapabilityDigest)
+				} else if candidate.registration != nil && candidate.registration.Source == "explicit" && candidate.registration.CapabilityDigest == "" {
+					status.Detail = "capability pin required for automatic execution; set capability_digest to " + digest
+				} else {
+					status.Compatible = true
+				}
 				status.Provider, status.Version = capabilities.Provider.Name, capabilities.Provider.Version
 				status.Languages = append([]string(nil), capabilities.Languages...)
+				requires := capabilities.Requires
+				status.Requires = &requires
+				status.RequirementStatus = adapterRequirementStatuses(requires)
 				slices.Sort(status.Languages)
-				status.Detail = "compatible with " + adapter.Protocol
+				if status.Compatible {
+					status.Detail = "compatible with " + adapter.Protocol
+				}
 			}
 		}
 		statuses = append(statuses, status)
@@ -838,6 +960,90 @@ func inspectAdaptersWithError(ctx context.Context, doctor bool, runner adapter.R
 		statuses = append(statuses, AdapterStatus{Name: "registry", Kind: "configuration", Detail: configErr.Error()})
 	}
 	return statuses
+}
+
+func registrationHasClaims(value adapter.Registration) bool {
+	return len(value.Claims.Inputs.Extensions)+len(value.Claims.Inputs.Filenames)+len(value.Claims.Inputs.ProjectMarkers)+len(value.Claims.Evidence) != 0 ||
+		value.Claims.Fallback || value.Claims.InvalidationAllFiles
+}
+
+func inspectAdapterActivations(ctx context.Context, directory string, registrations []adapter.Registration) map[string]string {
+	result := make(map[string]string, len(registrations))
+	setAll := func(value string) map[string]string {
+		for _, registration := range registrations {
+			result[registration.Name] = value
+		}
+		return result
+	}
+	repo, err := repository.Discover(ctx, directory)
+	if err != nil {
+		return setAll("unknown: " + err.Error())
+	}
+	paths, err := repo.VisiblePaths(ctx)
+	if err != nil {
+		return setAll("unknown: " + err.Error())
+	}
+	routing := append(adapter.BuiltinRoutingClaims(), registrations...)
+	routes, err := adapter.RouteInputs(paths, routing)
+	if err != nil {
+		return setAll("conflict: " + err.Error())
+	}
+	for _, registration := range registrations {
+		count := len(routes[registration.Name])
+		if count == 0 {
+			result[registration.Name] = "inactive: no routed inputs in the current worktree"
+			continue
+		}
+		result[registration.Name] = fmt.Sprintf("active: %d routed input(s) in the current worktree", count)
+	}
+	return result
+}
+
+func adapterRequirementStatuses(requires adapter.Requirements) []AdapterRequirementStatus {
+	result := make([]AdapterRequirementStatus, 0, len(requires.Executables))
+	for _, required := range requires.Executables {
+		requirement := AdapterRequirementStatus{Name: required}
+		if strings.ContainsAny(required, " <>=") {
+			requirement.Detail = "declared requirement; version/range is adapter-owned"
+		} else if path, findErr := exec.LookPath(required); findErr == nil {
+			requirement.Available, requirement.Detail = true, path
+		} else {
+			requirement.Detail = findErr.Error()
+		}
+		result = append(result, requirement)
+	}
+	return result
+}
+
+func (app Local) manageAdapter(ctx context.Context, response Response, invocation Invocation) (Response, error) {
+	store := app.AdapterStore
+	if store.Root == "" {
+		return Response{}, errors.New("adapter store is unavailable")
+	}
+	store.Runner = app.AdapterRunner
+	switch invocation.Command {
+	case "adapters install", "adapters update":
+		item, err := store.Install(ctx, adapter.InstallOptions{
+			Source: invocation.AdapterSource, UpdateName: invocation.AdapterName,
+			Arguments: invocation.AdapterArgs, ArgumentsSet: invocation.AdapterArgsSet,
+			Permissions: invocation.Permissions, PermissionsSet: invocation.AdapterPolicySet,
+			Timeout: invocation.Timeout, TimeoutSet: invocation.AdapterTimeoutSet,
+		})
+		if err != nil {
+			return Response{}, err
+		}
+		claims, requires := item.Capabilities.Claims, item.Capabilities.Requires
+		action := "installed"
+		if invocation.Command == "adapters update" {
+			action = "updated"
+		}
+		response.Adapters = []AdapterStatus{{Name: item.Name, Kind: "native", Available: true, Checked: true, Compatible: true, Path: filepath.Join(store.Root, item.Artifact), Provider: item.Capabilities.Provider.Name, Version: item.Capabilities.Provider.Version, Languages: item.Capabilities.Languages, Detail: "managed adapter " + action, Source: "managed", Integrity: "verified", Claims: &claims, Requires: &requires}}
+		return response, nil
+	case "adapters remove":
+		return response, store.Remove(ctx, invocation.AdapterName)
+	default:
+		return Response{}, fmt.Errorf("unsupported adapter command %q", invocation.Command)
+	}
 }
 
 func (app Local) importSCIP(ctx context.Context, response Response, invocation Invocation) (Response, error) {

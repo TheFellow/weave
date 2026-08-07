@@ -90,9 +90,14 @@ explicit and declare the repository inputs that invalidate the full refresh:
   "adapters": [{
     "name": "scip:scip-java",
     "command": ["weave-jvm"],
-    "inputs": {
-      "extensions": [".java", ".kt", ".kts", ".gradle", ".xml", ".properties", ".toml", ".bzl"],
-      "filenames": ["pom.xml", "build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts", "gradlew", "module.bazel", "workspace", "workspace.bazel", "build", "build.bazel", "scip-java.json"]
+    "claims": {
+      "inputs": {
+        "extensions": [".java", ".kt", ".kts"],
+        "filenames": ["build.gradle", "build.gradle.kts", "pom.xml", "settings.gradle", "settings.gradle.kts"],
+        "project_markers": ["build.gradle", "build.gradle.kts", "pom.xml", "settings.gradle", "settings.gradle.kts"]
+      },
+      "evidence": ["exact"],
+      "invalidation_all_files": true
     },
     "permissions": {
       "build_tool": true,
@@ -105,11 +110,11 @@ explicit and declare the repository inputs that invalidate the full refresh:
 }
 ```
 
-Select it with `WEAVE_ADAPTER_CONFIG`. The input list is deliberately explicit:
-extend it for custom build logic, version catalogs, lock files, or generated
-configuration used by the target repository. Missing a semantic input can make
-automatic results stale, so prefer the explicit one-shot command until the
-declaration conservatively covers the build.
+Select it with `WEAVE_ADAPTER_CONFIG`, run `weave adapters doctor --json`, and
+pin the reported `capability_digest` before automatic use. The activation
+markers are explicit, but an active JVM project conservatively invalidates on
+every Git-visible file because custom build logic, version catalogs, lock files,
+or generated configuration can all affect compiler truth.
 
 The adapter invokes the producer with literal argv, never a shell command:
 

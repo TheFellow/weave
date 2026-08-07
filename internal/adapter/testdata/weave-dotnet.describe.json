@@ -6,5 +6,12 @@
   "refresh_modes": ["full"],
   "fact_encoding": "weave.facts/v0",
   "position_encodings": ["utf8-byte"],
-  "requires": {"executables": ["dotnet"], "may_run_build_tool": true}
+  "requires": {"executables": ["dotnet"], "may_run_build_tool": true},
+  "claims": {
+    "inputs": {
+      "extensions": [".cs", ".csproj", ".csx", ".fs", ".fsproj", ".fsx", ".props", ".sln", ".slnx", ".targets"],
+      "filenames": ["Directory.Build.props", "Directory.Build.targets", "Directory.Packages.props", "global.json", "NuGet.config", "packages.lock.json"]
+    },
+    "evidence": ["declared", "exact"]
+  }
 }

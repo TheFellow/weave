@@ -24,6 +24,7 @@ public sealed record IndexRequest
     [JsonPropertyName("repository_identity")] public string RepositoryIdentity { get; init; } = "";
     [JsonPropertyName("variant")] public string Variant { get; init; } = "";
     [JsonPropertyName("changed_paths")] public string[] ChangedPaths { get; init; } = [];
+    [JsonPropertyName("input_paths")] public string[] InputPaths { get; init; } = [];
     [JsonPropertyName("environment")] public Dictionary<string, string> Environment { get; init; } = [];
     [JsonPropertyName("permissions")] public required Permissions Permissions { get; init; }
     [JsonPropertyName("limits")] public required RequestLimits Limits { get; init; }

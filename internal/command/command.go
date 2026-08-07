@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -58,7 +60,7 @@ func New(app application.Service, streams Streams) *cli.Command {
 		architectureCommand(app, streams),
 		repositoryCommands(app, streams),
 		ciCommands(app, streams),
-		group("adapters", "inspect semantic adapters", adapterInspection(app, streams, "list", "list available adapters"), adapterInspection(app, streams, "doctor", "diagnose adapter availability")),
+		adapterCommands(app, streams),
 		maintenance(app, streams, "export", "export normalized semantic facts", true),
 		maintenance(app, streams, "verify", "verify index integrity", true),
 		maintenance(app, streams, "gc", "compact derived data", false),
@@ -468,6 +470,114 @@ func invokeCatalog(app application.Service, streams Streams, path string, minimu
 
 func adapterInspection(app application.Service, streams Streams, name, usage string) *cli.Command {
 	return &cli.Command{Name: name, Usage: usage, Flags: []cli.Flag{jsonFlag()}, Action: invoke(app, streams, "adapters "+name, 0, 0)}
+}
+
+func adapterCommands(app application.Service, streams Streams) *cli.Command {
+	return group("adapters", "manage semantic adapter executables",
+		adapterInspection(app, streams, "list", "list configured and managed adapters without executing them"),
+		adapterInspection(app, streams, "doctor", "verify adapter integrity, protocol, claims, and requirements"),
+		adapterMutation(app, streams, "install", 1), adapterMutation(app, streams, "update", 2),
+		&cli.Command{Name: "remove", Usage: "remove a managed adapter", Flags: []cli.Flag{jsonFlag()}, Action: func(ctx context.Context, cmd *cli.Command) error {
+			if cmd.Args().Len() != 1 {
+				return cli.Exit("adapters remove expects one provider name", 2)
+			}
+			response, err := app.Execute(ctx, application.Invocation{Command: "adapters remove", AdapterName: cmd.Args().First(), JSON: cmd.Bool("json")})
+			if err != nil {
+				return err
+			}
+			return renderInvocation(streams, response, cmd.Bool("json"))
+		}},
+		adapterConformance(streams),
+	)
+}
+
+func adapterMutation(app application.Service, streams Streams, name string, arity int) *cli.Command {
+	flags := append([]cli.Flag{jsonFlag(), &cli.StringSliceFlag{Name: "adapter-arg", Usage: "literal adapter argument before its operation (repeatable)"}, &cli.DurationFlag{Name: "timeout", Usage: "automatic indexing deadline", Validator: func(value time.Duration) error {
+		if value < 0 || value > time.Hour {
+			return fmt.Errorf("must be at most one hour")
+		}
+		return nil
+	}}}, adapterPermissionFlags()...)
+	return &cli.Command{Name: name, Usage: name + " an explicit local adapter executable", Flags: flags, Action: func(ctx context.Context, cmd *cli.Command) error {
+		if cmd.Args().Len() != arity {
+			return cli.Exit(fmt.Sprintf("adapters %s expects %d argument(s)", name, arity), 2)
+		}
+		invocation := application.Invocation{
+			Command: "adapters " + name, JSON: cmd.Bool("json"), AdapterArgs: cmd.StringSlice("adapter-arg"),
+			AdapterArgsSet: cmd.IsSet("adapter-arg"), Timeout: cmd.Duration("timeout"), AdapterTimeoutSet: cmd.IsSet("timeout"),
+			Permissions: adapterPermissions(cmd), AdapterPolicySet: adapterPermissionPolicySet(cmd),
+		}
+		arguments := cmd.Args().Slice()
+		if name == "update" {
+			invocation.AdapterName, invocation.AdapterSource = arguments[0], arguments[1]
+		} else {
+			invocation.AdapterSource = arguments[0]
+		}
+		response, err := app.Execute(ctx, invocation)
+		if err != nil {
+			return err
+		}
+		return renderInvocation(streams, response, cmd.Bool("json"))
+	}}
+}
+
+func adapterPermissionFlags() []cli.Flag {
+	return []cli.Flag{
+		&cli.BoolFlag{Name: "allow-network", Usage: "permit the adapter to use the network while indexing"},
+		&cli.BoolFlag{Name: "allow-restore", Usage: "permit dependency restore while indexing"},
+		&cli.BoolFlag{Name: "allow-build-tool", Usage: "permit build-tool invocation while indexing"},
+		&cli.BoolFlag{Name: "allow-generators", Usage: "permit generator execution while indexing"},
+	}
+}
+
+func adapterPermissions(cmd *cli.Command) adapter.Permissions {
+	return adapter.Permissions{Network: cmd.Bool("allow-network"), Restore: cmd.Bool("allow-restore"), BuildTool: cmd.Bool("allow-build-tool"), RunGenerators: cmd.Bool("allow-generators")}
+}
+
+func adapterPermissionPolicySet(cmd *cli.Command) bool {
+	return cmd.IsSet("allow-network") || cmd.IsSet("allow-restore") || cmd.IsSet("allow-build-tool") || cmd.IsSet("allow-generators")
+}
+
+func adapterConformance(streams Streams) *cli.Command {
+	flags := append([]cli.Flag{jsonFlag(), &cli.StringFlag{Name: "fixture", Required: true, Usage: "genuine fixture repository directory"}, &cli.StringSliceFlag{Name: "adapter-arg", Usage: "literal adapter argument before its operation (repeatable)"}, &cli.DurationFlag{Name: "timeout", Value: 2 * time.Minute, Usage: "overall black-box conformance deadline", Validator: func(value time.Duration) error {
+		if value <= 0 || value > time.Hour {
+			return fmt.Errorf("must be greater than zero and at most one hour")
+		}
+		return nil
+	}}}, adapterPermissionFlags()...)
+	return &cli.Command{Name: "conformance", Usage: "run the language-neutral black-box adapter contract", Flags: flags, Action: func(ctx context.Context, cmd *cli.Command) error {
+		if cmd.Args().Len() != 1 {
+			return cli.Exit("adapters conformance expects one executable", 2)
+		}
+		path, err := exec.LookPath(cmd.Args().First())
+		if err != nil {
+			return err
+		}
+		conformanceCtx, cancel := context.WithTimeout(ctx, cmd.Duration("timeout"))
+		defer cancel()
+		report := adapter.Conform(conformanceCtx, adapter.Executable{Path: path, Args: cmd.StringSlice("adapter-arg")}, cmd.String("fixture"), adapterPermissions(cmd))
+		if cmd.Bool("json") {
+			encoder := json.NewEncoder(streams.Stdout)
+			encoder.SetEscapeHTML(false)
+			if err := encoder.Encode(report); err != nil {
+				return err
+			}
+		} else {
+			for _, check := range report.Checks {
+				state := "ok"
+				if !check.Passed {
+					state = "failed"
+				}
+				if _, err := fmt.Fprintf(streams.Stdout, "%s\t%s\t%s\n", check.Name, state, check.Detail); err != nil {
+					return err
+				}
+			}
+		}
+		if !report.Passed {
+			return cli.Exit("adapter conformance failed", 3)
+		}
+		return nil
+	}}
 }
 
 func versionCommand(app application.Service, streams Streams) *cli.Command {
@@ -882,10 +992,10 @@ func render(writer io.Writer, response application.Response, jsonOutput bool) er
 		if adapter.Available {
 			status = "available"
 		}
-		if adapter.Checked && !adapter.Compatible {
+		if (adapter.Checked && !adapter.Compatible) || adapter.Integrity == "failed" {
 			status = "incompatible"
 		}
-		if _, err := fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%s\n", adapter.Name, adapter.Kind, status, adapter.Path, adapter.Detail); err != nil {
+		if _, err := fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%s\n", adapter.Name, adapter.Kind, status, adapter.Path, adapterStatusDetail(adapter)); err != nil {
 			return err
 		}
 	}
@@ -943,6 +1053,41 @@ func render(writer io.Writer, response application.Response, jsonOutput bool) er
 		return err
 	}
 	return nil
+}
+
+func adapterStatusDetail(status application.AdapterStatus) string {
+	details := []string{status.Detail}
+	if status.Integrity != "" {
+		details = append(details, "integrity="+status.Integrity)
+	}
+	if status.Activation != "" {
+		details = append(details, status.Activation)
+	}
+	for _, requirement := range status.RequirementStatus {
+		if !requirement.Available {
+			details = append(details, "requirement "+requirement.Name+" unavailable")
+		}
+	}
+	if status.Requires != nil && status.Requires.MayRunBuildTool && !status.Permissions.BuildTool {
+		details = append(details, "required build-tool permission not granted")
+	}
+	var permissions []string
+	if status.Permissions.Network {
+		permissions = append(permissions, "network")
+	}
+	if status.Permissions.Restore {
+		permissions = append(permissions, "restore")
+	}
+	if status.Permissions.BuildTool {
+		permissions = append(permissions, "build-tool")
+	}
+	if status.Permissions.RunGenerators {
+		permissions = append(permissions, "generators")
+	}
+	if len(permissions) != 0 {
+		details = append(details, "permissions="+strings.Join(permissions, ","))
+	}
+	return strings.Join(slices.DeleteFunc(details, func(value string) bool { return value == "" }), "; ")
 }
 
 func renderDiff(writer io.Writer, result graphdiff.Result) error {

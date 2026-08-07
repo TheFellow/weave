@@ -50,9 +50,36 @@ Required fields:
 | `fact_encoding` | Must be `weave.facts/v0`. |
 | `position_encodings` | Must include an encoding understood by the host; currently `utf8-byte`. |
 | `requires` | External executables and whether project evaluation may invoke a build tool. |
+| `claims.inputs` | Lowercase extensions, exact base filenames, and project markers used for deterministic activation/routing. |
+| `claims.evidence` | Evidence classes this adapter may emit. |
+| `claims.fallback` | Optional broad syntactic fallback; precise active claims always win. |
 
 All values are data, not shell fragments. Provider identity establishes fact
 ownership; it must not trigger provider-specific behavior in the core.
+
+Claims are normalized, sorted, and hashed with the complete capability document
+when an executable is installed. Automatic execution verifies that pin before
+indexing. Two precise providers may not claim the same extension, filename, or
+concrete input path. A fallback receives inputs only when no precise provider
+owns them. The host supplies the resulting concrete `input_paths` allowlist.
+Fallback adapters must emit a complete inventory only for those paths, and the
+host rejects fallback documents outside the routed set.
+
+## Language-neutral conformance
+
+[`conformance/`](conformance/) contains the machine-readable case inventory, a
+genuine tiny repository, malformed inputs, and a Python fixture adapter that
+imports no Go code. Any executable can be tested as a black box:
+
+```text
+weave adapters conformance ADAPTER --fixture /path/to/genuine/project --json
+```
+
+The runner negotiates `describe`, requires wrong-protocol and malformed-request
+failure exits, indexes the fixture twice and compares normalized facts, keeps
+stderr outside protocol data, and proves the host's byte bounds. Adapters whose
+fixture needs build/restore/network/generator behavior require the matching
+explicit conformance flags; no permission is inferred from a provider name.
 
 ## Index request
 
@@ -60,13 +87,17 @@ The request contains:
 
 - `protocol` and a host-generated `request_id` echoed by every response frame;
 - an absolute `repository_root` and optional stable `repository_identity`;
-- an optional build `variant`, changed-path hints, and allowlisted environment;
+- an optional build `variant`, changed-path hints, routed `input_paths`, and an
+  allowlisted environment;
 - explicit `permissions` for network, restore, build tools, and generators;
 - byte, frame, and fact limits selected by the host.
 
 A false permission is a prohibition, not a hint. Changed paths are hints unless
 the adapter advertised a compatible incremental refresh mode. A full-refresh
-adapter must return its complete provider-owned unit inventory.
+adapter must return its complete provider-owned unit inventory. `input_paths`
+are the concrete result of claim routing; precise compiler providers may read
+related project metadata, while a fallback's emitted source documents must stay
+inside this set.
 
 ## Response lifecycle
 

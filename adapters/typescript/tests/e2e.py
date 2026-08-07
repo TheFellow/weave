@@ -38,11 +38,12 @@ def main():
         raise RuntimeError("scip-typescript must be on PATH")
     environment = dict(os.environ)
     environment["WEAVE_SCIP_TYPESCRIPT"] = indexer
-    environment["WEAVE_TYPESCRIPT_ADAPTER"] = adapter
 
     fixture = Path(__file__).parent / "fixtures" / "polyglot"
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary) / "typescript-project"
+        environment["WEAVE_ADAPTER_HOME"] = str(Path(temporary) / "adapter-state")
+        run([weave, "adapters", "install", adapter], Path(temporary), environment)
         shutil.copytree(fixture, root)
         before = sorted(path.relative_to(root) for path in root.rglob("*"))
         run(["git", "init", "--quiet"], root, environment)

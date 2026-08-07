@@ -101,6 +101,10 @@ func TestDotnetCapabilityFixtureMatchesProtocol(t *testing.T) {
 	if err := decodeStrict(encoded, &capabilities); err != nil {
 		t.Fatal(err)
 	}
+	capabilities, err = NormalizeCapabilities(capabilities)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if capabilities.Provider != (Provider{Name: "weave-dotnet", Version: "0.1.0"}) ||
 		!slices.Equal(capabilities.Languages, []string{"csharp", "fsharp"}) ||
 		!capabilities.Requires.MayRunBuildTool || !slices.Contains(capabilities.Requires.Executables, "dotnet") {
@@ -292,7 +296,68 @@ func fixtureCapabilities() Capabilities {
 	return Capabilities{
 		Protocols: []string{Protocol}, Provider: Provider{"fixture-adapter", "1.0.0"}, Languages: []string{"fixture"},
 		Operations: []string{"index"}, RefreshModes: []string{"full"}, FactEncoding: FactEncoding,
-		PositionEncoding: []string{"utf8-byte"},
+		PositionEncoding: []string{"utf8-byte"}, Claims: Claims{Inputs: Inputs{Extensions: []string{".fixture"}}, Evidence: []string{"exact"}},
+	}
+}
+
+func TestNormalizeCapabilitiesRejectsIncompleteAuthority(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*Capabilities)
+	}{
+		{name: "missing full refresh", mutate: func(value *Capabilities) { value.RefreshModes = []string{"changed-units"} }},
+		{name: "missing position encoding", mutate: func(value *Capabilities) { value.PositionEncoding = []string{"utf16"} }},
+		{name: "empty evidence", mutate: func(value *Capabilities) { value.Claims.Evidence = nil }},
+		{name: "marker only", mutate: func(value *Capabilities) { value.Claims.Inputs = Inputs{ProjectMarkers: []string{"fixture.project"}} }},
+		{name: "reserved provider whitespace", mutate: func(value *Capabilities) { value.Provider.Name = "fixture adapter" }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			value := fixtureCapabilities()
+			test.mutate(&value)
+			if _, err := NormalizeCapabilities(value); err == nil {
+				t.Fatalf("capabilities were accepted: %#v", value)
+			}
+		})
+	}
+}
+
+func TestClaimsDigestCanonicalizesOrder(t *testing.T) {
+	left := Claims{Inputs: Inputs{Extensions: []string{".z", ".a"}, Filenames: []string{"z.file", "a.file"}}, Evidence: []string{"syntactic", "exact"}}
+	right := Claims{Inputs: Inputs{Extensions: []string{".a", ".z"}, Filenames: []string{"a.file", "z.file"}}, Evidence: []string{"exact", "syntactic"}}
+	leftDigest, leftErr := ClaimsDigest(left)
+	rightDigest, rightErr := ClaimsDigest(right)
+	if leftErr != nil || rightErr != nil || leftDigest != rightDigest {
+		t.Fatalf("claim digests = %q/%v and %q/%v", leftDigest, leftErr, rightDigest, rightErr)
+	}
+}
+
+func TestNormalizedCapabilitiesKeepRequiredEmptyArrays(t *testing.T) {
+	value, err := NormalizeCapabilities(fixtureCapabilities())
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), `"executables":null`) {
+		t.Fatalf("normalized capabilities used null executable list: %s", encoded)
+	}
+}
+
+func TestFallbackResultCannotEscapeRoutedInputPaths(t *testing.T) {
+	capabilities := fixtureCapabilities()
+	capabilities.Claims.Fallback = true
+	result := Result{Units: []graph.UnitFacts{{Documents: []graph.Document{{Path: "src/main.fixture"}}}}}
+	if err := validateFallbackScope(result, capabilities, []string{"src/main.fixture"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateFallbackScope(result, capabilities, []string{"other.fixture"}); err == nil || !strings.Contains(err.Error(), "outside") {
+		t.Fatalf("fallback scope error = %v", err)
+	}
+	if err := validateFallbackScope(result, capabilities, nil); err != nil {
+		t.Fatalf("manual fallback invocation was scoped: %v", err)
 	}
 }
 

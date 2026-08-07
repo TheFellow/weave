@@ -17,6 +17,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 const maxGitOutput = 16 << 20
@@ -86,6 +87,32 @@ type DiffChange struct {
 	Status  byte
 	Path    string
 	OldPath string
+}
+
+// VisiblePaths returns the bounded tracked and non-ignored untracked file
+// inventory used by provider claim routing. Git remains the authority; no
+// filesystem walk or hook is involved.
+func (r Repository) VisiblePaths(ctx context.Context) ([]string, error) {
+	raw, err := (gitRunner{directory: r.Root}).run(ctx, "-c", "core.fsmonitor=false", "ls-files", "-co", "--exclude-standard", "-z", "--")
+	if err != nil {
+		return nil, fmt.Errorf("list Git-visible files: %w", err)
+	}
+	var paths []string
+	for _, field := range bytes.Split(raw, []byte{0}) {
+		if len(field) == 0 {
+			continue
+		}
+		if !utf8.Valid(field) {
+			return nil, errors.New("Git-visible path is not UTF-8")
+		}
+		path := filepath.ToSlash(string(field))
+		if !filepath.IsLocal(filepath.FromSlash(path)) || path == "." {
+			return nil, fmt.Errorf("Git returned unsafe visible path %q", path)
+		}
+		paths = append(paths, path)
+	}
+	slices.Sort(paths)
+	return slices.Compact(paths), nil
 }
 
 // ResolveRevision resolves one user revision to exact commit and tree objects.

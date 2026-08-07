@@ -35,9 +35,9 @@ cmake -S . -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 weave index --adapter "$(command -v weave-cpp)" --allow-build-tool
 ```
 
-If exactly one `compile_commands.json` is Git-visible and `weave-cpp` plus
-`scip-clang` are on `PATH`, ordinary queries refresh C/C++ facts automatically.
-`WEAVE_CPP_ADAPTER` and `WEAVE_SCIP_CLANG` select explicit executable paths.
+If exactly one `compile_commands.json` is Git-visible, add the wrapper with
+`weave adapters install` or select it explicitly with `WEAVE_CPP_ADAPTER` to
+refresh C/C++ facts automatically. `WEAVE_SCIP_CLANG` selects the producer path.
 Automatic mode conservatively fingerprints every Git-visible file because
 preprocessor and compiler flags can consume files with arbitrary extensions.
 Only enable these tools for repositories you trust.

@@ -33,36 +33,25 @@ const maxGitInventoryBytes = 16 << 20
 // Weave never infers them by scanning PATH.
 func Default(directory string, registrations ...adapter.Registration) freshness.Provider {
 	providers := []freshness.Provider{workspaceindex.Provider{}, goindex.Provider{}, bridge.Provider{}}
-	candidates := []Provider{
-		{Name: "weave-dotnet", Path: configuredPath("WEAVE_DOTNET_ADAPTER", "weave-dotnet"), Directory: directory, Profile: DotNetInputs, Permissions: adapter.Permissions{BuildTool: true}},
-		{Name: "weave-python", Path: configuredPath("WEAVE_PYTHON_ADAPTER", "weave-python"), Directory: directory, Profile: PythonInputs, ProbeProviderVersion: true},
-		{
-			Name: "weave-rust", Path: configuredPath("WEAVE_RUST_ADAPTER", "weave-rust"), Directory: directory,
-			Profile: RustInputs, Activation: adapter.Inputs{Filenames: []string{"cargo.toml", "rust-project.json"}},
-			Permissions: adapter.Permissions{BuildTool: true}, ProbeProviderVersion: true, ConfigFingerprint: "builtin/rust-inputs/v1",
-		},
-		{
-			Name: "scip:scip-clang", Path: configuredPath("WEAVE_CPP_ADAPTER", "weave-cpp"), Directory: directory,
-			Profile: CppInputs, Activation: adapter.Inputs{Filenames: []string{"compile_commands.json"}},
-			Permissions: adapter.Permissions{BuildTool: true}, ProbeProviderVersion: true, ConfigFingerprint: "builtin/cpp-inputs/v1",
-		},
-		{
-			Name: "scip:scip-typescript", Path: configuredPath("WEAVE_TYPESCRIPT_ADAPTER", "weave-typescript"), Directory: directory,
-			Profile: TypeScriptInputs, Activation: adapter.Inputs{Filenames: []string{"tsconfig.json", "jsconfig.json"}},
-			ProbeProviderVersion: true, ConfigFingerprint: "builtin/typescript-inputs/v1",
-		},
-	}
+	var candidates []Provider
 	configured := append([]adapter.Registration(nil), registrations...)
 	slices.SortFunc(configured, func(a, b adapter.Registration) int { return strings.Compare(a.Name, b.Name) })
+	routing := append(adapter.BuiltinRoutingClaims(), configured...)
 	for _, registration := range configured {
 		if len(registration.Command) == 0 {
 			continue
 		}
+		inputs := registration.Claims.Inputs
+		if registration.Claims.InvalidationAllFiles {
+			inputs = adapter.Inputs{Extensions: []string{".*"}}
+		}
 		candidates = append(candidates, Provider{
 			Name: registration.Name, Path: registration.Command[0], Args: append([]string(nil), registration.Command[1:]...),
-			Directory: directory, Profile: InputProfile(registration.Name), Inputs: registration.Inputs, Permissions: registration.Permissions,
+			Directory: directory, Profile: InputProfile(registration.Name), Inputs: inputs,
+			Activation: adapter.Inputs{Filenames: append([]string(nil), registration.Claims.Inputs.ProjectMarkers...)}, Permissions: registration.Permissions,
 			ProbeProviderVersion: true, Timeout: registration.Timeout, ConfigFingerprint: registration.ConfigFingerprint,
-			Required: true,
+			Required: true, CapabilityDigest: registration.CapabilityDigest, ArtifactDigest: registration.ArtifactDigest, IntegrityError: registration.IntegrityError,
+			Claims: registration.Claims, Routing: routing,
 		})
 	}
 	for _, provider := range candidates {
@@ -77,13 +66,6 @@ func Default(directory string, registrations ...adapter.Registration) freshness.
 		}
 	}
 	return freshness.CompositeProvider{Providers: providers}
-}
-
-func configuredPath(environment, fallback string) string {
-	if configured := os.Getenv(environment); configured != "" {
-		return configured
-	}
-	return fallback
 }
 
 // InputProfile selects the repository inputs that invalidate an adapter.
@@ -112,6 +94,11 @@ type Provider struct {
 	Required             bool
 	Runner               adapter.Runner
 	Timeout              time.Duration
+	CapabilityDigest     string
+	ArtifactDigest       string
+	IntegrityError       string
+	Claims               adapter.Claims
+	Routing              []adapter.Registration
 }
 
 func (provider Provider) ID() freshness.ProviderID {
@@ -130,15 +117,35 @@ func (provider Provider) ID() freshness.ProviderID {
 }
 
 func (provider Provider) Refresh(ctx context.Context, request freshness.Request) (freshness.Result, error) {
+	var routedPaths []string
+	if len(provider.Routing) != 0 {
+		var routeErr error
+		routedPaths, routeErr = provider.routedPaths(ctx, request.Repository.Root)
+		if routeErr != nil {
+			return freshness.Result{}, routeErr
+		}
+		if len(routedPaths) == 0 {
+			previous := previousUnits(request.Previous)
+			return freshness.Result{Removed: sortedKeys(previous), Units: []freshness.Unit{}}, nil
+		}
+	}
+	if provider.IntegrityError != "" {
+		return freshness.Result{}, fmt.Errorf("adapter %q integrity check failed: %s", provider.name(), provider.IntegrityError)
+	}
+	if provider.ArtifactDigest != "" {
+		if err := adapter.VerifyArtifact(provider.Path, provider.ArtifactDigest); err != nil {
+			return freshness.Result{}, fmt.Errorf("adapter %q artifact changed after discovery: %w", provider.name(), err)
+		}
+	}
 	paths, fingerprint, err := semanticInputsForActivation(ctx, request.Repository.Root, provider.profile(), provider.Inputs, provider.Activation)
 	if err != nil {
 		return freshness.Result{}, err
 	}
 	previous := previousUnits(request.Previous)
-	if len(paths) == 0 || !provider.active(paths) {
+	if len(paths) == 0 {
 		return freshness.Result{Removed: sortedKeys(previous), Units: []freshness.Unit{}}, nil
 	}
-	if provider.ProbeProviderVersion {
+	if provider.ProbeProviderVersion || provider.CapabilityDigest != "" {
 		probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		capabilities, _, probeErr := provider.Runner.Describe(probeCtx, adapter.Executable{
 			Path: provider.Path, Args: provider.Args, Dir: request.Repository.Root, Env: adapterEnvironment(),
@@ -149,6 +156,28 @@ func (provider Provider) Refresh(ctx context.Context, request freshness.Request)
 		}
 		if capabilities.Provider.Name != provider.name() {
 			return freshness.Result{}, fmt.Errorf("adapter provider is %q, want %q", capabilities.Provider.Name, provider.name())
+		}
+		if hasClaims(provider.Claims) {
+			wantClaims, claimsErr := adapter.ClaimsDigest(provider.Claims)
+			if claimsErr != nil {
+				return freshness.Result{}, claimsErr
+			}
+			gotClaims, claimsErr := adapter.ClaimsDigest(capabilities.Claims)
+			if claimsErr != nil {
+				return freshness.Result{}, claimsErr
+			}
+			if gotClaims != wantClaims {
+				return freshness.Result{}, fmt.Errorf("adapter %q claim drift: got %s, configured %s", provider.name(), gotClaims, wantClaims)
+			}
+		}
+		if provider.CapabilityDigest != "" {
+			digest, digestErr := adapter.CapabilityDigest(capabilities)
+			if digestErr != nil {
+				return freshness.Result{}, digestErr
+			}
+			if digest != provider.CapabilityDigest {
+				return freshness.Result{}, fmt.Errorf("adapter %q capability drift: got %s, installed %s", provider.name(), digest, provider.CapabilityDigest)
+			}
 		}
 		fingerprint += "\x00" + capabilities.Provider.Name + "\x00" + capabilities.Provider.Version
 	}
@@ -176,6 +205,7 @@ func (provider Provider) Refresh(ctx context.Context, request freshness.Request)
 		RequestID: hex.EncodeToString(requestID), RepositoryRoot: request.Repository.Root,
 		RepositoryIdentity: request.Repository.Identity,
 		ChangedPaths:       changedSemanticPathsFor(request.State.Changes, provider.profile(), provider.Inputs),
+		InputPaths:         routedPaths,
 		Permissions:        provider.permissions(),
 	})
 	if err != nil {
@@ -202,6 +232,31 @@ func (provider Provider) Refresh(ctx context.Context, request freshness.Request)
 	slices.SortFunc(units, func(a, b freshness.Unit) int { return strings.Compare(a.ID, b.ID) })
 	slices.Sort(removed)
 	return freshness.Result{Batches: result.Units, Removed: removed, Units: units}, nil
+}
+
+func hasClaims(value adapter.Claims) bool {
+	return len(value.Inputs.Extensions)+len(value.Inputs.Filenames)+len(value.Inputs.ProjectMarkers)+len(value.Evidence) != 0 ||
+		value.Fallback || value.InvalidationAllFiles
+}
+
+func (provider Provider) routedPaths(ctx context.Context, root string) ([]string, error) {
+	paths, err := visiblePaths(ctx, root)
+	if err != nil {
+		return nil, err
+	}
+	routes, err := adapter.RouteInputs(paths, provider.Routing)
+	if err != nil {
+		return nil, err
+	}
+	return routes[provider.name()], nil
+}
+
+func visiblePaths(ctx context.Context, root string) ([]string, error) {
+	paths, err := (repository.Repository{Root: root}).VisiblePaths(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list adapter routing inputs: %w", err)
+	}
+	return paths, nil
 }
 
 func (provider Provider) name() string {
@@ -269,29 +324,29 @@ func semanticInputsForActivation(ctx context.Context, root string, profile Input
 	if err != nil {
 		return nil, "", fmt.Errorf("list %s semantic inputs: %w: %s", profile, err, strings.TrimSpace(stderr.String()))
 	}
-	var paths []string
+	var inventory []string
 	for _, raw := range bytes.Split(stdout.Bytes(), []byte{0}) {
 		if len(raw) == 0 {
 			continue
 		}
-		path := filepath.ToSlash(string(raw))
-		if isSemanticInputFor(path, profile, inputs) {
-			paths = append(paths, path)
-		}
+		inventory = append(inventory, filepath.ToSlash(string(raw)))
 	}
-	slices.Sort(paths)
-	paths = slices.Compact(paths)
+	slices.Sort(inventory)
+	inventory = slices.Compact(inventory)
 	if hasConfiguredInputs(activation) {
-		active := slices.ContainsFunc(paths, func(path string) bool {
+		active := slices.ContainsFunc(inventory, func(path string) bool {
 			return isSemanticInputFor(path, profile, activation)
 		})
 		if profile == TypeScriptInputs {
-			active = slices.Contains(paths, "tsconfig.json") || slices.Contains(paths, "jsconfig.json")
+			active = slices.Contains(inventory, "tsconfig.json") || slices.Contains(inventory, "jsconfig.json")
 		}
 		if !active {
 			return nil, "", nil
 		}
 	}
+	paths := slices.DeleteFunc(inventory, func(path string) bool {
+		return !isSemanticInputFor(path, profile, inputs)
+	})
 	hash := sha256.New()
 	var total int64
 	for _, path := range paths {
@@ -360,7 +415,7 @@ func isSemanticInputFor(path string, profile InputProfile, inputs adapter.Inputs
 		return true
 	}
 	if hasConfiguredInputs(inputs) {
-		return slices.Contains(inputs.Extensions, ext) || slices.Contains(inputs.Filenames, base)
+		return slices.Contains(inputs.Extensions, ext) || slices.Contains(inputs.Extensions, ".*") || slices.Contains(inputs.Filenames, base)
 	}
 	if profile == PythonInputs {
 		return ext == ".py"
@@ -389,7 +444,7 @@ func changedSemanticPathsFor(changes []repository.Change, profile InputProfile, 
 }
 
 func hasConfiguredInputs(inputs adapter.Inputs) bool {
-	return len(inputs.Extensions)+len(inputs.Filenames) != 0
+	return len(inputs.Extensions)+len(inputs.Filenames)+len(inputs.ProjectMarkers) != 0
 }
 
 type configurationErrorProvider struct {

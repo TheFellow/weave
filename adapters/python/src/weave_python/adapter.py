@@ -63,6 +63,13 @@ def describe(output):
             "executables": ["python>=3.9", "git"],
             "may_run_build_tool": False,
         },
+        "claims": {
+            "inputs": {
+                "extensions": [".py"],
+                "filenames": ["pyproject.toml"],
+            },
+            "evidence": ["declared", "exact", "syntactic"],
+        },
     }
     output.write(_json(value) + "\n")
 
@@ -126,6 +133,7 @@ def _read_request(input_stream):
             "repository_identity",
             "variant",
             "changed_paths",
+            "input_paths",
             "environment",
             "permissions",
             "limits",
@@ -156,6 +164,11 @@ def _read_request(input_stream):
     changed = request.get("changed_paths", [])
     if not isinstance(changed, list) or any(not isinstance(path, str) for path in changed):
         raise AdapterError("changed_paths must contain strings")
+    input_paths = request.get("input_paths", [])
+    if not isinstance(input_paths, list) or any(
+        not isinstance(path, str) for path in input_paths
+    ):
+        raise AdapterError("input_paths must contain strings")
     environment = request.get("environment", {})
     if not isinstance(environment, dict) or any(
         not isinstance(key, str) or not isinstance(value, str)

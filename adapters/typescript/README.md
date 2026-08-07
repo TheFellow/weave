@@ -33,8 +33,9 @@ For a configured project:
 weave index --adapter "$(command -v weave-typescript)"
 ```
 
-`WEAVE_TYPESCRIPT_ADAPTER` selects the wrapper when automatic discovery is
-enabled by the host. `WEAVE_SCIP_TYPESCRIPT` selects the producer; the literal
+Add the wrapper with `weave adapters install` or select it explicitly with
+`WEAVE_TYPESCRIPT_ADAPTER` for automatic use.
+`WEAVE_SCIP_TYPESCRIPT` selects the producer; the literal
 adapter equivalent is
 `--adapter-arg=--scip-typescript=/absolute/path/to/scip-typescript`.
 

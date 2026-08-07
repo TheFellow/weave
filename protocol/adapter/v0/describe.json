@@ -6,5 +6,9 @@
   "refresh_modes": ["full"],
   "fact_encoding": "weave.facts/v0",
   "position_encodings": ["utf8-byte"],
-  "requires": {"executables": [], "may_run_build_tool": false}
+  "requires": {"executables": [], "may_run_build_tool": false},
+  "claims": {
+    "inputs": {"extensions": [".fixture"], "project_markers": ["fixture.project"]},
+    "evidence": ["exact"]
+  }
 }

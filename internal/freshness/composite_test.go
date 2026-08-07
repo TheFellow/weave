@@ -2,6 +2,7 @@ package freshness
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -97,9 +98,46 @@ func TestCompositeManagerPublishesProviderFactsWithoutCrossDeletion(t *testing.T
 	}
 }
 
+func TestCompositeManagerDoesNotPublishBeforeEveryProviderSucceeds(t *testing.T) {
+	root := freshRepository(t)
+	left := compositeFixture{id: ProviderID{Name: "left", Version: "1"}, result: Result{Batches: []graph.UnitFacts{{Unit: graph.Unit{ID: "left-unit", Provider: "left", ProviderVersion: "1", InventoryDigest: "before"}}}, Units: []Unit{{ID: "left-unit", InventoryDigest: "before"}}}}
+	right := compositeFixture{id: ProviderID{Name: "right", Version: "1"}, result: Result{Batches: []graph.UnitFacts{{Unit: graph.Unit{ID: "right-unit", Provider: "right", ProviderVersion: "1"}}}, Units: []Unit{{ID: "right-unit"}}}}
+	manager := Manager{Directory: root, Provider: CompositeProvider{Providers: []Provider{left, right}}, Command: "test"}
+	if _, err := manager.Ensure(context.Background(), false); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	left.result.Batches[0].Unit.InventoryDigest = "must-not-publish"
+	left.result.Units[0].InventoryDigest = "must-not-publish"
+	right.err = errors.New("capability preflight failed")
+	manager.Provider = CompositeProvider{Providers: []Provider{left, right}}
+	if _, err := manager.Ensure(context.Background(), false); err == nil {
+		t.Fatal("failing final provider produced a successful refresh")
+	}
+	path, err := manager.DatabasePath(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := storage.Open(context.Background(), path, storage.Options{MustExist: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	snapshot, err := db.Export(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Units) != 2 || snapshot.Units[0].InventoryDigest != "before" {
+		t.Fatalf("partial provider result was published: %#v", snapshot.Units)
+	}
+}
+
 type compositeFixture struct {
 	id     ProviderID
 	result Result
+	err    error
 }
 
 type capturingCompositeFixture struct {
@@ -117,6 +155,9 @@ func (fixture *capturingCompositeFixture) Refresh(_ context.Context, request Req
 
 func (fixture compositeFixture) ID() ProviderID { return fixture.id }
 func (fixture compositeFixture) Refresh(_ context.Context, request Request) (Result, error) {
+	if fixture.err != nil {
+		return Result{}, fixture.err
+	}
 	result := fixture.result
 	if request.Previous != nil {
 		for _, unit := range request.Previous.Units {

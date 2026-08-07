@@ -38,11 +38,12 @@ def main():
     if compiler is None or indexer is None:
         raise RuntimeError("clang++ and scip-clang must be on PATH")
     environment = dict(os.environ)
-    environment["WEAVE_CPP_ADAPTER"] = adapter
 
     fixture = Path(__file__).parent / "fixtures" / "geometry"
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary) / "cpp-project"
+        environment["WEAVE_ADAPTER_HOME"] = str(Path(temporary) / "adapter-state")
+        run([weave, "adapters", "install", adapter, "--allow-build-tool"], Path(temporary), environment)
         shutil.copytree(fixture, root)
         source = root / "src" / "geometry.cpp"
         compilation_database = [

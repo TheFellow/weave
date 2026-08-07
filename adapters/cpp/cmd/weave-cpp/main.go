@@ -167,6 +167,13 @@ func describe(output io.Writer, tool producer) error {
 			"executables":        []string{"scip-clang", "git"},
 			"may_run_build_tool": true,
 		},
+		"claims": map[string]any{
+			"inputs": map[string]any{
+				"extensions": []string{".c", ".cc", ".cpp", ".cxx", ".cu", ".h", ".hh", ".hpp"},
+				"filenames":  []string{"compile_commands.json"}, "project_markers": []string{"compile_commands.json"},
+			},
+			"evidence": []string{"exact"}, "invalidation_all_files": true,
+		},
 	})
 }
 

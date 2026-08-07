@@ -1,8 +1,9 @@
 # weave-dotnet
 
 `weave-dotnet` is the optional compiler-native C#/F# adapter. It implements the
-one-shot `weave.adapter/v0` process contract. When `weave-dotnet` is on `PATH`
-or `WEAVE_DOTNET_ADAPTER` names it, ordinary Weave queries run it automatically
+one-shot `weave.adapter/v0` process contract. When the executable is added with
+`weave adapters install` or selected explicitly by `WEAVE_DOTNET_ADAPTER`,
+ordinary Weave queries run it automatically
 after relevant C#/F#/project inputs change.
 
 The repository `global.json` stays on the latest installed .NET 10 feature band
@@ -31,15 +32,16 @@ package into an explicit local tool directory:
 ```console
 dotnet tool install Weave.Adapter.DotNet --tool-path .weave-tools \
   --add-source /path/to/downloads --version VERSION
-export PATH="$PWD/.weave-tools:$PATH"
+export WEAVE_DOTNET_ADAPTER="$PWD/.weave-tools/weave-dotnet"
 weave adapters doctor
 ```
 
-Alternatively unpack the archive matching the host RID and put
-`weave-dotnet` (`weave-dotnet.exe` on Windows) on `PATH`. The adapter and core
-release versions are built together; `weave adapters doctor` performs the
-protocol compatibility handshake. No package is published to NuGet.org by the
-release workflow.
+Alternatively unpack the archive matching the host RID and install its
+single-file `weave-dotnet` (`weave-dotnet.exe` on Windows) with
+`weave adapters install PATH --allow-build-tool`. The adapter and core release
+versions are built together; `weave adapters doctor` performs the protocol
+compatibility handshake. No package is published to NuGet.org by the release
+workflow.
 
 Maintainers can dry-run one or all release RIDs without a tag:
 

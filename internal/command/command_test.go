@@ -83,6 +83,60 @@ func TestPlaceholderCommandsSucceedSilently(t *testing.T) {
 	}
 }
 
+func TestAdapterLifecycleCommandsPreserveLiteralArgumentsAndPermissions(t *testing.T) {
+	app := &recordingApplication{}
+	root := command.New(app, command.Streams{Stdin: strings.NewReader(""), Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}})
+	if err := root.Run(context.Background(), []string{"weave", "adapters", "install", "./adapter file", "--adapter-arg=space value;$(literal)", "--timeout", "3m", "--allow-build-tool"}); err != nil {
+		t.Fatal(err)
+	}
+	want := application.Invocation{
+		Command: "adapters install", AdapterSource: "./adapter file", AdapterArgs: []string{"space value;$(literal)"},
+		AdapterArgsSet: true, Timeout: 3 * time.Minute, AdapterTimeoutSet: true,
+		Permissions: adapter.Permissions{BuildTool: true}, AdapterPolicySet: true,
+	}
+	if len(app.invocations) != 1 || !reflect.DeepEqual(app.invocations[0], want) {
+		t.Fatalf("install invocation = %#v", app.invocations)
+	}
+	app.invocations = nil
+	if err := root.Run(context.Background(), []string{"weave", "adapters", "update", "provider", "new.exe"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(app.invocations) != 1 || app.invocations[0].AdapterName != "provider" || app.invocations[0].AdapterSource != "new.exe" || app.invocations[0].AdapterArgsSet || app.invocations[0].AdapterPolicySet || app.invocations[0].AdapterTimeoutSet {
+		t.Fatalf("update invocation = %#v", app.invocations)
+	}
+	app.invocations = nil
+	if err := root.Run(context.Background(), []string{"weave", "adapters", "remove", "provider"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(app.invocations) != 1 || app.invocations[0].Command != "adapters remove" || app.invocations[0].AdapterName != "provider" {
+		t.Fatalf("remove invocation = %#v", app.invocations)
+	}
+}
+
+func TestAdapterConformanceCLIIsBlackBoxJSON(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		python, err = exec.LookPath("python")
+	}
+	if err != nil {
+		t.Skip("Python is unavailable")
+	}
+	script, _ := filepath.Abs(filepath.Join("..", "..", "protocol", "adapter", "v0", "conformance", "fixture_adapter.py"))
+	fixture, _ := filepath.Abs(filepath.Join("..", "..", "protocol", "adapter", "v0", "conformance", "repository"))
+	var stdout bytes.Buffer
+	root := command.New(&recordingApplication{}, command.Streams{Stdin: strings.NewReader(""), Stdout: &stdout, Stderr: &bytes.Buffer{}})
+	if err := root.Run(context.Background(), []string{"weave", "adapters", "conformance", "--fixture", fixture, "--adapter-arg", script, "--json", python}); err != nil {
+		t.Fatal(err)
+	}
+	var report adapter.ConformanceReport
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatal(err)
+	}
+	if !report.Passed || report.Schema != adapter.ConformanceSchema || report.Provider.Name != "fixture-python-adapter" {
+		t.Fatalf("report = %#v", report)
+	}
+}
+
 func TestApplicationErrorIsReturned(t *testing.T) {
 	t.Parallel()
 
@@ -1171,6 +1225,8 @@ func TestExternalAdapterHelperProcess(t *testing.T) {
 			"protocols": []string{adapter.Protocol}, "provider": provider, "languages": []string{"fixture"},
 			"operations": []string{"index"}, "refresh_modes": []string{"full"},
 			"fact_encoding": adapter.FactEncoding, "position_encodings": []string{"utf8-byte"},
+			"requires": map[string]any{"executables": []string{}, "may_run_build_tool": false},
+			"claims":   map[string]any{"inputs": map[string]any{"extensions": []string{".fixture"}}, "evidence": []string{"exact"}},
 		})
 		os.Exit(0)
 	}

@@ -77,7 +77,8 @@ jobs:
           git -C "$fixture" add .
           git -C "$fixture" commit --quiet -m fixture
           cd "$fixture"
-          export WEAVE_RUST_ADAPTER="$GITHUB_WORKSPACE/adapters/rust/target/debug/weave-rust"
+          export WEAVE_ADAPTER_HOME="$RUNNER_TEMP/weave-adapters"
+          "$RUNNER_TEMP/weave" adapters install "$GITHUB_WORKSPACE/adapters/rust/target/debug/weave-rust" --allow-build-tool
           "$RUNNER_TEMP/weave" index --json
           "$RUNNER_TEMP/weave" symbols greet --json | jq -e \
             '.symbols | map(select(.display_name == "greet")) | length > 0'

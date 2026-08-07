@@ -16,7 +16,7 @@ example, on macOS/Linux:
 ```console
 python -m venv ~/.local/share/weave/python-adapter
 ~/.local/share/weave/python-adapter/bin/python -m pip install ./adapters/python
-export PATH="$HOME/.local/share/weave/python-adapter/bin:$PATH"
+export WEAVE_PYTHON_ADAPTER="$HOME/.local/share/weave/python-adapter/bin/weave-python"
 weave adapters doctor
 cd /path/to/python/repository
 weave symbols MyClass
@@ -28,13 +28,14 @@ PowerShell uses the same wheel in a Windows venv:
 ```powershell
 py -m venv "$env:LOCALAPPDATA\weave\python-adapter"
 & "$env:LOCALAPPDATA\weave\python-adapter\Scripts\python.exe" -m pip install .\adapters\python
-$env:PATH = "$env:LOCALAPPDATA\weave\python-adapter\Scripts;$env:PATH"
+$env:WEAVE_PYTHON_ADAPTER = "$env:LOCALAPPDATA\weave\python-adapter\Scripts\weave-python.exe"
 weave adapters doctor
 ```
 
-When `weave-python` is on `PATH`, or `WEAVE_PYTHON_ADAPTER` points to its
-launcher, ordinary queries automatically refresh Python facts after a tracked
-or non-ignored `.py` file changes. The adapter reports its exact Python
+Select the environment-owned launcher explicitly with `WEAVE_PYTHON_ADAPTER`;
+ordinary queries then automatically refresh Python facts after a tracked or
+non-ignored `.py` file changes. A separately packaged relocatable executable
+may use `weave adapters install`. The adapter reports its exact Python
 implementation and patch version, so changing interpreters invalidates the
 cached inventory. It advertises full refresh today, while returning one atomic
 unit per source module.

@@ -45,6 +45,9 @@ func TestLoadRegistryPreservesLiteralArgvAndCanonicalizesRegistrations(t *testin
 	if !rust.Permissions.BuildTool || rust.ConfigFingerprint == "" {
 		t.Fatalf("rust trust/fingerprint = %#v", rust)
 	}
+	if rust.IntegrityError == "" || !reflect.DeepEqual(rust.Claims.Inputs, rust.Inputs) || !reflect.DeepEqual(rust.Claims.Evidence, []string{"syntactic"}) {
+		t.Fatalf("legacy registration pin/claims = %#v", rust)
+	}
 	zig := registrations[1]
 	if want := []string{"weave-zig", "--define=message=$(touch nope)", "", "; echo nope"}; !reflect.DeepEqual(zig.Command, want) {
 		t.Fatalf("literal argv = %#v, want %#v", zig.Command, want)
@@ -105,12 +108,13 @@ func TestLoadRegistryRejectsAmbiguousOrUnsafeConfiguration(t *testing.T) {
 	}{
 		{"unknown schema", `{"schema":"other","adapters":[]}`, "want \"weave.adapters/v1\""},
 		{"unknown field", `{"schema":"weave.adapters/v1","extra":true,"adapters":[]}`, "unknown field"},
-		{"reserved name", `{"schema":"weave.adapters/v1","adapters":[{"name":"weave-python","command":["other"],"inputs":{"extensions":[".py"]}}]}`, "reserved"},
+		{"reserved core name", `{"schema":"weave.adapters/v1","adapters":[{"name":"weave-go","command":["other"],"inputs":{"extensions":[".go"]}}]}`, "reserved"},
 		{"duplicate name", `{"schema":"weave.adapters/v1","adapters":[{"name":"same","command":["one"],"inputs":{"extensions":[".one"]}},{"name":"same","command":["two"],"inputs":{"extensions":[".two"]}}]}`, "duplicate"},
 		{"shell command", `{"schema":"weave.adapters/v1","adapters":[{"name":"shell","command":[],"inputs":{"extensions":[".x"]}}]}`, "command must contain"},
 		{"empty executable", `{"schema":"weave.adapters/v1","adapters":[{"name":"empty","command":[""],"inputs":{"extensions":[".x"]}}]}`, "command[0] is empty"},
 		{"missing inputs", `{"schema":"weave.adapters/v1","adapters":[{"name":"all","command":["all"],"inputs":{}}]}`, "at least one"},
 		{"path input", `{"schema":"weave.adapters/v1","adapters":[{"name":"bad","command":["bad"],"inputs":{"filenames":["src/file"]}}]}`, "base name"},
+		{"bad capability digest", `{"schema":"weave.adapters/v1","adapters":[{"name":"bad","command":["bad"],"inputs":{"extensions":[".x"]},"capability_digest":"sha256:nope"}]}`, "capability_digest"},
 		{"trailing value", `{"schema":"weave.adapters/v1","adapters":[]} {}`, "multiple JSON"},
 	}
 	for _, test := range tests {

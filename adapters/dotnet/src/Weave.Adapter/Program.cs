@@ -22,6 +22,15 @@ static async Task<int> MainAsync(string[] args)
                 fact_encoding = Constants.FactEncoding,
                 position_encodings = new[] { "utf8-byte" },
                 requires = new { executables = new[] { "dotnet" }, may_run_build_tool = true },
+                claims = new
+                {
+                    inputs = new
+                    {
+                        extensions = new[] { ".cs", ".csproj", ".csx", ".fs", ".fsproj", ".fsx", ".props", ".sln", ".slnx", ".targets" },
+                        filenames = new[] { "Directory.Build.props", "Directory.Build.targets", "Directory.Packages.props", "global.json", "NuGet.config", "packages.lock.json" },
+                    },
+                    evidence = new[] { "declared", "exact" },
+                },
             }));
             return 0;
         }

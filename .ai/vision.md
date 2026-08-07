@@ -288,6 +288,21 @@ Every public adapter generation includes:
 - literal executable plus argument discovery on macOS, Linux, and Windows;
 - explicit permissions, resource bounds, cancellation, and stderr rules.
 
+Capability negotiation also declares normalized input and evidence claims. The
+host resolves those claims to concrete repository paths before invocation,
+rejects competing precise owners, and supplies routed `input_paths`. A broad
+syntactic fallback may index only otherwise-unclaimed paths; it must not become
+a second owner for compiler-indexed files in a polyglot worktree.
+
+The host manages explicitly selected local single-file adapter artifacts in
+platform user state. Installation pins artifact bytes and normalized
+capabilities; update preserves arguments, permissions, and timeouts unless the
+user explicitly replaces them. Listing is metadata-only, while doctor may
+verify integrity, requirements, compatibility, and current-worktree activation
+without indexing. Project markers activate claims independently of the files a
+provider owns, so build metadata does not have to masquerade as source input.
+Remote acquisition and package-manager behavior remain separate policy.
+
 Adapters are independently implementable and distributable. Bundled companions
 may share Weave's release version, while compatible third-party adapters may
 ship on their own cadence. Provider identity and semantic-toolchain versions
@@ -470,6 +485,12 @@ rules.
 Use `bstore` over bbolt for the first implementation. It is a compact embedded
 Go-native store with transactional behavior and indexed records. The database is
 derived, so periodic rewrite/compaction is acceptable.
+
+Application records and queries use bstore. Direct bbolt access is limited to
+capabilities bstore does not expose—physical compaction, read-only format
+preflight/error classification, and a shared cross-process lock primitive that
+stores no application records—and must stay hidden behind storage or lock
+abstractions. Feature packages such as bridge and adapters do not import bbolt.
 
 The schema should favor explicit indexed adjacency records over clever object
 graphs. Representative records:
@@ -817,6 +838,13 @@ Rules are checked-in text configuration. Evaluation is deterministic and usable
 locally or in CI. Every violation includes an evidence path.
 
 ## CI model
+
+CI and `architecture check` are optional consumers of the same deterministic
+graph, not the center of the product. The existing policy surface remains
+available, but future completeness work must not turn Weave into a replacement
+for `arch-lint` or prioritize rule-engine breadth over indexing, freshness,
+querying, and graph evidence. Further architecture-policy expansion is deferred
+until a distinct need appears.
 
 CI validates reproducibility and policy. It does not require committing the
 binary database.

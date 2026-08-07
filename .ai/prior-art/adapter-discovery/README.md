@@ -1,5 +1,9 @@
 # Explicit adapter discovery and input registration prior art
 
+> Historical first increment. ADR 0016 and
+> [adapter-ecosystem research](../adapter-ecosystem/README.md) now add managed
+> local artifacts, persisted capability pins, and conflict/fallback routing.
+
 Research date: 2026-08-07
 
 ## Question

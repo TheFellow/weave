@@ -1,0 +1,14 @@
+{
+  "schema": "weave.adapter-conformance-cases/v1",
+  "cases": [
+    "describe",
+    "wrong-protocol-rejected",
+    "malformed-request-rejected",
+    "stderr-separation",
+    "fixture-index",
+    "fixture-semantic-facts",
+    "permission-envelope",
+    "deterministic-replay",
+    "host-bounds"
+  ]
+}
