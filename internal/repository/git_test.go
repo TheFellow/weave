@@ -423,6 +423,7 @@ func newRepository(t *testing.T) string {
 	git(t, "", "init", "--initial-branch=main", root)
 	git(t, root, "config", "user.email", "weave@example.test")
 	git(t, root, "config", "user.name", "Weave Test")
+	git(t, root, "config", "core.autocrlf", "false")
 	return canonicalPath(root)
 }
 
