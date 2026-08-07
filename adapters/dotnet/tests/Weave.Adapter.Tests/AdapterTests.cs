@@ -69,7 +69,10 @@ public sealed class AdapterTests
         Assert.Equal(allIds.Length, allIds.Distinct(StringComparer.Ordinal).Count());
 
         var fsharp = await FSharpIndexer.IndexAsync(Path.Combine(root, "FSharpLib", "FSharpLib.fsproj"), root, "fixture", "Debug", CancellationToken.None);
-        var fsharpReport = string.Join(Environment.NewLine, fsharp.Diagnostics.Select(diagnostic => diagnostic.Severity + ": " + diagnostic.Message));
+        var fsharpReport = string.Join(Environment.NewLine,
+            fsharp.Diagnostics.Select(diagnostic => diagnostic.Severity + ": " + diagnostic.Message)
+                .Append("documents: " + string.Join(", ", fsharp.Units.SelectMany(unit => unit.Documents).Select(document => document.Path)))
+                .Append("symbols: " + string.Join(", ", fsharp.Units.SelectMany(unit => unit.Symbols).Select(symbol => symbol.DisplayName))));
         Assert.True(fsharp.Units.SelectMany(unit => unit.Symbols).Any(symbol => symbol.DisplayName == "greet"), fsharpReport);
         Assert.True(fsharp.Units.SelectMany(unit => unit.Occurrences).Any(occurrence => occurrence.Role == "reference"), fsharpReport);
         Assert.True(fsharp.Units.SelectMany(unit => unit.Edges).Any(edge => edge.Kind == "depends-on"), fsharpReport);
