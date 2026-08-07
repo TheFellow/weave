@@ -4,10 +4,12 @@ on:
   push:
     paths:
       - "adapters/dotnet/**"
+      - "scripts/package-dotnet-adapter.sh"
       - ".github/workflows/dotnet-adapter.yml"
   pull_request:
     paths:
       - "adapters/dotnet/**"
+      - "scripts/package-dotnet-adapter.sh"
       - ".github/workflows/dotnet-adapter.yml"
 
 permissions:
