@@ -36,7 +36,7 @@ public sealed class AdapterTests
         writer.Unit(facts);
         writer.RunEnd(["unit"]);
         var frames = output.ToString().Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries)
-            .Select(JsonDocument.Parse).ToArray();
+            .Select(line => JsonDocument.Parse(line)).ToArray();
         Assert.Equal(new[] { "run.begin", "unit.begin", "unit.end", "run.end" },
             frames.Select(frame => frame.RootElement.GetProperty("kind").GetString()));
         Assert.Equal(0, frames[2].RootElement.GetProperty("payload").GetProperty("counts").GetProperty("symbols").GetInt32());
