@@ -1,6 +1,6 @@
 module github.com/TheFellow/weave
 
-go 1.26.0
+go 1.26.5
 
 require (
 	github.com/mjl-/bstore v0.0.11

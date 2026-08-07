@@ -13,7 +13,7 @@ hosted service, or required daemon in the indexing path.
 
 ## Install
 
-Build the current checkout with Go 1.26 or newer:
+Build the current checkout with Go 1.26.5 or newer:
 
 ```sh
 go install github.com/TheFellow/weave/cmd/weave@latest
