@@ -1,7 +1,8 @@
 # Vision compliance audit
 
 Audit date: 2026-08-06  
-Audited commit: `4f9779e` and its ancestry  
+Audited implementation: `main` through the Milestone 8 hardening block recorded
+in this file.
 Method: read `.ai/vision.md`, ADRs, prior-art notes, implementation and tests;
 ran unit/race/static checks, bounded fuzz campaigns, microbenchmarks, .NET
 fixtures, release/action validation, and a built-executable smoke test in a real
