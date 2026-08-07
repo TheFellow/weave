@@ -157,7 +157,10 @@ func (m Manager) Ensure(ctx context.Context, force bool) (Status, error) {
 	if err != nil {
 		return Status{}, err
 	}
-	if err := db.ReplaceUnits(ctx, result.Batches, result.Removed); err != nil {
+	// Large compiler universes can contain hundreds of thousands of indexed
+	// facts. Bound each storage transaction while the unpublished manifest makes
+	// an interrupted refresh observably stale and safely replayable.
+	if err := db.ReplaceUnitsIncremental(ctx, result.Batches, result.Removed, 25_000); err != nil {
 		_ = db.Close()
 		return Status{}, err
 	}

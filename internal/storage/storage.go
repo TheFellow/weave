@@ -178,7 +178,51 @@ func (db *DB) ReplaceUnit(ctx context.Context, facts graph.UnitFacts) error {
 // ReplaceUnits atomically replaces complete returned compilation-unit batches
 // and removes units no longer present in the provider's complete inventory.
 func (db *DB) ReplaceUnits(ctx context.Context, batches []graph.UnitFacts, removed []string) error {
+	if err := prepareReplacement(batches, removed); err != nil {
+		return err
+	}
+	return db.replacePrepared(ctx, batches, removed)
+}
+
+// ReplaceUnitsIncremental applies bounded atomic chunks after validating the
+// complete replacement set. A crash can leave an incomplete database, but the
+// freshness manifest is published only after this method succeeds, so the next
+// observation deterministically reapplies the complete provider result. This
+// avoids holding hundreds of thousands of indexed bstore records in one Bolt
+// transaction while retaining atomic replacement for every semantic unit.
+func (db *DB) ReplaceUnitsIncremental(ctx context.Context, batches []graph.UnitFacts, removed []string, maxFacts int) error {
+	if err := prepareReplacement(batches, removed); err != nil {
+		return err
+	}
+	if maxFacts <= 0 {
+		return db.replacePrepared(ctx, batches, removed)
+	}
+	if len(removed) != 0 {
+		if err := db.replacePrepared(ctx, nil, removed); err != nil {
+			return err
+		}
+	}
+	for start := 0; start < len(batches); {
+		end, count := start, 0
+		for end < len(batches) {
+			next := factCount(batches[end])
+			if end > start && count+next > maxFacts {
+				break
+			}
+			count += next
+			end++
+		}
+		if err := db.replacePrepared(ctx, batches[start:end], nil); err != nil {
+			return err
+		}
+		start = end
+	}
+	return nil
+}
+
+func prepareReplacement(batches []graph.UnitFacts, removed []string) error {
 	seen := map[string]bool{}
+	primary := map[string]string{}
 	for _, id := range removed {
 		if id == "" || seen[id] {
 			return fmt.Errorf("%w: duplicate or empty removed unit %q", ErrInvalid, id)
@@ -197,7 +241,41 @@ func (db *DB) ReplaceUnits(ctx context.Context, batches []graph.UnitFacts, remov
 		for j := range facts.Symbols {
 			facts.Symbols[j].NormalizedName = graph.NormalizeName(facts.Symbols[j].DisplayName)
 		}
+		groups := []struct {
+			kind string
+			ids  []string
+		}{
+			{"document", idsOf(facts.Documents, func(value graph.Document) string { return value.ID })},
+			{"symbol", idsOf(facts.Symbols, func(value graph.Symbol) string { return value.ID })},
+			{"occurrence", idsOf(facts.Occurrences, func(value graph.Occurrence) string { return value.ID })},
+			{"edge", idsOf(facts.Edges, func(value graph.Edge) string { return value.ID })},
+		}
+		for _, group := range groups {
+			for _, id := range group.ids {
+				key := group.kind + "\x00" + id
+				if owner, exists := primary[key]; exists {
+					return fmt.Errorf("%w: duplicate %s %q in units %q and %q", ErrInvalid, group.kind, id, owner, facts.Unit.ID)
+				}
+				primary[key] = facts.Unit.ID
+			}
+		}
 	}
+	return nil
+}
+
+func idsOf[T any](values []T, id func(T) string) []string {
+	result := make([]string, len(values))
+	for i, value := range values {
+		result[i] = id(value)
+	}
+	return result
+}
+
+func factCount(facts graph.UnitFacts) int {
+	return 1 + len(facts.Documents) + len(facts.Symbols) + len(facts.Occurrences) + len(facts.Edges)
+}
+
+func (db *DB) replacePrepared(ctx context.Context, batches []graph.UnitFacts, removed []string) error {
 	return classify("replace compilation units", db.db.Write(ctx, func(tx *bstore.Tx) error {
 		for _, id := range removed {
 			if err := deleteUnit(tx, id); err != nil {

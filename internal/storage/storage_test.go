@@ -110,6 +110,25 @@ func TestReplaceUnitIsAtomicAndReplacesOwnedFacts(t *testing.T) {
 	}
 }
 
+func TestIncrementalReplacementValidatesAllBatchesBeforeWriting(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	db := openTestDB(t, filepath.Join(t.TempDir(), "index.db"))
+	defer db.Close()
+	if err := db.ReplaceUnit(ctx, fixtureFacts("old")); err != nil {
+		t.Fatal(err)
+	}
+	first, second := fixtureFacts("first"), fixtureFacts("second")
+	second.Symbols[0].ID = first.Symbols[0].ID
+	if err := db.ReplaceUnitsIncremental(ctx, []graph.UnitFacts{first, second}, []string{"old"}, 1); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("incremental conflict error = %v", err)
+	}
+	snapshot, err := db.Export(ctx)
+	if err != nil || len(snapshot.Units) != 1 || snapshot.Units[0].ID != "old" {
+		t.Fatalf("prevalidated replacement changed database: %#v, %v", snapshot, err)
+	}
+}
+
 func TestBidirectionalAdjacencyAndSymbolSearch(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
