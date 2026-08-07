@@ -146,8 +146,10 @@ type FSharpIndexer private () =
                 let symbolId (symbol: FSharpSymbol) =
                     let localDiscriminator =
                         match symbol.DeclarationLocation with
-                        | Some location -> relativePath (absoluteProjectPath location.FileName) + ":" + string location.StartLine + ":" + string location.StartColumn
+                        | Some location when documents.ContainsKey(absoluteProjectPath location.FileName) ->
+                            relativePath (absoluteProjectPath location.FileName) + ":" + string location.StartLine + ":" + string location.StartColumn
                         | None -> "external"
+                        | Some _ -> "external"
                     "dotnet:fsharp:symbol:" + Identity.Hash(repositoryIdentity, projectRelative, actualVariant, stableName symbol, localDiscriminator)
 
                 let seenSymbols = HashSet<string>(StringComparer.Ordinal)
