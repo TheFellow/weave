@@ -43,6 +43,9 @@ adds another project-model abstraction, so C# uses Locator plus
 Because its permissive Roslyn floors can otherwise select an incompatible
 Visual Basic/Common pair beside Workspaces 4.14, the adapter explicitly aligns
 that compiler package family rather than suppressing NuGet constraint warnings.
+Buildalyzer 9's MSBuild 17.14.28 dependency publishes `net9.0` and `net472`
+assets, so the adapter targets .NET 9; consuming its framework fallback from a
+.NET 8 application would produce NU1701 and is not treated as compatible.
 
 Project evaluation may run imported targets and expose generated documents.
 Consequently it is a build-tool operation even when no assembly is emitted.

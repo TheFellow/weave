@@ -20,7 +20,7 @@ During development, invoke it explicitly:
 
 ```console
 weave index \
-  --adapter ./adapters/dotnet/src/Weave.Adapter/bin/Debug/net8.0/Weave.Adapter \
+  --adapter ./adapters/dotnet/src/Weave.Adapter/bin/Debug/net9.0/Weave.Adapter \
   --allow-build-tool
 ```
 
