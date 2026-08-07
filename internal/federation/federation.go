@@ -96,7 +96,11 @@ func (s *Store) Close() error {
 	return nil
 }
 
-func (s *Store) Diagnostics() []string { return append([]string(nil), s.diagnostics...) }
+func (s *Store) Diagnostics() []string {
+	result := append([]string(nil), s.diagnostics...)
+	slices.Sort(result)
+	return slices.Compact(result)
+}
 
 func (s *Store) Sources() []Source {
 	result := make([]Source, 0, len(s.sources))
@@ -248,10 +252,12 @@ func (s *Store) edges(ctx context.Context, forward bool, id string, kinds []grap
 		truncated = truncated || memberTruncated
 		for _, edge := range values {
 			key := edgeKey(edge)
-			if _, exists := byKey[key]; !exists {
+			canonical, exists := byKey[key]
+			if !exists {
 				byKey[key] = edge
+				canonical = edge
 			}
-			s.record("edge", edge.ID, member.entry)
+			s.record("edge", canonical.ID, member.entry)
 		}
 	}
 	results := make([]graph.Edge, 0, len(byKey))
@@ -270,5 +276,8 @@ func symbolKey(symbol graph.Symbol) string {
 }
 
 func edgeKey(edge graph.Edge) string {
-	return edge.From + "\x00" + string(edge.Kind) + "\x00" + edge.To + "\x00" + string(edge.Evidence) + "\x00" + edge.DocumentID + "\x00" + edge.Provider
+	return fmt.Sprintf("%s\x00%s\x00%s\x00%s\x00%s\x00%s\x00%d:%d:%d:%d:%d:%d",
+		edge.From, edge.Kind, edge.To, edge.Evidence, edge.DocumentID, edge.Provider,
+		edge.Range.Start.Line, edge.Range.Start.Column, edge.Range.Start.Byte,
+		edge.Range.End.Line, edge.Range.End.Column, edge.Range.End.Byte)
 }
