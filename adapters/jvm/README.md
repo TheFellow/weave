@@ -134,9 +134,12 @@ requires the imported SCIP metadata to be exactly `scip-java` at that version.
 Use `--producer-version` only when intentionally selecting another upstream
 release. A mismatch emits no partial graph facts.
 
-SCIP documents carry their range encoding. Weave validates and converts those
-ranges to byte positions, rejects ambiguous encodings, bounds the protobuf and
-fact inventory, validates repository-contained document paths, and preserves
+`scip-java` 0.13.1 emits the legacy SCIP document shape without a per-document
+position encoding. Its javac and Kotlin compiler integrations calculate columns
+from JVM/Kotlin string offsets, so the wrapper supplies the known UTF-16
+code-unit contract and Weave converts those ranges to byte positions. It still
+validates any explicit encoding, bounds the protobuf and fact inventory,
+validates repository-contained document paths, and preserves
 compiler-derived relationships as exact evidence. Missing relationships are not
 invented. Results represent the selected build variant, classpath, generated
 sources, and producer release.

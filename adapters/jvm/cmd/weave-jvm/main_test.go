@@ -68,9 +68,8 @@ func fixtureIndex(version string) *scip.Index {
 		},
 		Documents: []*scip.Document{
 			{
-				RelativePath:     "src/main/java/example/Greeter.java",
-				Language:         "java",
-				PositionEncoding: scip.PositionEncoding_UTF16CodeUnitOffsetFromLineStart,
+				RelativePath: "src/main/java/example/Greeter.java",
+				Language:     "java",
 				Occurrences: []*scip.Occurrence{{
 					TypedRange:  singleLineRange(2, 17, 24),
 					Symbol:      greeter,
@@ -81,9 +80,8 @@ func fixtureIndex(version string) *scip.Index {
 				}},
 			},
 			{
-				RelativePath:     "src/main/kotlin/example/FriendlyGreeter.kt",
-				Language:         "kotlin",
-				PositionEncoding: scip.PositionEncoding_UTF16CodeUnitOffsetFromLineStart,
+				RelativePath: "src/main/kotlin/example/FriendlyGreeter.kt",
+				Language:     "kotlin",
 				Occurrences: []*scip.Occurrence{{
 					TypedRange:  singleLineRange(2, 6, 21),
 					Symbol:      friendly,
@@ -136,7 +134,7 @@ func TestDescribeIsDeclarativeAndDoesNotResolveJava(t *testing.T) {
 	}
 }
 
-func TestAdapterLifecycleUsesLiteralArgumentsAndPreservesExactFacts(t *testing.T) {
+func TestAdapterLifecycleUsesLiteralArgumentsAndLegacyUTF16Ranges(t *testing.T) {
 	root := copyFixture(t)
 	fake := new(fakeProducer)
 	request := validRequest(root)

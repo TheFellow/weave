@@ -50,6 +50,12 @@ Why it fits:
 - The normal `index` command accepts an explicit output and private temporary
   directory, which lets the Weave wrapper keep the final interchange file out
   of the repository.
+- Version 0.13.1 emits legacy SCIP documents without their newer position
+  encoding field. Its [javac visitor](https://github.com/scip-code/scip-java/blob/v0.13.1/scip-javac/src/main/java/org/scip_code/scip_java/javac/ScipVisitor.java)
+  and [Kotlin line map](https://github.com/scip-code/scip-java/blob/v0.13.1/scip-kotlinc/src/main/kotlin/org/scip_code/scip_java/kotlinc/LineMap.kt)
+  compute columns from JVM/Kotlin string offsets, which are UTF-16 code units.
+  The wrapper must supply that producer-specific legacy contract rather than
+  guessing from the top-level source-byte encoding.
 
 Important boundary conditions:
 

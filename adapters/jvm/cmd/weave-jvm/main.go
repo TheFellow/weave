@@ -19,6 +19,7 @@ import (
 	"github.com/TheFellow/weave/internal/adapter"
 	"github.com/TheFellow/weave/internal/graph"
 	"github.com/TheFellow/weave/internal/scipimport"
+	"github.com/scip-code/scip/bindings/go/scip"
 )
 
 const (
@@ -249,8 +250,9 @@ func index(ctx context.Context, request adapter.IndexRequest, configuration opti
 		MaxIndexBytes: maxIndexBytes,
 		MaxFacts:      request.Limits.MaxFacts,
 	}}).ImportFile(ctx, indexPath, scipimport.Options{
-		RepositoryRoot:     root,
-		RepositoryIdentity: request.RepositoryIdentity,
+		RepositoryRoot:         root,
+		RepositoryIdentity:     request.RepositoryIdentity,
+		LegacyPositionEncoding: scip.PositionEncoding_UTF16CodeUnitOffsetFromLineStart,
 	})
 	if err != nil {
 		return scipimport.Result{}, diagnostics, fmt.Errorf("import scip-java index: %w", err)
