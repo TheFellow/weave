@@ -32,6 +32,7 @@ dotnet build adapters/dotnet/Weave.Adapter.sln --configuration Release >"$output
   echo "cpu=$(sysctl -n machdep.cpu.brand_string 2>/dev/null || grep -m1 'model name' /proc/cpuinfo 2>/dev/null || echo unknown)"
   echo "go=$(go version)"
   echo "dotnet=$(dotnet --version)"
+  echo "dotnet_sdks=$(dotnet --list-sdks | tr '\n' ';')"
   echo "timeout_seconds=$timeout_seconds"
   echo "source_parent=$source_parent"
 } >"$output/environment.txt"

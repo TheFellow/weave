@@ -7,8 +7,9 @@ hosted service, or required daemon in the indexing path.
 
 > **Status:** early alpha. Native Go indexing and the query/storage lifecycle
 > are usable. The compiler-native C#/F# adapter participates in query-driven
-> freshness when installed, but is not yet packaged with releases and advertises
-> full rather than incremental refreshes. Output schemas are
+> freshness when installed; same-version release companions are configured but
+> have not been exercised by a tag, and the adapter advertises full rather than
+> incremental refreshes. Output schemas are
 > versioned, but compatibility before the first tagged release is not promised.
 
 ## Install

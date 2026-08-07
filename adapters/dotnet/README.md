@@ -82,3 +82,9 @@ are published in the same storage transaction.
 The initial F# slice does not emit call edges. Generated documents and a formal
 binary-compatible ABI fingerprint are also deferred; see ADR 0006. Unsupported
 facts are omitted rather than inferred.
+
+The current adapter targets .NET 9. It cannot evaluate an F# project that
+selects the .NET 10 SDK: Buildalyzer's .NET 9 MSBuild host cannot load .NET 10
+SDK tasks. Large C# solutions can also exceed the bounded four-minute full
+refresh. Both conditions fail without publishing a partial inventory; see the
+recorded real-repository baseline under `.ai/benchmarks`.
