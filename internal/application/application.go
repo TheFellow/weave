@@ -193,13 +193,13 @@ func (app Local) importSCIP(ctx context.Context, response Response, invocation I
 	if err != nil {
 		return Response{}, err
 	}
-	units, err := app.SCIPImporter.ImportFile(ctx, invocation.SCIPPath, scipimport.Options{
+	result, err := app.SCIPImporter.ImportFile(ctx, invocation.SCIPPath, scipimport.Options{
 		RepositoryRoot: repo.Root, RepositoryIdentity: repo.Identity,
 	})
 	if err != nil {
 		return Response{}, err
 	}
-	if err := app.publish(ctx, units, func(unit graph.Unit) bool { return strings.HasPrefix(unit.Provider, "scip:") }); err != nil {
+	if err := app.publish(ctx, result.Units, func(unit graph.Unit) bool { return unit.Provider == result.Provider }); err != nil {
 		return Response{}, err
 	}
 	return response, nil

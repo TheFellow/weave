@@ -28,7 +28,7 @@ func normalizeDocument(document *scip.Document, source []byte, identity, path, p
 		return graph.UnitFacts{}, errors.New("invalid or oversized language")
 	}
 	unitID := stableID("scip-unit:", identity, path, provider, providerVersion)
-	documentID := stableID("scip-document:", identity, path)
+	documentID := stableID("scip-document:", identity, provider, path)
 	contentHash := sha256.Sum256(source)
 	facts := graph.UnitFacts{
 		Unit: graph.Unit{ID: unitID, Provider: provider, ProviderVersion: providerVersion, Language: document.Language},
@@ -67,7 +67,7 @@ func normalizeDocument(document *scip.Document, source []byte, identity, path, p
 			}
 		}
 		occurrences = append(occurrences, normalizedOccurrence{
-			symbol: occurrence.Symbol, symbolID: symbolID(identity, path, occurrence.Symbol), role: role,
+			symbol: occurrence.Symbol, symbolID: symbolID(identity, provider, path, occurrence.Symbol), role: role,
 			source: sourceRange, definition: definition,
 		})
 	}
@@ -87,7 +87,7 @@ func normalizeDocument(document *scip.Document, source []byte, identity, path, p
 			display = information.Symbol
 		}
 		symbol := graph.Symbol{
-			ID: symbolID(identity, path, information.Symbol), UnitID: unitID, StableName: information.Symbol,
+			ID: symbolID(identity, provider, path, information.Symbol), UnitID: unitID, StableName: information.Symbol,
 			DisplayName: display, Kind: strings.ToLower(information.Kind.String()), Provider: provider, Evidence: graph.EvidenceExact,
 		}
 		if definition, ok := definitions[information.Symbol]; ok {
@@ -101,7 +101,7 @@ func normalizeDocument(document *scip.Document, source []byte, identity, path, p
 			if _, err := scip.ParseSymbol(relationship.Symbol); err != nil {
 				return graph.UnitFacts{}, fmt.Errorf("relationship target invalid symbol: %w", err)
 			}
-			target := symbolID(identity, path, relationship.Symbol)
+			target := symbolID(identity, provider, path, relationship.Symbol)
 			if relationship.IsImplementation {
 				facts.Edges = append(facts.Edges, semanticEdge(unitID, symbol.ID, target, graph.EdgeImplements, provider))
 			}
@@ -132,11 +132,11 @@ func hasRole(occurrence *scip.Occurrence, role scip.SymbolRole) bool {
 	return occurrence.SymbolRoles&int32(role) != 0
 }
 
-func symbolID(identity, path, symbol string) string {
+func symbolID(identity, provider, path, symbol string) string {
 	if scip.IsLocalSymbol(symbol) {
-		return stableID("scip-symbol:", identity, path, symbol)
+		return stableID("scip-symbol:", identity, provider, path, symbol)
 	}
-	return stableID("scip-symbol:", identity, symbol)
+	return stableID("scip-symbol:", identity, provider, symbol)
 }
 
 func semanticEdge(unitID, from, to string, kind graph.EdgeKind, provider string) graph.Edge {

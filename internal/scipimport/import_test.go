@@ -32,13 +32,16 @@ func TestImportNormalizesUnicodeSymbolsRelationshipsAndLocalScope(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(first) != 2 || first[0].Unit.ID != second[0].Unit.ID || first[0].Unit.InventoryDigest != second[0].Unit.InventoryDigest {
+	if first.Provider != "scip:fixture-indexer" || first.ProviderVersion != "1.2.3" {
+		t.Fatalf("provider metadata = %#v", first)
+	}
+	if len(first.Units) != 2 || first.Units[0].Unit.ID != second.Units[0].Unit.ID || first.Units[0].Unit.InventoryDigest != second.Units[0].Unit.InventoryDigest {
 		t.Fatalf("non-deterministic units: %#v / %#v", first, second)
 	}
-	if first[0].Symbols[0].ID == first[1].Symbols[0].ID {
+	if first.Units[0].Symbols[0].ID == first.Units[1].Symbols[0].ID {
 		t.Fatal("document-local SCIP symbols collided across documents")
 	}
-	for _, facts := range first {
+	for _, facts := range first.Units {
 		if got := facts.Symbols[0].Definition; got.Start.Column != 4 || got.End.Column != 8 || got.Start.Byte != 4 || got.End.Byte != 8 {
 			t.Fatalf("UTF-16 range = %#v", got)
 		}
@@ -96,9 +99,9 @@ func TestImportReadsRepositorySourceAndRejectsUnsafePaths(t *testing.T) {
 	document := fixtureDocument("nested/source.go", "", scip.PositionEncoding_UTF8CodeUnitOffsetFromLineStart, 0, 0)
 	document.Occurrences = nil
 	data, _ := proto.Marshal(fixtureIndex(document))
-	units, err := (Importer{}).Import(context.Background(), data, Options{RepositoryRoot: root})
-	if err != nil || len(units) != 1 || units[0].Documents[0].ContentHash == "" {
-		t.Fatalf("source fallback = %#v, %v", units, err)
+	result, err := (Importer{}).Import(context.Background(), data, Options{RepositoryRoot: root})
+	if err != nil || len(result.Units) != 1 || result.Units[0].Documents[0].ContentHash == "" {
+		t.Fatalf("source fallback = %#v, %v", result, err)
 	}
 
 	for _, path := range []string{"../secret", "/absolute", "a//b", "a\\b", "."} {
@@ -148,9 +151,9 @@ func TestImportRejectsTruncatedOversizedAndDuplicateInput(t *testing.T) {
 			if test.index != nil {
 				input, _ = proto.Marshal(test.index)
 			}
-			units, err := test.importer.Import(context.Background(), input, Options{RepositoryRoot: root})
-			if err == nil || len(units) != 0 || !strings.Contains(strings.ToLower(err.Error()), strings.ToLower(test.contains)) {
-				t.Fatalf("Import() = %#v, %v; want %q", units, err, test.contains)
+			result, err := test.importer.Import(context.Background(), input, Options{RepositoryRoot: root})
+			if err == nil || len(result.Units) != 0 || !strings.Contains(strings.ToLower(err.Error()), strings.ToLower(test.contains)) {
+				t.Fatalf("Import() = %#v, %v; want %q", result, err, test.contains)
 			}
 		})
 	}

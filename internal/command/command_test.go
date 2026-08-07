@@ -384,6 +384,88 @@ func TestSCIPImportIsQueryableAndMalformedReplacementIsAtomic(t *testing.T) {
 	}
 }
 
+func TestSCIPProducerInventoriesCoexistAndReplaceSelectively(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	root := commandRepository(t)
+	database := filepath.Join(t.TempDir(), "index.db")
+	indexPath := filepath.Join(t.TempDir(), "fixture.scip")
+	app := application.Local{DatabasePath: database, Directory: root}
+	run := func(args ...string) (string, string, error) {
+		var stdout, stderr bytes.Buffer
+		rootCommand := command.New(app, command.Streams{Stdin: strings.NewReader(""), Stdout: &stdout, Stderr: &stderr})
+		err := rootCommand.Run(ctx, append([]string{"weave"}, args...))
+		return stdout.String(), stderr.String(), err
+	}
+	importIndex := func(tool, version, symbol string) {
+		t.Helper()
+		encoded := scipProducerIndex(t, tool, version, symbol)
+		if err := os.WriteFile(indexPath, encoded, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		stdout, stderr, err := run("index", "--scip", indexPath)
+		if err != nil || stdout != "" || stderr != "" {
+			t.Fatalf("import %s stdout=%q stderr=%q err=%v", tool, stdout, stderr, err)
+		}
+	}
+	query := func(symbol string) string {
+		t.Helper()
+		stdout, stderr, err := run("symbols", symbol)
+		if err != nil || stderr != "" {
+			t.Fatalf("query %s stdout=%q stderr=%q err=%v", symbol, stdout, stderr, err)
+		}
+		return stdout
+	}
+
+	// Both producers intentionally own the same path and local SCIP ID. Their
+	// provider-qualified Weave identities must still coexist.
+	importIndex("producer-alpha", "1.0.0", "Alpha")
+	importIndex("producer-beta", "1.0.0", "Beta")
+	if !strings.Contains(query("Alpha"), "Alpha") || !strings.Contains(query("Beta"), "Beta") {
+		t.Fatal("producer facts did not coexist")
+	}
+
+	// An empty complete v2 inventory removes v1 alpha facts while preserving
+	// beta. Version changes replace within the stable producer-name scope.
+	importIndex("producer-alpha", "2.0.0", "")
+	if query("Alpha") != "" || !strings.Contains(query("Beta"), "Beta") {
+		t.Fatal("empty alpha inventory did not remove selectively")
+	}
+
+	importIndex("producer-alpha", "2.0.0", "AlphaAgain")
+	valid := scipProducerIndex(t, "producer-alpha", "3.0.0", "Broken")
+	if err := os.WriteFile(indexPath, valid[:len(valid)-1], 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := run("index", "--scip", indexPath); err == nil {
+		t.Fatal("truncated producer replacement succeeded")
+	}
+	if !strings.Contains(query("AlphaAgain"), "AlphaAgain") || !strings.Contains(query("Beta"), "Beta") {
+		t.Fatal("failed producer replacement changed published inventories")
+	}
+}
+
+func scipProducerIndex(t *testing.T, tool, version, symbol string) []byte {
+	t.Helper()
+	index := &scip.Index{Metadata: &scip.Metadata{ToolInfo: &scip.ToolInfo{Name: tool, Version: version}}}
+	if symbol != "" {
+		index.Documents = []*scip.Document{{
+			RelativePath: "shared.cs", Language: "csharp", Text: symbol + "\n",
+			PositionEncoding: scip.PositionEncoding_UTF8CodeUnitOffsetFromLineStart,
+			Occurrences: []*scip.Occurrence{{
+				TypedRange: &scip.Occurrence_SingleLineRange{SingleLineRange: &scip.SingleLineRange{Line: 0, EndCharacter: int32(len(symbol))}},
+				Symbol:     "local 0", SymbolRoles: int32(scip.SymbolRole_Definition),
+			}},
+			Symbols: []*scip.SymbolInformation{{Symbol: "local 0", DisplayName: symbol, Kind: scip.SymbolInformation_Class}},
+		}}
+	}
+	encoded, err := proto.Marshal(index)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return encoded
+}
+
 func TestExplicitAdapterIndexPublishesFactsAndDiagnostics(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

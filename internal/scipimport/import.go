@@ -60,30 +60,38 @@ type Options struct {
 // Importer reads SCIP without invoking its producer.
 type Importer struct{ Limits Limits }
 
+// Result is one complete producer inventory. Provider is the stable
+// replacement scope; ProviderVersion records the exact producer release.
+type Result struct {
+	Provider        string
+	ProviderVersion string
+	Units           []graph.UnitFacts
+}
+
 // ImportFile bounds and imports one explicitly selected .scip file.
-func (importer Importer) ImportFile(ctx context.Context, path string, options Options) ([]graph.UnitFacts, error) {
+func (importer Importer) ImportFile(ctx context.Context, path string, options Options) (Result, error) {
 	limits := importer.Limits.withDefaults()
 	file, err := os.Open(path)
 	if err != nil {
-		return nil, fmt.Errorf("open SCIP index: %w", err)
+		return Result{}, fmt.Errorf("open SCIP index: %w", err)
 	}
 	defer file.Close()
 	data, err := readBounded(file, limits.MaxIndexBytes)
 	if err != nil {
-		return nil, fmt.Errorf("read SCIP index: %w", err)
+		return Result{}, fmt.Errorf("read SCIP index: %w", err)
 	}
 	return importer.Import(ctx, data, options)
 }
 
 // Import decodes and completely validates one SCIP protobuf before returning facts.
-func (importer Importer) Import(ctx context.Context, data []byte, options Options) ([]graph.UnitFacts, error) {
+func (importer Importer) Import(ctx context.Context, data []byte, options Options) (Result, error) {
 	limits := importer.Limits.withDefaults()
 	if int64(len(data)) > limits.MaxIndexBytes {
-		return nil, errors.New("SCIP index exceeds configured byte limit")
+		return Result{}, errors.New("SCIP index exceeds configured byte limit")
 	}
 	root, err := canonicalRoot(options.RepositoryRoot)
 	if err != nil {
-		return nil, err
+		return Result{}, err
 	}
 	identity := options.RepositoryIdentity
 	if identity == "" {
@@ -91,13 +99,13 @@ func (importer Importer) Import(ctx context.Context, data []byte, options Option
 	}
 	var index scip.Index
 	if err := (proto.UnmarshalOptions{RecursionLimit: limits.ProtobufDepth}).Unmarshal(data, &index); err != nil {
-		return nil, fmt.Errorf("decode SCIP protobuf: %w", err)
+		return Result{}, fmt.Errorf("decode SCIP protobuf: %w", err)
 	}
 	if index.Metadata == nil || index.Metadata.ToolInfo == nil || index.Metadata.ToolInfo.Name == "" || index.Metadata.ToolInfo.Version == "" {
-		return nil, errors.New("SCIP metadata tool name and version are required")
+		return Result{}, errors.New("SCIP metadata tool name and version are required")
 	}
 	if len(index.Documents) > limits.MaxDocuments {
-		return nil, errors.New("SCIP document count exceeds configured limit")
+		return Result{}, errors.New("SCIP document count exceeds configured limit")
 	}
 	provider := "scip:" + index.Metadata.ToolInfo.Name
 	providerVersion := index.Metadata.ToolInfo.Version
@@ -106,38 +114,38 @@ func (importer Importer) Import(ctx context.Context, data []byte, options Option
 	totalFacts := 0
 	for number, document := range index.Documents {
 		if err := ctx.Err(); err != nil {
-			return nil, err
+			return Result{}, err
 		}
 		if document == nil {
-			return nil, fmt.Errorf("SCIP document %d is nil", number)
+			return Result{}, fmt.Errorf("SCIP document %d is nil", number)
 		}
 		path, localPath, err := safeDocumentPath(document.RelativePath)
 		if err != nil {
-			return nil, fmt.Errorf("SCIP document %d: %w", number, err)
+			return Result{}, fmt.Errorf("SCIP document %d: %w", number, err)
 		}
 		if paths[path] {
-			return nil, fmt.Errorf("duplicate SCIP document path %q", path)
+			return Result{}, fmt.Errorf("duplicate SCIP document path %q", path)
 		}
 		paths[path] = true
 		source, err := documentSource(root, localPath, document.Text, limits.MaxSourceBytes)
 		if err != nil {
-			return nil, fmt.Errorf("SCIP document %q: %w", path, err)
+			return Result{}, fmt.Errorf("SCIP document %q: %w", path, err)
 		}
 		facts, err := normalizeDocument(document, source, identity, path, provider, providerVersion, limits)
 		if err != nil {
-			return nil, fmt.Errorf("SCIP document %q: %w", path, err)
+			return Result{}, fmt.Errorf("SCIP document %q: %w", path, err)
 		}
 		totalFacts += len(facts.Documents) + len(facts.Symbols) + len(facts.Occurrences) + len(facts.Edges)
 		if totalFacts > limits.MaxFacts {
-			return nil, errors.New("SCIP fact count exceeds configured limit")
+			return Result{}, errors.New("SCIP fact count exceeds configured limit")
 		}
 		units = append(units, facts)
 	}
 	slices.SortFunc(units, func(a, b graph.UnitFacts) int { return strings.Compare(a.Unit.ID, b.Unit.ID) })
 	if err := validateGlobalIDs(units); err != nil {
-		return nil, err
+		return Result{}, err
 	}
-	return units, nil
+	return Result{Provider: provider, ProviderVersion: providerVersion, Units: units}, nil
 }
 
 func canonicalRoot(root string) (string, error) {

@@ -39,6 +39,12 @@ into stale or misleading graph facts.
 8. External adapter execution is an explicit CLI operation. It is not composed
    into the default Go freshness provider, because querying a Go repository
    must not unexpectedly execute repository-adjacent tools.
+9. A direct SCIP import is a complete inventory for exactly one producer name,
+   represented internally as `scip:<ToolInfo.name>`. Publication removes absent
+   units only from that producer scope. `ToolInfo.version` remains recorded on
+   every unit and participates in unit identity/fingerprints, but a version
+   upgrade replaces the older inventory for the same producer instead of
+   leaving stale side-by-side units. Other SCIP producers are never removed.
 
 ## Consequences
 
