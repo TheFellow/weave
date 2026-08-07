@@ -43,7 +43,10 @@ func TestBrowserSmoke(t *testing.T) {
 	defer shutdownCancel()
 	defer running.Close(shutdownCtx)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	// The two render phases each have a 20-second bound. Keep the browser
+	// process alive beyond their combined budget so a slow CI runner cannot
+	// terminate Chromium mid-CDP response and turn a useful timeout into EOF.
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	profile := t.TempDir()
 	command := exec.CommandContext(ctx, chrome,
