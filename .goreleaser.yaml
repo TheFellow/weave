@@ -1,0 +1,48 @@
+version: 2
+
+project_name: weave
+
+builds:
+  - id: weave
+    main: ./cmd/weave
+    binary: weave
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - >-
+        -s -w
+        -X github.com/TheFellow/weave/internal/buildinfo.Version={{.Version}}
+        -X github.com/TheFellow/weave/internal/buildinfo.Commit={{.Commit}}
+        -X github.com/TheFellow/weave/internal/buildinfo.Date={{.Date}}
+
+archives:
+  - id: weave
+    ids: [weave]
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    files:
+      - README.md
+      - LICENSE
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
