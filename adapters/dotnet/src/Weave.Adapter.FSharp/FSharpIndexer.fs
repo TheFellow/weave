@@ -77,6 +77,7 @@ type FSharpIndexer private () =
                         if sourceArguments.Contains argument && not (Path.IsPathFullyQualified argument) then
                             Path.GetFullPath(argument, projectDirectory)
                         else argument)
+                let sourceFiles = result.SourceFiles |> Array.map absoluteProjectPath
                 let options = checker.GetProjectOptionsFromCommandLineArgs(projectPath, compilerArguments)
                 let! checkedProject = Async.StartAsTask(checker.ParseAndCheckProject(options), cancellationToken = cancellationToken)
 
@@ -96,7 +97,7 @@ type FSharpIndexer private () =
                     NormalizedName = Identity.NormalizeName projectName, Kind = "project"))
 
                 let documents = Dictionary<string, Document * string>(if OperatingSystem.IsWindows() then StringComparer.OrdinalIgnoreCase else StringComparer.Ordinal)
-                for sourceFile in options.SourceFiles do
+                for sourceFile in sourceFiles do
                     let relative = relativePath sourceFile
                     let pathParts = relative.Split('/')
                     if pathParts |> Array.exists (fun part -> part = "bin" || part = "obj" || part = ".git") then
@@ -208,7 +209,7 @@ type FSharpIndexer private () =
                 sortById facts.Edges (fun value -> value.Id)
                 unit.InputFingerprint <- Identity.Hash(
                     "weave-dotnet-fsharp-input/v1", projectRelative, actualVariant,
-                    String.Join("\n", options.SourceFiles), String.Join("\n", compilerArguments),
+                    String.Join("\n", sourceFiles), String.Join("\n", compilerArguments),
                     String.Join("\n", facts.Documents |> Seq.map (fun d -> d.Path + "\000" + d.ContentHash)))
                 unit.SurfaceFingerprint <- Identity.Hash(
                     "weave-dotnet-fsharp-surface/v1",
