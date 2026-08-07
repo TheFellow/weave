@@ -34,8 +34,21 @@ type Store struct {
 	sources     map[string]Source
 }
 
+// Refresher makes one catalog worktree current before its database is observed.
+type Refresher func(context.Context, string) error
+
 // Open selects and opens at most maxRepositories independent catalog members.
 func Open(ctx context.Context, catalogPath string, selectors []string, maxRepositories int) (*Store, error) {
+	return open(ctx, catalogPath, selectors, maxRepositories, nil, false)
+}
+
+// OpenFresh refreshes every selected member and excludes any member that cannot
+// prove freshness. Healthy members remain available as explicit partial results.
+func OpenFresh(ctx context.Context, catalogPath string, selectors []string, maxRepositories int, refresh Refresher) (*Store, error) {
+	return open(ctx, catalogPath, selectors, maxRepositories, refresh, true)
+}
+
+func open(ctx context.Context, catalogPath string, selectors []string, maxRepositories int, refresh Refresher, requireFresh bool) (*Store, error) {
 	if maxRepositories < 1 || maxRepositories > 256 {
 		return nil, fmt.Errorf("max repositories must be between 1 and 256")
 	}
@@ -87,6 +100,16 @@ func Open(ctx context.Context, catalogPath string, selectors []string, maxReposi
 		}
 		if entry.Stale {
 			result.diagnostics = append(result.diagnostics, entry.Identity+" ["+entry.WorktreeID+"]: stale catalog state: "+entry.Diagnostic)
+		}
+		if requireFresh {
+			if refresh == nil {
+				result.diagnostics = append(result.diagnostics, entry.Identity+" ["+entry.WorktreeID+"]: excluded: no freshness provider configured")
+				continue
+			}
+			if refreshErr := refresh(ctx, entry.Root); refreshErr != nil {
+				result.diagnostics = append(result.diagnostics, entry.Identity+" ["+entry.WorktreeID+"]: excluded: refresh failed: "+refreshErr.Error())
+				continue
+			}
 		}
 		db, openErr := storage.Open(ctx, entry.DatabasePath, storage.Options{MustExist: true, Timeout: 250 * time.Millisecond})
 		if openErr != nil {

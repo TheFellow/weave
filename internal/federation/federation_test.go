@@ -2,6 +2,7 @@ package federation_test
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/TheFellow/weave/internal/catalog"
 	"github.com/TheFellow/weave/internal/federation"
+	"github.com/TheFellow/weave/internal/freshness"
 	"github.com/TheFellow/weave/internal/graph"
 	"github.com/TheFellow/weave/internal/query"
 	"github.com/TheFellow/weave/internal/storage"
@@ -107,6 +109,38 @@ func TestFederationReportsMissingAndUnavailableMembers(t *testing.T) {
 	_, err = federation.Open(ctx, catalogPath, []string{entries[0].Identity, "z-missing", "a-missing"}, 8)
 	if err == nil || !strings.Contains(err.Error(), "a-missing, z-missing") {
 		t.Fatalf("unmatched selector error = %v", err)
+	}
+}
+
+func TestOpenFreshRefreshesSelectedMembersAndExcludesFailures(t *testing.T) {
+	ctx := context.Background()
+	catalogPath := filepath.Join(t.TempDir(), "catalog.db")
+	firstRoot := makeRepo(t, "fresh-first")
+	secondRoot := makeRepo(t, "fresh-second")
+	entries := register(t, catalogPath, firstRoot, secondRoot)
+	writeFacts(t, entries[0].DatabasePath, graph.UnitFacts{Unit: graph.Unit{ID: "first", Provider: "fixture", ProviderVersion: "1"}, Symbols: []graph.Symbol{fixtureSymbol("first", "fresh-symbol", "FreshSymbol", "fresh")}})
+	var refreshed []string
+	store, err := federation.OpenFresh(ctx, catalogPath, nil, 8, func(ctx context.Context, root string) error {
+		refreshed = append(refreshed, root)
+		if strings.HasSuffix(filepath.ToSlash(root), "/fresh-second") {
+			return fmt.Errorf("fixture compiler unavailable")
+		}
+		_, err := (&freshness.Manager{Directory: root, Provider: freshness.EmptyProvider{}, Command: "test"}).Ensure(ctx, false)
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if len(refreshed) != 2 {
+		t.Fatalf("refreshed = %q", refreshed)
+	}
+	values, _, err := store.FindSymbols(ctx, "FreshSymbol", 10)
+	if err != nil || len(values) != 1 {
+		t.Fatalf("healthy values = %#v, %v", values, err)
+	}
+	if diagnostics := strings.Join(store.Diagnostics(), "\n"); !strings.Contains(diagnostics, "excluded: refresh failed: fixture compiler unavailable") {
+		t.Fatalf("diagnostics = %q", diagnostics)
 	}
 }
 

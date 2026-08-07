@@ -36,6 +36,7 @@ type ProviderID struct {
 // Unit records provider-owned fingerprints for one complete compilation unit.
 type Unit struct {
 	ID                 string `json:"id"`
+	Owner              string `json:"owner,omitempty"`
 	InputFingerprint   string `json:"input_fingerprint,omitempty"`
 	SurfaceFingerprint string `json:"surface_fingerprint,omitempty"`
 	InventoryDigest    string `json:"inventory_digest,omitempty"`

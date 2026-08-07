@@ -109,6 +109,7 @@ type Local struct {
 	DatabasePath  string
 	Directory     string
 	Freshness     *freshness.Manager
+	FreshnessFor  func(string) *freshness.Manager
 	SCIPImporter  scipimport.Importer
 	AdapterRunner adapter.Runner
 	CatalogPath   string
@@ -420,7 +421,17 @@ func (app Local) federated(ctx context.Context, response Response, invocation In
 	if maxRepos == 0 {
 		maxRepos = 32
 	}
-	store, err := federation.Open(ctx, path, invocation.Repositories, maxRepos)
+	store, err := federation.OpenFresh(ctx, path, invocation.Repositories, maxRepos, func(ctx context.Context, root string) error {
+		if app.FreshnessFor == nil {
+			return errors.New("automatic freshness is unavailable in this application")
+		}
+		manager := app.FreshnessFor(root)
+		if manager == nil {
+			return errors.New("freshness manager is unavailable")
+		}
+		_, err := manager.Ensure(ctx, false)
+		return err
+	})
 	if err != nil {
 		return Response{}, err
 	}
