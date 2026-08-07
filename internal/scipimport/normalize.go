@@ -276,6 +276,77 @@ func rangeKey(value graph.Range) string {
 	return fmt.Sprintf("%d:%d:%d:%d", value.Start.Line, value.Start.Column, value.End.Line, value.End.Column)
 }
 
+type globalSymbolCandidate struct {
+	symbol graph.Symbol
+	unit   int
+	path   string
+}
+
+// SCIP permits a producer to repeat global SymbolInformation in documents
+// that use the symbol. Weave stores one canonical symbol fact and retains every
+// occurrence. Conflicting semantic descriptions still reject the whole index.
+func deduplicateGlobalSymbols(units []graph.UnitFacts) error {
+	selected := map[string]globalSymbolCandidate{}
+	for unitNumber := range units {
+		documentPaths := make(map[string]string, len(units[unitNumber].Documents))
+		for _, document := range units[unitNumber].Documents {
+			documentPaths[document.ID] = document.Path
+		}
+		for _, symbol := range units[unitNumber].Symbols {
+			candidate := globalSymbolCandidate{symbol: symbol, unit: unitNumber, path: documentPaths[symbol.DocumentID]}
+			current, exists := selected[symbol.ID]
+			if !exists {
+				selected[symbol.ID] = candidate
+				continue
+			}
+			if !equivalentGlobalSymbol(current.symbol, symbol) {
+				return fmt.Errorf("conflicting duplicate SCIP symbol %q", symbol.StableName)
+			}
+			if preferGlobalSymbol(candidate, current, units) {
+				selected[symbol.ID] = candidate
+			}
+		}
+	}
+
+	for unitNumber := range units {
+		facts := &units[unitNumber]
+		symbols := facts.Symbols[:0]
+		for _, symbol := range facts.Symbols {
+			if selected[symbol.ID].unit == unitNumber {
+				symbols = append(symbols, symbol)
+			}
+		}
+		if len(symbols) == len(facts.Symbols) {
+			continue
+		}
+		facts.Symbols = symbols
+		sortFacts(facts)
+		facts.Unit.SurfaceFingerprint = digestSurface(facts.Symbols, facts.Edges)
+		facts.Unit.InventoryDigest = digestInventory(*facts)
+		if err := facts.Validate(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func equivalentGlobalSymbol(left, right graph.Symbol) bool {
+	return left.StableName == right.StableName && left.DisplayName == right.DisplayName &&
+		left.NormalizedName == right.NormalizedName && left.Kind == right.Kind &&
+		left.Provider == right.Provider && left.Evidence == right.Evidence
+}
+
+func preferGlobalSymbol(candidate, current globalSymbolCandidate, units []graph.UnitFacts) bool {
+	candidateDefined, currentDefined := candidate.symbol.DocumentID != "", current.symbol.DocumentID != ""
+	if candidateDefined != currentDefined {
+		return candidateDefined
+	}
+	if candidate.path != current.path {
+		return candidate.path < current.path
+	}
+	return units[candidate.unit].Unit.ID < units[current.unit].Unit.ID
+}
+
 func validateGlobalIDs(units []graph.UnitFacts) error {
 	seen := map[string]string{}
 	check := func(id, kind string) error {

@@ -155,6 +155,40 @@ func TestImportReadsRepositorySourceAndRejectsUnsafePaths(t *testing.T) {
 	}
 }
 
+func TestImportCanonicalizesRepeatedGlobalSymbolInformation(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	global := "cxx . todo-pkg todo-version gfx/Rect#x(455f465bc33b4cdf)."
+	documents := []*scip.Document{
+		fixtureDocument("z.cpp", "Name\n", scip.PositionEncoding_UTF8CodeUnitOffsetFromLineStart, 0, 4),
+		fixtureDocument("a.h", "Name\n", scip.PositionEncoding_UTF8CodeUnitOffsetFromLineStart, 0, 4),
+	}
+	for _, document := range documents {
+		document.Occurrences[0].Symbol = global
+		document.Symbols[0].Symbol = global
+		document.Symbols[0].Relationships = nil
+	}
+	data, err := proto.Marshal(fixtureIndex(documents...))
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := (Importer{}).Import(context.Background(), data, Options{RepositoryRoot: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var symbols int
+	var definitionPath string
+	for _, facts := range result.Units {
+		symbols += len(facts.Symbols)
+		if len(facts.Symbols) != 0 {
+			definitionPath = facts.Documents[0].Path
+		}
+	}
+	if symbols != 1 || definitionPath != "a.h" {
+		t.Fatalf("canonical global symbol count/path = %d/%q, want 1/a.h", symbols, definitionPath)
+	}
+}
+
 func TestImportRejectsTruncatedOversizedAndDuplicateInput(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()

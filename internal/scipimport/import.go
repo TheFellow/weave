@@ -151,6 +151,9 @@ func (importer Importer) Import(ctx context.Context, data []byte, options Option
 		units = append(units, facts)
 	}
 	slices.SortFunc(units, func(a, b graph.UnitFacts) int { return strings.Compare(a.Unit.ID, b.Unit.ID) })
+	if err := deduplicateGlobalSymbols(units); err != nil {
+		return Result{}, err
+	}
 	if err := validateGlobalIDs(units); err != nil {
 		return Result{}, err
 	}
