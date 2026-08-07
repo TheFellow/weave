@@ -77,6 +77,12 @@ The file is strict and bounded. IDs must be unique, notes are limited to 8 KiB,
 the file is limited to 1 MiB and 4,096 links, and unknown fields, kinds,
 schemas, malformed endpoints, symlinked destination files, and duplicates are
 errors. Concurrent commands serialize through a Git-private lock; writes are
-canonical and atomic. Do not add a relationship merely because two names look
-similar: the declaration is reviewed source truth and should have a defensible
-reason.
+canonical and atomic. The `weave graph --interactive` inspector delegates its
+create/update/remove controls to these same application operations. Because a
+browser session may remain open while another process edits the file, every
+browser mutation carries a deterministic revision of the canonical declaration
+and verifies it while holding that writer lock. A stale session receives a
+conflict and changes nothing; removing a link additionally requires an exact ID
+and explicit confirmation. CLI commands remain one-shot and do not expose the
+revision flag. Do not add a relationship merely because two names look similar:
+the declaration is reviewed source truth and should have a defensible reason.

@@ -2,6 +2,7 @@ package application
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -133,6 +134,45 @@ func TestAuthoredLinksResolveAcrossCatalogRepositories(t *testing.T) {
 	slices.Sort(repositories)
 	if repositories[0] == repositories[1] {
 		t.Fatalf("endpoint provenance did not span repositories: %#v", response.Sources)
+	}
+}
+
+func TestAuthoredLinkRevisionRejectsStaleWriteInsideCanonicalEdit(t *testing.T) {
+	ctx := context.Background()
+	root := contextualLinkRepository(t, "local")
+	app := Local{Freshness: contextualLinkManager(root)}
+	initial, err := app.Execute(ctx, Invocation{Command: "links list"})
+	if err != nil || initial.LinkRevision == "" || len(initial.Links) != 0 {
+		t.Fatalf("initial links = %#v, %v", initial, err)
+	}
+	added, err := app.Execute(ctx, Invocation{
+		Command: "links add", Arguments: []string{"first"}, LinkRevision: initial.LinkRevision,
+		LinkFrom: "id:first", LinkTo: "id:second", LinkKind: graph.EdgeLinksTo,
+		LinkFromSet: true, LinkToSet: true, LinkKindSet: true,
+	})
+	if err != nil || added.LinkRevision == "" || added.LinkRevision == initial.LinkRevision {
+		t.Fatalf("guarded add = %#v, %v", added, err)
+	}
+	_, err = app.Execute(ctx, Invocation{
+		Command: "links add", Arguments: []string{"stale"}, LinkRevision: initial.LinkRevision,
+		LinkFrom: "id:third", LinkTo: "id:fourth", LinkKind: graph.EdgeLinksTo,
+		LinkFromSet: true, LinkToSet: true, LinkKindSet: true,
+	})
+	if !errors.Is(err, ErrLinkRevision) {
+		t.Fatalf("stale guarded add error = %v", err)
+	}
+	listed, err := app.Execute(ctx, Invocation{Command: "links list"})
+	if err != nil || len(listed.Links) != 1 || listed.Links[0].ID != "first" || listed.LinkRevision != added.LinkRevision {
+		t.Fatalf("stale write changed declarations: %#v, %v", listed, err)
+	}
+
+	// Ordinary CLI callers omit a revision and retain the pre-existing
+	// serialized edit behavior.
+	legacy, err := app.Execute(ctx, Invocation{
+		Command: "links update", Arguments: []string{"first"}, LinkNote: "legacy CLI edit", LinkNoteSet: true,
+	})
+	if err != nil || legacy.Links[0].Note != "legacy CLI edit" {
+		t.Fatalf("unguarded CLI-compatible update = %#v, %v", legacy, err)
 	}
 }
 

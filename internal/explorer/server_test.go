@@ -6,16 +6,21 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os/exec"
 	"regexp"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/TheFellow/weave/internal/application"
+	"github.com/TheFellow/weave/internal/bridge"
+	"github.com/TheFellow/weave/internal/contextquery"
+	"github.com/TheFellow/weave/internal/graph"
 	"github.com/TheFellow/weave/internal/graphdiff"
 )
 
@@ -62,6 +67,7 @@ func TestHandlerServesOnlyAllowlistedNoCacheAssets(t *testing.T) {
 		{http.MethodGet, "/" + fixtureToken + "/assets/app.js?cache=1", http.StatusNotFound},
 		{http.MethodGet, "/" + fixtureToken + "/api/graph", http.StatusMethodNotAllowed},
 		{http.MethodGet, "/" + fixtureToken + "/api/diff", http.StatusMethodNotAllowed},
+		{http.MethodGet, "/" + fixtureToken + "/api/context", http.StatusMethodNotAllowed},
 		{http.MethodPost, "/" + fixtureToken + "/api/config", http.StatusMethodNotAllowed},
 	}
 	for _, test := range tests {
@@ -74,6 +80,174 @@ func TestHandlerServesOnlyAllowlistedNoCacheAssets(t *testing.T) {
 		if !strings.Contains(response.Header().Get("Cache-Control"), "no-store") {
 			t.Errorf("%s %s omitted no-store", test.method, test.path)
 		}
+	}
+}
+
+func TestHandlerServesSourceRichDetailsAndRevisionGuardedLinks(t *testing.T) {
+	t.Parallel()
+	revision := "sha256:" + strings.Repeat("a", 64)
+	nextRevision := "sha256:" + strings.Repeat("b", 64)
+	contextResult := contextquery.Result{
+		Schema: contextquery.Schema,
+		Focus: contextquery.Entity{Symbol: graph.Symbol{
+			ID: "focus", DisplayName: "Focus", Provider: "fixture", Evidence: graph.EvidenceExact,
+		}},
+	}
+	service := &routingService{execute: func(invocation application.Invocation) (application.Response, error) {
+		switch invocation.Command {
+		case "context":
+			return application.Response{Command: "context", Context: &contextResult}, nil
+		case "links list":
+			return application.Response{Command: "links list", LinkRevision: revision}, nil
+		case "links add":
+			return application.Response{Command: "links add", LinkRevision: nextRevision, Links: []bridge.Link{{ID: "docs-code"}}}, nil
+		case "links update":
+			return application.Response{}, fmt.Errorf("fixture conflict: %w", application.ErrLinkRevision)
+		default:
+			return application.Response{}, fmt.Errorf("unexpected command %q", invocation.Command)
+		}
+	}}
+	engine, err := New(service, application.Invocation{Arguments: []string{"focus"}, Scope: "local"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := newHandler(engine, fixtureToken, fixtureOrigin)
+
+	detail := httptest.NewRequest(http.MethodPost, fixtureOrigin+"/"+fixtureToken+"/api/context", strings.NewReader(`{"target":"focus","limit":8,"context_lines":2,"max_source_bytes":4096}`))
+	detail.Header.Set("Content-Type", "application/json")
+	detail.Header.Set("Origin", fixtureOrigin)
+	detailResponse := httptest.NewRecorder()
+	handler.ServeHTTP(detailResponse, detail)
+	if detailResponse.Code != http.StatusOK || !strings.Contains(detailResponse.Body.String(), `"kind":"node"`) || !strings.Contains(detailResponse.Body.String(), `"id":"focus"`) {
+		t.Fatalf("detail response = %d %q", detailResponse.Code, detailResponse.Body.String())
+	}
+
+	list := httptest.NewRequest(http.MethodGet, fixtureOrigin+"/"+fixtureToken+"/api/links", nil)
+	listResponse := httptest.NewRecorder()
+	handler.ServeHTTP(listResponse, list)
+	if listResponse.Code != http.StatusOK || !strings.Contains(listResponse.Body.String(), revision) {
+		t.Fatalf("list response = %d %q", listResponse.Code, listResponse.Body.String())
+	}
+
+	addBody := `{"id":"docs-code","revision":"` + revision + `","from":"entity:focus","to":"entity:dependency","kind":"documents","note":"why"}`
+	add := httptest.NewRequest(http.MethodPost, fixtureOrigin+"/"+fixtureToken+"/api/links", strings.NewReader(addBody))
+	add.Header.Set("Content-Type", "application/json")
+	add.Header.Set("Origin", fixtureOrigin)
+	add.Header.Set("Sec-Fetch-Site", "same-origin")
+	addResponse := httptest.NewRecorder()
+	handler.ServeHTTP(addResponse, add)
+	if addResponse.Code != http.StatusOK || !strings.Contains(addResponse.Body.String(), nextRevision) || !strings.Contains(addResponse.Body.String(), `"operation":"add"`) || strings.Contains(addResponse.Body.String(), `"links"`) {
+		t.Fatalf("add response = %d %q", addResponse.Code, addResponse.Body.String())
+	}
+
+	update := httptest.NewRequest(http.MethodPut, fixtureOrigin+"/"+fixtureToken+"/api/links", strings.NewReader(`{"id":"docs-code","revision":"`+revision+`","note":"new"}`))
+	update.Header.Set("Content-Type", "application/json")
+	update.Header.Set("Origin", fixtureOrigin)
+	updateResponse := httptest.NewRecorder()
+	handler.ServeHTTP(updateResponse, update)
+	if updateResponse.Code != http.StatusConflict || !strings.Contains(updateResponse.Body.String(), "fixture conflict") {
+		t.Fatalf("conflict response = %d %q", updateResponse.Code, updateResponse.Body.String())
+	}
+
+	foreign := httptest.NewRequest(http.MethodDelete, fixtureOrigin+"/"+fixtureToken+"/api/links", strings.NewReader(`{"id":"docs-code","revision":"`+revision+`"}`))
+	foreign.Header.Set("Content-Type", "application/json")
+	foreign.Header.Set("Origin", "https://attacker.example")
+	foreignResponse := httptest.NewRecorder()
+	handler.ServeHTTP(foreignResponse, foreign)
+	if foreignResponse.Code != http.StatusForbidden {
+		t.Fatalf("foreign mutation response = %d %q", foreignResponse.Code, foreignResponse.Body.String())
+	}
+
+	invocations := service.Invocations()
+	if len(invocations) != 4 || invocations[2].Command != "links add" || invocations[2].LinkRevision != revision || !invocations[2].LinkFromSet || invocations[3].Command != "links update" {
+		t.Fatalf("application invocations = %#v", invocations)
+	}
+}
+
+func TestHandlerRoundTripsCanonicalLinkCreateUpdateRemove(t *testing.T) {
+	root := t.TempDir()
+	command := exec.Command("git", "init", "-q")
+	command.Dir = root
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v: %s", err, output)
+	}
+	engine, err := New(application.Local{Directory: root}, application.Invocation{Arguments: []string{"focus"}, Scope: "local"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := newHandler(engine, fixtureToken, fixtureOrigin)
+
+	do := func(method, body string) *httptest.ResponseRecorder {
+		t.Helper()
+		request := httptest.NewRequest(method, fixtureOrigin+"/"+fixtureToken+"/api/links", strings.NewReader(body))
+		if method != http.MethodGet {
+			request.Header.Set("Content-Type", "application/json")
+			request.Header.Set("Origin", fixtureOrigin)
+			request.Header.Set("Sec-Fetch-Site", "same-origin")
+		}
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		return response
+	}
+	decodeList := func(response *httptest.ResponseRecorder) LinkList {
+		t.Helper()
+		var result LinkList
+		if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+			t.Fatalf("decode %d response %q: %v", response.Code, response.Body.String(), err)
+		}
+		return result
+	}
+	decodeMutation := func(response *httptest.ResponseRecorder) LinkMutationResult {
+		t.Helper()
+		var result LinkMutationResult
+		if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+			t.Fatalf("decode %d response %q: %v", response.Code, response.Body.String(), err)
+		}
+		return result
+	}
+
+	initialResponse := do(http.MethodGet, "")
+	if initialResponse.Code != http.StatusOK {
+		t.Fatalf("initial list = %d %q", initialResponse.Code, initialResponse.Body.String())
+	}
+	initial := decodeList(initialResponse)
+	addResponse := do(http.MethodPost, `{"id":"docs-code","revision":"`+initial.Revision+`","from":"id:docs","to":"id:code","kind":"documents","note":"first"}`)
+	if addResponse.Code != http.StatusOK {
+		t.Fatalf("add = %d %q", addResponse.Code, addResponse.Body.String())
+	}
+	added := decodeMutation(addResponse)
+	if added.Operation != "add" || added.Link.ID != "docs-code" || added.Revision == initial.Revision {
+		t.Fatalf("add result = %#v", added)
+	}
+	config, err := bridge.Load(bridge.Path(root))
+	if err != nil || len(config.Links) != 1 || config.Links[0].Note != "first" {
+		t.Fatalf("canonical add = %#v, %v", config, err)
+	}
+
+	staleResponse := do(http.MethodPost, `{"id":"stale","revision":"`+initial.Revision+`","from":"id:a","to":"id:b","kind":"links-to"}`)
+	if staleResponse.Code != http.StatusConflict {
+		t.Fatalf("stale add = %d %q", staleResponse.Code, staleResponse.Body.String())
+	}
+	updateResponse := do(http.MethodPut, `{"id":"docs-code","revision":"`+added.Revision+`","note":"updated"}`)
+	if updateResponse.Code != http.StatusOK {
+		t.Fatalf("update = %d %q", updateResponse.Code, updateResponse.Body.String())
+	}
+	updated := decodeMutation(updateResponse)
+	if updated.Operation != "update" || updated.Link.ID != "docs-code" {
+		t.Fatalf("update result = %#v", updated)
+	}
+	config, err = bridge.Load(bridge.Path(root))
+	if err != nil || len(config.Links) != 1 || config.Links[0].Note != "updated" {
+		t.Fatalf("canonical update = %#v, %v", config, err)
+	}
+	removeResponse := do(http.MethodDelete, `{"id":"docs-code","revision":"`+updated.Revision+`"}`)
+	if removeResponse.Code != http.StatusOK {
+		t.Fatalf("remove = %d %q", removeResponse.Code, removeResponse.Body.String())
+	}
+	removed := decodeMutation(removeResponse)
+	config, err = bridge.Load(bridge.Path(root))
+	if err != nil || len(config.Links) != 0 || removed.Operation != "remove" || removed.Link.ID != "docs-code" || removed.Revision == updated.Revision {
+		t.Fatalf("canonical remove = %#v, response %#v, %v", config, removed, err)
 	}
 }
 
@@ -236,6 +410,7 @@ func TestEmbeddedAssetsArePinnedLocalAndChecksumVerified(t *testing.T) {
 	for _, behavior := range []string{
 		`.keyMode("id")`, `useWorker: true`, `prefers-reduced-motion`,
 		`d3.transition("weave-graph")`, `resetZoom()`, `ResizeObserver`,
+		`api/context`, `api/links`, `renderer.destroy`, `textContent`,
 	} {
 		if !bytes.Contains(javascript, []byte(behavior)) {
 			t.Errorf("app.js omitted %q", behavior)

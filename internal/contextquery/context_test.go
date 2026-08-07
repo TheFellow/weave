@@ -60,6 +60,9 @@ func TestContextReturnsExactCurrentSourceAndDirectRelationshipsDeterministically
 	if len(result.Outgoing) != 1 || result.Outgoing[0].Edge.To != "helper-id" || result.Outgoing[0].Entity == nil || result.Outgoing[0].Entity.Symbol.DisplayName != "Helper" {
 		t.Fatalf("outgoing = %#v", result.Outgoing)
 	}
+	if result.Incoming[0].Edge.DocumentID != "" || len(result.Incoming[0].Repositories) != 1 || result.Incoming[0].Repositories[0].WorktreeID != "main" || result.Outgoing[0].Edge.DocumentID != "" || len(result.Outgoing[0].Repositories) != 1 {
+		t.Fatalf("document-free relationship provenance = incoming %#v, outgoing %#v", result.Incoming[0], result.Outgoing[0])
+	}
 	if result.Metadata.SourceBytes == 0 || result.Metadata.Truncation != (contextquery.Truncation{}) {
 		t.Fatalf("metadata = %#v", result.Metadata)
 	}
@@ -72,6 +75,48 @@ func TestContextReturnsExactCurrentSourceAndDirectRelationshipsDeterministically
 	right, _ := json.Marshal(again)
 	if string(left) != string(right) {
 		t.Fatalf("context is nondeterministic:\n%s\n%s", left, right)
+	}
+}
+
+func TestContextProjectsCurrentSourceForRelationshipEvidence(t *testing.T) {
+	ctx := context.Background()
+	content := "package demo\nfunc Target() { Helper() }\n"
+	root := gitRepository(t, map[string]string{"main.go": content})
+	facts := sourceFacts("main.go", content)
+	facts.Edges[1].DocumentID = "document-id"
+	facts.Edges[1].Range = graph.Range{
+		Start: graph.Position{Line: 1, Column: 16, Byte: -1},
+		End:   graph.Position{Line: 1, Column: 22, Byte: -1},
+	}
+	database := filepath.Join(t.TempDir(), "index.db")
+	writeFacts(t, database, facts)
+	db, err := storage.Open(ctx, database, storage.Options{MustExist: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	locatorCalls := map[string]int{}
+	locator := func(kind, id string) []contextquery.Repository {
+		locatorCalls[kind+"/"+id]++
+		return []contextquery.Repository{{Identity: "example/repo", WorktreeID: "main", Root: root}}
+	}
+	result, err := contextquery.Build(ctx, db, "target-id", contextquery.Options{
+		Scope: "local", Limit: 8, ContextLines: 0, MaxSourceBytes: 4096,
+	}, locator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Outgoing) != 1 || result.Outgoing[0].Document == nil || result.Outgoing[0].Source == nil {
+		t.Fatalf("relationship evidence = %#v", result.Outgoing)
+	}
+	if got := result.Outgoing[0].Source; got.Status != contextquery.SourceCurrent || got.Path != "main.go" || len(got.Lines) != 1 || got.Lines[0].Text != "func Target() { Helper() }" {
+		t.Fatalf("relationship source = %#v", got)
+	}
+	if len(result.Outgoing[0].Repositories) != 1 || result.Metadata.SourceBytes == 0 {
+		t.Fatalf("relationship provenance/metadata = %#v / %#v", result.Outgoing[0], result.Metadata)
+	}
+	if locatorCalls["edge/outgoing"] != 1 {
+		t.Fatalf("outgoing edge provenance locator calls = %d, want 1", locatorCalls["edge/outgoing"])
 	}
 }
 

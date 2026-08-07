@@ -2,12 +2,15 @@ package explorer
 
 import (
 	"context"
+	"encoding/json"
 	"reflect"
 	"strings"
 	"sync"
 	"testing"
 
 	"github.com/TheFellow/weave/internal/application"
+	"github.com/TheFellow/weave/internal/bridge"
+	"github.com/TheFellow/weave/internal/contextquery"
 	"github.com/TheFellow/weave/internal/dot"
 	"github.com/TheFellow/weave/internal/graph"
 	"github.com/TheFellow/weave/internal/graphdiff"
@@ -49,6 +52,9 @@ func TestEngineUsesGraphApplicationContractAndRendersStableTargets(t *testing.T)
 	if result.Nodes[0].SVGID != dot.NodeSVGID("focus") || result.Nodes[0].ID != "focus" {
 		t.Fatalf("focus mapping = %#v", result.Nodes[0])
 	}
+	if len(result.Edges) != 1 || result.Edges[0].SVGID != dot.EdgeSVGID(result.Edges[0].Facts[0]) {
+		t.Fatalf("edge mappings = %#v", result.Edges)
+	}
 	for _, want := range []string{`id="` + dot.NodeSVGID("focus") + `"`, `id="weave-edge-`, `id="weave-cluster-`} {
 		if !strings.Contains(result.DOT, want) {
 			t.Errorf("DOT omitted %q:\n%s", want, result.DOT)
@@ -59,6 +65,104 @@ func TestEngineUsesGraphApplicationContractAndRendersStableTargets(t *testing.T)
 	}
 	if !reflect.DeepEqual(result.Options.Providers, []string{"heuristic", "scip:fixture"}) {
 		t.Fatalf("provider options = %#v", result.Options.Providers)
+	}
+}
+
+func TestResultEdgesPreservesCollapsedFactsUnderStableIdentity(t *testing.T) {
+	t.Parallel()
+	first := graph.Edge{ID: "first", From: "a", To: "b", Kind: graph.EdgeCalls, Provider: "fixture", Evidence: graph.EvidenceExact}
+	second := first
+	second.ID = "second"
+	result := resultEdges([]graph.Edge{second, first})
+	if len(result) != 1 || result[0].SVGID != dot.EdgeSVGID(first) || len(result[0].Facts) != 2 || result[0].Facts[0].ID != "first" {
+		t.Fatalf("collapsed edge mapping = %#v", result)
+	}
+}
+
+func TestEngineUsesCanonicalContextAndLinkApplicationContracts(t *testing.T) {
+	t.Parallel()
+	relationship := contextquery.Relationship{Edge: graph.Edge{
+		ID: "edge-id", From: "focus", To: "dependency", Kind: graph.EdgeCalls,
+		Provider: "fixture", Evidence: graph.EvidenceExact,
+	}}
+	contextResult := contextquery.Result{
+		Schema:   contextquery.Schema,
+		Focus:    contextquery.Entity{Symbol: graph.Symbol{ID: "focus", DisplayName: "Focus"}},
+		Outgoing: []contextquery.Relationship{relationship},
+	}
+	revision := "sha256:" + strings.Repeat("a", 64)
+	service := &routingService{execute: func(invocation application.Invocation) (application.Response, error) {
+		switch invocation.Command {
+		case "context":
+			return application.Response{Command: "context", Context: &contextResult}, nil
+		case "links list":
+			return application.Response{Command: "links list", LinkRevision: revision}, nil
+		case "links add":
+			return application.Response{Command: "links add", LinkRevision: "sha256:" + strings.Repeat("b", 64), Links: []bridge.Link{{ID: "docs-code"}}}, nil
+		default:
+			return application.Response{}, nil
+		}
+	}}
+	base := application.Invocation{Arguments: []string{"Initial"}, Scope: "catalog", MaxRepos: 4}
+	engine, err := New(service, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	detail, err := engine.Detail(context.Background(), DetailRequest{Target: "focus", EdgeID: "edge-id", Limit: 12, ContextLines: 3, MaxSourceBytes: 8192})
+	if err != nil || detail.Kind != "edge" || detail.Context != nil || detail.Relationship == nil || detail.Relationship.Edge.ID != "edge-id" {
+		t.Fatalf("edge detail = %#v, %v", detail, err)
+	}
+	encodedDetail, err := json.Marshal(detail)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encodedDetail), `"context"`) {
+		t.Fatalf("edge detail serialized surrounding context: %s", encodedDetail)
+	}
+	listed, err := engine.Links(context.Background())
+	if err != nil || listed.Revision != revision {
+		t.Fatalf("links = %#v, %v", listed, err)
+	}
+	from, to, kind, note := "entity:focus", "entity:dependency", graph.EdgeDocuments, "why"
+	mutated, err := engine.MutateLink(context.Background(), "add", LinkMutation{
+		ID: "docs-code", Revision: revision, From: &from, To: &to, Kind: &kind, Note: &note,
+	})
+	if err != nil || mutated.Operation != "add" || mutated.Link.ID != "docs-code" || mutated.Revision == revision {
+		t.Fatalf("mutated links = %#v, %v", mutated, err)
+	}
+	invocations := service.Invocations()
+	if len(invocations) != 3 {
+		t.Fatalf("invocations = %#v", invocations)
+	}
+	contextInvocation := invocations[0]
+	if contextInvocation.Command != "context" || !reflect.DeepEqual(contextInvocation.Arguments, []string{"focus"}) || contextInvocation.Limit != 12 || contextInvocation.ContextLines != 3 || contextInvocation.MaxSourceBytes != 8192 || contextInvocation.Scope != "catalog" {
+		t.Fatalf("context invocation = %#v", contextInvocation)
+	}
+	linkInvocation := invocations[2]
+	if linkInvocation.Command != "links add" || linkInvocation.LinkRevision != revision || !linkInvocation.LinkFromSet || linkInvocation.LinkFrom != from || !linkInvocation.LinkToSet || linkInvocation.LinkTo != to || !linkInvocation.LinkKindSet || linkInvocation.LinkKind != kind || !linkInvocation.LinkNoteSet || linkInvocation.LinkNote != note {
+		t.Fatalf("link invocation = %#v", linkInvocation)
+	}
+}
+
+func TestEngineRejectsStaleEdgeAndInvalidMutationBeforeWriting(t *testing.T) {
+	t.Parallel()
+	contextResult := contextquery.Result{Schema: contextquery.Schema, Focus: contextquery.Entity{Symbol: graph.Symbol{ID: "focus"}}}
+	service := &routingService{execute: func(invocation application.Invocation) (application.Response, error) {
+		return application.Response{Command: invocation.Command, Context: &contextResult}, nil
+	}}
+	engine, err := New(service, application.Invocation{Arguments: []string{"focus"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := engine.Detail(context.Background(), DetailRequest{Target: "focus", EdgeID: "gone"}); err == nil || !strings.Contains(err.Error(), "no longer") {
+		t.Fatalf("stale edge error = %v", err)
+	}
+	from, to, kind := "entity:a", "entity:b", graph.EdgeLinksTo
+	if _, err := engine.MutateLink(context.Background(), "add", LinkMutation{ID: "x", Revision: "stale", From: &from, To: &to, Kind: &kind}); err == nil {
+		t.Fatal("invalid revision mutation succeeded")
+	}
+	if got := service.Invocations(); len(got) != 1 {
+		t.Fatalf("invalid mutation reached application: %#v", got)
 	}
 }
 
@@ -179,6 +283,25 @@ type fixtureService struct {
 	response    application.Response
 	err         error
 	invocations []application.Invocation
+}
+
+type routingService struct {
+	mu          sync.Mutex
+	execute     func(application.Invocation) (application.Response, error)
+	invocations []application.Invocation
+}
+
+func (service *routingService) Execute(_ context.Context, invocation application.Invocation) (application.Response, error) {
+	service.mu.Lock()
+	service.invocations = append(service.invocations, invocation)
+	service.mu.Unlock()
+	return service.execute(invocation)
+}
+
+func (service *routingService) Invocations() []application.Invocation {
+	service.mu.Lock()
+	defer service.mu.Unlock()
+	return append([]application.Invocation(nil), service.invocations...)
 }
 
 func (service *fixtureService) Execute(_ context.Context, invocation application.Invocation) (application.Response, error) {

@@ -69,7 +69,7 @@
         <p><i class="swatch incoming"></i> incoming</p>
         <p><i class="swatch outgoing"></i> outgoing</p>
         <p><i class="swatch both"></i> both directions</p>
-        <p class="hint">Drag to pan, scroll to zoom, and click a node to refocus.</p>
+        <p class="hint">Drag to pan, scroll to zoom, and select a node or edge to inspect it. Use Refocus graph to navigate from a selected node.</p>
         <button id="reset-zoom" type="button" class="secondary wide">Reset viewport</button>
       </section>
     </aside>
@@ -90,7 +90,63 @@
       </div>
       <div id="error" class="error" role="alert" hidden></div>
     </main>
+
+    <aside class="inspector" aria-label="Selection details and contextual relationships">
+      <section class="selection-panel">
+        <div class="section-heading">
+          <h2>Selection</h2>
+          <button id="refocus-selected" class="text-button" type="button" disabled>Refocus graph</button>
+        </div>
+        <p id="selection-empty" class="hint">Select a node or edge to inspect its exact source evidence.</p>
+        <div id="selection-detail" aria-live="polite"></div>
+      </section>
+
+      <section>
+        <div class="section-heading">
+          <h2>Contextual links</h2>
+          <button id="new-link" class="text-button" type="button">New</button>
+        </div>
+        <p class="hint">Checked-in declarations. Every edit is revision-guarded and refreshes the canonical graph.</p>
+        <div id="link-list" class="link-list" aria-live="polite"></div>
+      </section>
+
+      <section id="link-editor" hidden>
+        <h2 id="link-editor-title">New contextual link</h2>
+        <form id="link-form">
+          <label for="link-id">Link ID</label>
+          <input id="link-id" maxlength="256" autocomplete="off" required>
+          <div class="endpoint-heading">
+            <label for="link-from">From</label>
+            <button id="use-selected-from" class="text-button" type="button" disabled>Use selection</button>
+          </div>
+          <input id="link-from" maxlength="4096" autocomplete="off" required>
+          <label for="link-kind">Relationship</label>
+          <select id="link-kind" required></select>
+          <div class="endpoint-heading">
+            <label for="link-to">To</label>
+            <button id="use-selected-to" class="text-button" type="button" disabled>Use selection</button>
+          </div>
+          <input id="link-to" maxlength="4096" autocomplete="off" required>
+          <label for="link-note">Note</label>
+          <textarea id="link-note" maxlength="8192" rows="3"></textarea>
+          <div class="editor-actions">
+            <button id="cancel-link" class="secondary" type="button">Cancel</button>
+            <button class="primary" type="submit">Save link</button>
+          </div>
+        </form>
+      </section>
+    </aside>
   </div>
+
+  <dialog id="remove-dialog" aria-labelledby="remove-title">
+    <h2 id="remove-title">Remove contextual link?</h2>
+    <p id="remove-description"></p>
+    <p class="hint">This updates <code>.weave/bridges.json</code>. A stale view is rejected instead of deleting anything.</p>
+    <div class="editor-actions">
+      <button id="cancel-remove" class="secondary" type="button">Cancel</button>
+      <button id="confirm-remove" class="danger" type="button">Remove exact link</button>
+    </div>
+  </dialog>
 
   <footer>
     <span>Local session · no remote assets</span>

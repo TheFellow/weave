@@ -67,6 +67,40 @@ func TestSaveWritesCanonicalConfigurationAndRejectsSymlink(t *testing.T) {
 	}
 }
 
+func TestRevisionIsCanonicalAndDistinguishesEmptyFromChanged(t *testing.T) {
+	t.Parallel()
+	empty, err := bridge.Revision(bridge.Config{Schema: bridge.Schema})
+	if err != nil || !strings.HasPrefix(empty, "sha256:") {
+		t.Fatalf("empty Revision() = %q, %v", empty, err)
+	}
+	left := bridge.Config{Schema: bridge.Schema, Links: []bridge.Link{
+		{ID: "b", From: bridge.Entity("b-from"), To: bridge.Entity("b-to"), Kind: graph.EdgeCalls},
+		{ID: "a", From: bridge.Entity("a-from"), To: bridge.Entity("a-to"), Kind: graph.EdgeDocuments},
+	}}
+	right := bridge.Config{Schema: bridge.Schema, Links: []bridge.Link{left.Links[1], left.Links[0]}}
+	leftRevision, err := bridge.Revision(left)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rightRevision, err := bridge.Revision(right)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if leftRevision != rightRevision {
+		t.Fatalf("order changed revision: %q != %q", leftRevision, rightRevision)
+	}
+	changed := right
+	changed.Links = append([]bridge.Link(nil), right.Links...)
+	changed.Links[0].Note = "new context"
+	changedRevision, err := bridge.Revision(changed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changedRevision == rightRevision || changedRevision == empty {
+		t.Fatalf("changed revision was not distinct: empty=%q original=%q changed=%q", empty, rightRevision, changedRevision)
+	}
+}
+
 func TestEditSerializesConcurrentSourceUpdates(t *testing.T) {
 	directory := t.TempDir()
 	path := filepath.Join(directory, ".weave", "bridges.json")

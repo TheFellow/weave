@@ -169,13 +169,25 @@ generation works without a renderer installed. `--json` returns the same
 bounded neighborhood in the `weave.query/v1` envelope for agents.
 
 `--interactive` starts a temporary random loopback server and opens the same
-bounded graph in a human-facing browser explorer. Clicking a node refocuses the
-query; direction, depth, edge kind, provider, and evidence controls request new
-current DOT snapshots, which animate using stable semantic node and edge IDs.
-The view includes pan/zoom and focus history. D3, d3-graphviz, and Graphviz WASM
-are pinned inside the Weave binary, so the explorer loads no CDN or remote
-runtime assets. Use `--no-open` to print the tokenized local URL without
-launching a browser. The server exists only for that command and stops with it.
+bounded graph in a human-facing browser explorer. Select a node or edge to see
+its exact provider/evidence, repository and worktree, source range, and bounded
+current line-numbered source where one is safely available. **Refocus graph**
+(or a node double-click) navigates; direction, depth, edge kind, provider, and
+evidence controls request new current DOT snapshots. Add, edit, or explicitly
+confirm removal of checked-in contextual links from the inspector; the browser
+uses the same application operations as `weave links`, rejects stale editors
+with an optimistic revision conflict, and animates the refreshed canonical
+graph. The view also includes pan/zoom, focus history, keyboard-operable node
+and edge selection, reduced-motion handling, and a large-view transition
+fallback.
+
+D3, d3-graphviz, and Graphviz WASM are pinned inside the Weave binary, so the
+explorer loads no CDN or remote runtime assets. Current source still passes the
+same Git visibility, root containment, regular-file, hash, UTF-8, range, and
+byte-budget checks as `weave context`; there is no arbitrary file endpoint. Use
+`--no-open` to print the tokenized local URL without launching a browser. The
+server exists only for that command and stops with it. See [ADR
+0015](.ai/decisions/0015-source-rich-explorer-authoring.md).
 
 ## Workspace and content navigation
 
@@ -241,6 +253,9 @@ materialized yet. Path, impact, DOT, export, architecture, and federated queries
 consume these as the same edges emitted by built-in providers. See
 [authored contextual relationships](docs/declared-bridges.md) and
 [ADR 0012](.ai/decisions/0012-contextual-relationship-authoring.md).
+Long-lived explorer edits additionally carry a deterministic revision of this
+canonical file and are checked under the same Git-private writer lock. One-shot
+CLI callers remain serialized and do not need to supply that internal guard.
 
 ## Impact analysis
 

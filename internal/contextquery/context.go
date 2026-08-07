@@ -71,8 +71,11 @@ type Evidence struct {
 }
 
 type Relationship struct {
-	Edge   graph.Edge `json:"edge"`
-	Entity *Entity    `json:"entity,omitempty"`
+	Edge         graph.Edge      `json:"edge"`
+	Entity       *Entity         `json:"entity,omitempty"`
+	Document     *graph.Document `json:"document,omitempty"`
+	Repositories []Repository    `json:"repositories,omitempty"`
+	Source       *SourceExcerpt  `json:"source,omitempty"`
 }
 
 type Metadata struct {
@@ -203,9 +206,45 @@ func Build(ctx context.Context, store Store, target string, options Options, loc
 		}
 		item.Source = loader.excerpt(ctx, item.Repositories[0], document, item.Range)
 	}
+	if err := hydrateRelationshipSources(ctx, store, result.Incoming, loader, locate); err != nil {
+		return Result{}, err
+	}
+	if err := hydrateRelationshipSources(ctx, store, result.Outgoing, loader, locate); err != nil {
+		return Result{}, err
+	}
 	result.Metadata.SourceBytes = loader.used
 	result.Metadata.Truncation.Source = loader.truncated
 	return result, nil
+}
+
+func hydrateRelationshipSources(ctx context.Context, store Store, values []Relationship, loader *sourceLoader, locate Locator) error {
+	for index := range values {
+		item := &values[index]
+		if item.Edge.DocumentID == "" {
+			continue
+		}
+		document, ok, err := store.Document(ctx, item.Edge.DocumentID)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			source := SourceExcerpt{Status: SourceMissingDocument, Detail: "relationship document fact is not materialized"}
+			item.Source = &source
+			continue
+		}
+		item.Document = &document
+		if len(item.Repositories) == 0 {
+			item.Repositories = repositories(locate, "document", document.ID)
+		}
+		if len(item.Repositories) == 0 {
+			source := SourceExcerpt{Status: SourceUnavailable, Path: document.Path, Detail: "repository provenance is unavailable"}
+			item.Source = &source
+			continue
+		}
+		source := loader.excerpt(ctx, item.Repositories[0], document, item.Edge.Range)
+		item.Source = &source
+	}
+	return nil
 }
 
 func relationships(ctx context.Context, store Store, focus string, outgoing bool, limit int, locate Locator) ([]Relationship, bool, error) {
@@ -226,7 +265,7 @@ func relationships(ctx context.Context, store Store, focus string, outgoing bool
 		if outgoing {
 			adjacent = edge.To
 		}
-		relationship := Relationship{Edge: edge}
+		relationship := Relationship{Edge: edge, Repositories: repositories(locate, "edge", edge.ID)}
 		if symbol, ok, err := store.Symbol(ctx, adjacent); err != nil {
 			return nil, false, err
 		} else if ok {

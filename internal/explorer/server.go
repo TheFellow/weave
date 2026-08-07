@@ -17,6 +17,9 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/TheFellow/weave/internal/application"
+	"github.com/TheFellow/weave/internal/graph"
 )
 
 const (
@@ -164,11 +167,115 @@ func (handler *handler) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 		handler.graph(writer, request)
 	case handler.prefix + "api/diff":
 		handler.diff(writer, request)
+	case handler.prefix + "api/context":
+		handler.detail(writer, request)
+	case handler.prefix + "api/links":
+		handler.links(writer, request)
 	case handler.prefix + "api/config":
 		handler.config(writer, request)
 	default:
 		http.NotFound(writer, request)
 	}
+}
+
+func (handler *handler) detail(writer http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodPost {
+		writer.Header().Set("Allow", http.MethodPost)
+		http.Error(writer, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !handler.authorizeBrowserWrite(writer, request) {
+		return
+	}
+	var detailRequest DetailRequest
+	if !decodeRequestJSON(writer, request, &detailRequest) {
+		return
+	}
+	result, err := handler.engine.Detail(request.Context(), detailRequest)
+	if err != nil {
+		writeJSON(writer, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(writer, http.StatusOK, result)
+}
+
+func (handler *handler) links(writer http.ResponseWriter, request *http.Request) {
+	if request.Method == http.MethodGet {
+		result, err := handler.engine.Links(request.Context())
+		if err != nil {
+			writeJSON(writer, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(writer, http.StatusOK, result)
+		return
+	}
+	operation := ""
+	switch request.Method {
+	case http.MethodPost:
+		operation = "add"
+	case http.MethodPut:
+		operation = "update"
+	case http.MethodDelete:
+		operation = "remove"
+	default:
+		writer.Header().Set("Allow", "GET, POST, PUT, DELETE")
+		http.Error(writer, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !handler.authorizeBrowserWrite(writer, request) {
+		return
+	}
+	var mutation LinkMutation
+	if !decodeRequestJSON(writer, request, &mutation) {
+		return
+	}
+	result, err := handler.engine.MutateLink(request.Context(), operation, mutation)
+	if err != nil {
+		status := http.StatusBadRequest
+		if errors.Is(err, application.ErrLinkRevision) {
+			status = http.StatusConflict
+		}
+		writeJSON(writer, status, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(writer, http.StatusOK, result)
+}
+
+func (handler *handler) authorizeBrowserWrite(writer http.ResponseWriter, request *http.Request) bool {
+	if origin := request.Header.Get("Origin"); origin != "" && origin != handler.origin {
+		http.Error(writer, "forbidden origin", http.StatusForbidden)
+		return false
+	}
+	if site := request.Header.Get("Sec-Fetch-Site"); site != "" && site != "same-origin" && site != "none" {
+		http.Error(writer, "forbidden fetch site", http.StatusForbidden)
+		return false
+	}
+	return true
+}
+
+func decodeRequestJSON(writer http.ResponseWriter, request *http.Request, value any) bool {
+	mediaType, _, err := mime.ParseMediaType(request.Header.Get("Content-Type"))
+	if err != nil || mediaType != "application/json" {
+		http.Error(writer, "content type must be application/json", http.StatusUnsupportedMediaType)
+		return false
+	}
+	request.Body = http.MaxBytesReader(writer, request.Body, maxRequestBytes)
+	decoder := json.NewDecoder(request.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(value); err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			http.Error(writer, "request body too large", http.StatusRequestEntityTooLarge)
+			return false
+		}
+		http.Error(writer, "invalid JSON request", http.StatusBadRequest)
+		return false
+	}
+	if decoder.Decode(&struct{}{}) != io.EOF {
+		http.Error(writer, "request must contain one JSON object", http.StatusBadRequest)
+		return false
+	}
+	return true
 }
 
 func (handler *handler) diff(writer http.ResponseWriter, request *http.Request) {
@@ -227,9 +334,10 @@ func (handler *handler) config(writer http.ResponseWriter, request *http.Request
 		return
 	}
 	writeJSON(writer, http.StatusOK, struct {
-		Schema  string  `json:"schema"`
-		Initial Request `json:"initial"`
-	}{Schema: Schema, Initial: initial})
+		Schema    string           `json:"schema"`
+		Initial   Request          `json:"initial"`
+		EdgeKinds []graph.EdgeKind `json:"edge_kinds"`
+	}{Schema: Schema, Initial: initial, EdgeKinds: append([]graph.EdgeKind(nil), edgeKinds...)})
 }
 
 func (handler *handler) static(writer http.ResponseWriter, request *http.Request, name, contentType string) {

@@ -13,10 +13,13 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/TheFellow/weave/internal/application"
+	"github.com/TheFellow/weave/internal/bridge"
+	"github.com/TheFellow/weave/internal/contextquery"
 	"github.com/TheFellow/weave/internal/dot"
 	"github.com/TheFellow/weave/internal/graph"
 	"golang.org/x/net/websocket"
@@ -30,7 +33,7 @@ func TestBrowserSmoke(t *testing.T) {
 	if chrome == "" {
 		t.Skip("Chrome or Chromium is not installed")
 	}
-	service := browserService{}
+	service := &browserService{linkRevision: browserRevisionA}
 	engine, err := New(service, application.Invocation{Arguments: []string{"focus"}, Limit: 20, MaxDepth: 2, MaxEdges: 40})
 	if err != nil {
 		t.Fatal(err)
@@ -43,10 +46,11 @@ func TestBrowserSmoke(t *testing.T) {
 	defer shutdownCancel()
 	defer running.Close(shutdownCtx)
 
-	// The two render phases each have a 20-second bound. Keep the browser
-	// process alive beyond their combined budget so a slow CI runner cannot
-	// terminate Chromium mid-CDP response and turn a useful timeout into EOF.
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	// Each interaction phase has its own 20-second bound. Keep the browser
+	// process alive beyond their combined worst case so a slow CI runner cannot
+	// terminate Chromium mid-CDP response and turn a useful phase timeout into
+	// an opaque EOF.
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	profile := t.TempDir()
 	command := exec.CommandContext(ctx, chrome,
@@ -127,9 +131,138 @@ func TestBrowserSmoke(t *testing.T) {
 		t.Fatalf("browser did not render embedded Graphviz within 20 seconds\n%s", browserLog.String())
 	}
 
+	// Opening an editor pins the revision represented by its form. A 409
+	// refreshes the global list but must not silently rebase the still-open
+	// form: a second submit must carry the original revision again.
+	deadline = time.Now().Add(20 * time.Second)
+	editorSubmitted := false
+	for time.Now().Before(deadline) {
+		result, err := client.call("Runtime.evaluate", map[string]any{
+			"expression":    `(() => { const edit = document.querySelector(".link-row button"); if (!edit) return false; edit.click(); document.querySelector("#link-note").value = "local edit"; document.querySelector("#link-form").requestSubmit(); return true; })()`,
+			"returnByValue": true,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var evaluated struct {
+			Result struct {
+				Value bool `json:"value"`
+			} `json:"result"`
+		}
+		if err := json.Unmarshal(result, &evaluated); err != nil {
+			t.Fatal(err)
+		}
+		if evaluated.Result.Value {
+			editorSubmitted = true
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if !editorSubmitted {
+		t.Fatalf("browser did not open the contextual-link editor within 20 seconds\n%s", browserLog.String())
+	}
+	deadline = time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) {
+		listCalls, revisions := service.linkState()
+		if listCalls >= 2 && len(revisions) == 1 {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	listCalls, revisions := service.linkState()
+	if listCalls < 2 || len(revisions) != 1 {
+		t.Fatalf("browser did not reload canonical links after conflict: lists=%d revisions=%q", listCalls, revisions)
+	}
+	if _, err := client.call("Runtime.evaluate", map[string]any{
+		"expression":    `(() => { if (document.querySelector("#link-editor").hidden || document.querySelector("#link-note").value !== "local edit") return false; document.querySelector("#link-form").requestSubmit(); return true; })()`,
+		"returnByValue": true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	deadline = time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) {
+		listCalls, revisions = service.linkState()
+		if listCalls >= 3 && len(revisions) == 2 {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if listCalls < 3 || len(revisions) != 2 || revisions[0] != browserRevisionA || revisions[1] != browserRevisionA {
+		t.Fatalf("stale editor silently rebased across conflict: mutation revisions=%q, want [%q %q]", revisions, browserRevisionA, browserRevisionA)
+	}
+	deadline = time.Now().Add(20 * time.Second)
+	conflictRendered := false
+	for time.Now().Before(deadline) {
+		result, err := client.call("Runtime.evaluate", map[string]any{
+			"expression": `document.querySelector("#error").textContent.includes("fixture conflict")`, "returnByValue": true,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var evaluated struct {
+			Result struct {
+				Value bool `json:"value"`
+			} `json:"result"`
+		}
+		if err := json.Unmarshal(result, &evaluated); err != nil {
+			t.Fatal(err)
+		}
+		if evaluated.Result.Value {
+			conflictRendered = true
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if !conflictRendered {
+		t.Fatal("browser did not render the second optimistic-concurrency conflict")
+	}
+	if _, err := client.call("Runtime.evaluate", map[string]any{
+		"expression": `document.querySelector("#cancel-link").click(); document.querySelector("#error").hidden = true; document.querySelector("#error").textContent = ""`,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
 	dependencyID := strconv.Quote(dot.NodeSVGID("dependency"))
 	if _, err := client.call("Runtime.evaluate", map[string]any{
 		"expression": `document.getElementById(` + dependencyID + `).dispatchEvent(new MouseEvent("click", {bubbles: true}))`,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	deadline = time.Now().Add(20 * time.Second)
+	selected := false
+	for time.Now().Before(deadline) {
+		result, err := client.call("Runtime.evaluate", map[string]any{
+			"expression":    `(() => ({ready: document.querySelector("#selection-detail")?.textContent.includes("Dependency") && !document.querySelector("#refocus-selected").disabled, error: document.querySelector("#error")?.textContent || ""}))()`,
+			"returnByValue": true,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var evaluated struct {
+			Result struct {
+				Value struct {
+					Ready bool   `json:"ready"`
+					Error string `json:"error"`
+				} `json:"value"`
+			} `json:"result"`
+		}
+		if err := json.Unmarshal(result, &evaluated); err != nil {
+			t.Fatal(err)
+		}
+		if evaluated.Result.Value.Error != "" {
+			t.Fatalf("browser explorer selection error: %s\n%s", evaluated.Result.Value.Error, browserLog.String())
+		}
+		if evaluated.Result.Value.Ready {
+			selected = true
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if !selected {
+		t.Fatalf("browser did not render source-rich selection within 20 seconds\n%s", browserLog.String())
+	}
+	if _, err := client.call("Runtime.evaluate", map[string]any{
+		"expression": `document.querySelector("#refocus-selected").click()`,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -162,7 +295,7 @@ func TestBrowserSmoke(t *testing.T) {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	t.Fatalf("browser did not complete click-to-refocus enter/exit transition within 20 seconds\n%s", browserLog.String())
+	t.Fatalf("browser did not complete explicit refocus enter/exit transition within 20 seconds\n%s", browserLog.String())
 }
 
 func captureBrowserScreenshot(t *testing.T, client *cdpClient) {
@@ -190,9 +323,53 @@ func captureBrowserScreenshot(t *testing.T, client *cdpClient) {
 	}
 }
 
-type browserService struct{}
+const (
+	browserRevisionA = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	browserRevisionB = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+)
 
-func (browserService) Execute(_ context.Context, invocation application.Invocation) (application.Response, error) {
+type browserService struct {
+	mu              sync.Mutex
+	linkRevision    string
+	linkListCalls   int
+	updateRevisions []string
+}
+
+func (service *browserService) Execute(_ context.Context, invocation application.Invocation) (application.Response, error) {
+	if invocation.Command == "links list" {
+		service.mu.Lock()
+		defer service.mu.Unlock()
+		service.linkListCalls++
+		return application.Response{
+			Command: invocation.Command, LinkRevision: service.linkRevision,
+			Links: []bridge.Link{{ID: "docs-code", From: "entity:focus", To: "entity:dependency", Kind: graph.EdgeDocuments, Note: "concurrent edit"}},
+		}, nil
+	}
+	if invocation.Command == "links update" {
+		service.mu.Lock()
+		defer service.mu.Unlock()
+		service.updateRevisions = append(service.updateRevisions, invocation.LinkRevision)
+		service.linkRevision = browserRevisionB
+		return application.Response{}, fmt.Errorf("fixture conflict: %w", application.ErrLinkRevision)
+	}
+	if invocation.Command == "context" {
+		if len(invocation.Arguments) != 1 {
+			return application.Response{}, fmt.Errorf("browser context fixture expected one target")
+		}
+		target := invocation.Arguments[0]
+		result := contextquery.Result{
+			Schema: contextquery.Schema,
+			Focus: contextquery.Entity{Symbol: graph.Symbol{
+				ID: target, StableName: "example." + target, DisplayName: strings.ToUpper(target[:1]) + target[1:],
+				Kind: "function", Provider: "scip:fixture", Evidence: graph.EvidenceExact,
+			}},
+			Evidence: []contextquery.Evidence{{
+				Role: "definition", Provider: "scip:fixture", Confidence: graph.EvidenceExact,
+				Source: contextquery.SourceExcerpt{Status: contextquery.SourceCurrent, Path: "fixture.go", Lines: []contextquery.SourceLine{{Number: 7, Text: "func Dependency() {}"}}},
+			}},
+		}
+		return application.Response{Command: invocation.Command, Context: &result}, nil
+	}
 	if len(invocation.Arguments) != 1 {
 		return application.Response{}, fmt.Errorf("browser fixture expected one target")
 	}
@@ -215,6 +392,12 @@ func (browserService) Execute(_ context.Context, invocation application.Invocati
 			{ID: "entered", From: "dependency", To: "leaf", Kind: graph.EdgeCalls, Provider: "scip:fixture", Evidence: graph.EvidenceExact},
 		},
 	}, nil
+}
+
+func (service *browserService) linkState() (int, []string) {
+	service.mu.Lock()
+	defer service.mu.Unlock()
+	return service.linkListCalls, append([]string(nil), service.updateRevisions...)
 }
 
 func chromeExecutable() string {

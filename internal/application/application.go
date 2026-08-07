@@ -75,6 +75,7 @@ type Invocation struct {
 	LinkToSet      bool
 	LinkNoteSet    bool
 	LinkKindSet    bool
+	LinkRevision   string
 }
 
 // Response is the stable application result consumed by text and JSON renderers.
@@ -101,6 +102,7 @@ type Response struct {
 	CI           *ci.Status             `json:"ci,omitempty"`
 	Version      *buildinfo.Info        `json:"version,omitempty"`
 	Links        []bridge.Link          `json:"links,omitempty"`
+	LinkRevision string                 `json:"link_revision,omitempty"`
 	Context      *contextquery.Result   `json:"context,omitempty"`
 	Diff         *graphdiff.Result      `json:"diff,omitempty"`
 }

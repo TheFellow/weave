@@ -336,6 +336,13 @@ func NodeSVGID(semanticID string) string {
 	return svgID("node", semanticID)
 }
 
+// EdgeSVGID returns the stable SVG identity emitted for the collapsed visual
+// edge containing edge. Equivalent provider/evidence facts intentionally map
+// to one element; callers can retain every source fact under this key.
+func EdgeSVGID(edge graph.Edge) string {
+	return svgID("edge", edgeCollapseKey(edge))
+}
+
 func digestID(value string) string {
 	digest := sha256.Sum256([]byte(value))
 	// 128 bits keeps identifiers compact while making accidental collision

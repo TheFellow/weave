@@ -64,6 +64,23 @@ func Entity(id string) string { return endpointTag + id }
 // workspace resources were authorable.
 func Endpoint(value string) (string, error) { return endpoint(value) }
 
+// Revision returns an order-independent digest of one validated declaration
+// document. Interactive and other long-lived clients use it for optimistic
+// concurrency; it is not a semantic graph generation or a storage identity.
+func Revision(config Config) (string, error) {
+	config.Links = append([]Link(nil), config.Links...)
+	slices.SortFunc(config.Links, func(a, b Link) int { return strings.Compare(a.ID, b.ID) })
+	if err := config.Validate(); err != nil {
+		return "", err
+	}
+	encoded, err := json.Marshal(config)
+	if err != nil {
+		return "", fmt.Errorf("encode bridge revision: %w", err)
+	}
+	digest := sha256.Sum256(append([]byte("weave.bridges-revision/v1\x00"), encoded...))
+	return "sha256:" + hex.EncodeToString(digest[:]), nil
+}
+
 // Load parses and validates a bridge file. Missing files describe no links.
 func Load(path string) (Config, error) {
 	file, err := os.Open(path)

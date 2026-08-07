@@ -16,6 +16,10 @@ import (
 	"github.com/TheFellow/weave/internal/storage"
 )
 
+// ErrLinkRevision reports an optimistic-concurrency conflict while editing
+// the canonical authored relationship declaration.
+var ErrLinkRevision = errors.New("authored relationships changed since they were loaded")
+
 func (app Local) links(ctx context.Context, response Response, invocation Invocation) (Response, error) {
 	repo, err := app.repository(ctx)
 	if err != nil {
@@ -31,17 +35,26 @@ func (app Local) links(ctx context.Context, response Response, invocation Invoca
 			return Response{}, err
 		}
 		response.Links = canonicalLinks(config.Links)
+		response.LinkRevision, err = bridge.Revision(config)
+		if err != nil {
+			return Response{}, err
+		}
 		return response, nil
 	case "links remove":
 		var removed bridge.Link
 		if err := bridge.Edit(ctx, path, lockPath, func(config *bridge.Config) error {
+			if err := requireLinkRevision(*config, invocation.LinkRevision); err != nil {
+				return err
+			}
 			index := linkIndex(config.Links, invocation.Arguments[0])
 			if index < 0 {
 				return fmt.Errorf("link %q does not exist", invocation.Arguments[0])
 			}
 			removed = config.Links[index]
 			config.Links = append(config.Links[:index:index], config.Links[index+1:]...)
-			return nil
+			var err error
+			response.LinkRevision, err = bridge.Revision(*config)
+			return err
 		}); err != nil {
 			return Response{}, err
 		}
@@ -90,6 +103,9 @@ func (app Local) writeLink(ctx context.Context, response Response, invocation In
 
 	var link bridge.Link
 	if err := bridge.Edit(ctx, path, lockPath, func(config *bridge.Config) error {
+		if err := requireLinkRevision(*config, invocation.LinkRevision); err != nil {
+			return err
+		}
 		index := linkIndex(config.Links, id)
 		if invocation.Command == "links add" && index >= 0 {
 			return fmt.Errorf("link %q already exists", id)
@@ -118,7 +134,9 @@ func (app Local) writeLink(ctx context.Context, response Response, invocation In
 		} else {
 			config.Links[index] = link
 		}
-		return nil
+		var err error
+		response.LinkRevision, err = bridge.Revision(*config)
+		return err
 	}); err != nil {
 		return Response{}, err
 	}
@@ -251,3 +269,17 @@ func canonicalLinks(links []bridge.Link) []bridge.Link {
 // Keep the edge vocabulary in this application boundary explicit for tools
 // constructing invocations without the CLI.
 func validLinkKind(kind graph.EdgeKind) bool { return graph.IsEdgeKind(kind) }
+
+func requireLinkRevision(config bridge.Config, expected string) error {
+	if expected == "" {
+		return nil
+	}
+	current, err := bridge.Revision(config)
+	if err != nil {
+		return err
+	}
+	if current != expected {
+		return fmt.Errorf("%w; reload before editing", ErrLinkRevision)
+	}
+	return nil
+}
