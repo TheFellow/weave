@@ -75,7 +75,8 @@ def main():
             if symbol.get("provider") == "scip:scip-java"
         ]
         if not semantic or not any(
-            symbol.get("kind") == "class" and symbol.get("evidence") == "exact"
+            symbol.get("kind") in {"class", "type"}
+            and symbol.get("evidence") == "exact"
             for symbol in semantic
         ):
             raise RuntimeError(
