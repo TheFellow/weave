@@ -39,7 +39,6 @@ func TestPlaceholderCommandsSucceedSilently(t *testing.T) {
 		{name: "dependencies", args: []string{"dependencies"}, want: "dependencies"},
 		{name: "architecture check", args: []string{"architecture", "check"}, want: "architecture check"},
 		{name: "repos add", args: []string{"repos", "add"}, want: "repos add"},
-		{name: "repos remove", args: []string{"repos", "remove"}, want: "repos remove"},
 		{name: "repos list", args: []string{"repos", "list"}, want: "repos list"},
 		{name: "adapters list", args: []string{"adapters", "list"}, want: "adapters list"},
 		{name: "adapters doctor", args: []string{"adapters", "doctor"}, want: "adapters doctor"},
@@ -95,6 +94,28 @@ func TestApplicationErrorIsReturned(t *testing.T) {
 	}
 }
 
+func TestRepositoryCatalogCommands(t *testing.T) {
+	ctx := context.Background()
+	repositoryRoot := commandRepository(t)
+	catalogPath := filepath.Join(t.TempDir(), "catalog.db")
+	app := application.Local{}
+	var stdout, stderr bytes.Buffer
+	root := command.New(app, command.Streams{Stdin: strings.NewReader(""), Stdout: &stdout, Stderr: &stderr})
+	if err := root.Run(ctx, []string{"weave", "repos", "add", repositoryRoot, "--catalog", catalogPath}); err != nil {
+		t.Fatal(err)
+	}
+	if stdout.Len() != 0 || stderr.Len() != 0 {
+		t.Fatalf("add stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+	root = command.New(app, command.Streams{Stdin: strings.NewReader(""), Stdout: &stdout, Stderr: &stderr})
+	if err := root.Run(ctx, []string{"weave", "repos", "list", "--catalog", catalogPath}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stdout.String(), "\tmain\tcurrent\t") || !strings.Contains(stdout.String(), repositoryRoot) {
+		t.Fatalf("list stdout=%q", stdout.String())
+	}
+}
+
 func TestInvalidInvocationsReturnErrors(t *testing.T) {
 	t.Parallel()
 
@@ -114,6 +135,7 @@ func TestInvalidInvocationsReturnErrors(t *testing.T) {
 		{name: "conflicting external index", args: []string{"index", "--scip", "index.scip", "--adapter", "tool"}},
 		{name: "orphan adapter argument", args: []string{"index", "--adapter-arg", "--flag"}},
 		{name: "invalid adapter timeout", args: []string{"index", "--adapter", "tool", "--timeout", "0s"}},
+		{name: "missing repository selector", args: []string{"repos", "remove"}},
 	}
 
 	for _, test := range tests {

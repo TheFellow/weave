@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/TheFellow/weave/internal/adapter"
+	"github.com/TheFellow/weave/internal/catalog"
 	"github.com/TheFellow/weave/internal/freshness"
 	"github.com/TheFellow/weave/internal/graph"
 	"github.com/TheFellow/weave/internal/query"
@@ -26,34 +27,41 @@ const QuerySchema = "weave.query/v1"
 
 // Invocation is a validated operation from a delivery surface.
 type Invocation struct {
-	Command     string
-	Arguments   []string
-	JSON        bool
-	Limit       int
-	MaxDepth    int
-	Kinds       []graph.EdgeKind
-	SCIPPath    string
-	AdapterPath string
-	AdapterArgs []string
-	Timeout     time.Duration
-	Permissions adapter.Permissions
+	Command      string
+	Arguments    []string
+	JSON         bool
+	Limit        int
+	MaxDepth     int
+	Kinds        []graph.EdgeKind
+	SCIPPath     string
+	AdapterPath  string
+	AdapterArgs  []string
+	Timeout      time.Duration
+	Permissions  adapter.Permissions
+	CatalogPath  string
+	Scope        string
+	Repositories []string
+	Format       string
+	ConfigPath   string
 }
 
 // Response is the stable application result consumed by text and JSON renderers.
 type Response struct {
-	Schema      string             `json:"schema"`
-	Command     string             `json:"command"`
-	Query       []string           `json:"query,omitempty"`
-	Truncated   bool               `json:"truncated"`
-	Symbols     []graph.Symbol     `json:"symbols,omitempty"`
-	Occurrences []graph.Occurrence `json:"occurrences,omitempty"`
-	Edges       []graph.Edge       `json:"edges,omitempty"`
-	Nodes       []string           `json:"nodes,omitempty"`
-	Export      *graph.Snapshot    `json:"export,omitempty"`
-	Issues      []storage.Issue    `json:"issues,omitempty"`
-	Freshness   *freshness.Status  `json:"freshness,omitempty"`
-	Diagnostics []string           `json:"diagnostics,omitempty"`
-	Adapters    []AdapterStatus    `json:"adapters,omitempty"`
+	Schema       string             `json:"schema"`
+	Command      string             `json:"command"`
+	Query        []string           `json:"query,omitempty"`
+	Truncated    bool               `json:"truncated"`
+	Symbols      []graph.Symbol     `json:"symbols,omitempty"`
+	Occurrences  []graph.Occurrence `json:"occurrences,omitempty"`
+	Edges        []graph.Edge       `json:"edges,omitempty"`
+	Nodes        []string           `json:"nodes,omitempty"`
+	Export       *graph.Snapshot    `json:"export,omitempty"`
+	Issues       []storage.Issue    `json:"issues,omitempty"`
+	Freshness    *freshness.Status  `json:"freshness,omitempty"`
+	Diagnostics  []string           `json:"diagnostics,omitempty"`
+	Adapters     []AdapterStatus    `json:"adapters,omitempty"`
+	Repositories []catalog.Entry    `json:"repositories,omitempty"`
+	Failed       bool               `json:"failed,omitempty"`
 }
 
 // AdapterStatus is a side-effect-free executable discovery result. Discovery
@@ -86,11 +94,15 @@ type Local struct {
 	Freshness     *freshness.Manager
 	SCIPImporter  scipimport.Importer
 	AdapterRunner adapter.Runner
+	CatalogPath   string
 }
 
 // Execute runs one local use case.
 func (app Local) Execute(ctx context.Context, invocation Invocation) (Response, error) {
 	response := Response{Schema: QuerySchema, Command: invocation.Command, Query: append([]string(nil), invocation.Arguments...)}
+	if strings.HasPrefix(invocation.Command, "repos ") {
+		return app.repositories(ctx, response, invocation)
+	}
 	if invocation.Command == "adapters list" || invocation.Command == "adapters doctor" {
 		response.Adapters = inspectAdapters(invocation.Command == "adapters doctor")
 		return response, nil
@@ -201,6 +213,53 @@ func (app Local) Execute(ctx context.Context, invocation Invocation) (Response, 
 		return Response{}, fmt.Errorf("%s: %w", invocation.Command, err)
 	}
 	return response, nil
+}
+
+func (app Local) repositories(ctx context.Context, response Response, invocation Invocation) (Response, error) {
+	path, err := catalog.DefaultPath(firstNonempty(invocation.CatalogPath, app.CatalogPath))
+	if err != nil {
+		return Response{}, err
+	}
+	db, err := catalog.Open(ctx, path, invocation.Timeout)
+	if err != nil {
+		return Response{}, err
+	}
+	defer db.Close()
+	switch invocation.Command {
+	case "repos add":
+		directory := "."
+		if len(invocation.Arguments) == 1 {
+			directory = invocation.Arguments[0]
+		}
+		entry, err := db.Add(ctx, directory)
+		if invocation.JSON {
+			response.Repositories = []catalog.Entry{entry}
+		}
+		return response, err
+	case "repos remove":
+		_, err := db.Remove(ctx, invocation.Arguments[0])
+		return response, err
+	case "repos list", "repos status":
+		response.Repositories, err = db.List(ctx)
+		return response, err
+	case "repos sync":
+		response.Repositories, response.Diagnostics, err = db.Sync(ctx, invocation.Arguments)
+		if !invocation.JSON {
+			response.Repositories = nil
+		}
+		return response, err
+	default:
+		return Response{}, fmt.Errorf("unsupported repository command %q", invocation.Command)
+	}
+}
+
+func firstNonempty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func inspectAdapters(includeRuntime bool) []AdapterStatus {

@@ -40,7 +40,7 @@ func New(app application.Service, streams Streams) *cli.Command {
 		traversal(app, streams, "impact", "find code affected by a symbol", 1),
 		noop(app, streams, "dependencies", "find semantic dependencies"),
 		group("architecture", "evaluate architecture rules", noop(app, streams, "architecture check", "check architecture rules")),
-		group("repos", "manage the cross-repository catalog", noop(app, streams, "repos add", "add a repository to the catalog"), noop(app, streams, "repos remove", "remove a repository from the catalog"), noop(app, streams, "repos list", "list cataloged repositories")),
+		repositoryCommands(app, streams),
 		group("adapters", "inspect semantic adapters", adapterInspection(app, streams, "list", "list available adapters"), adapterInspection(app, streams, "doctor", "diagnose adapter availability")),
 		maintenance(app, streams, "export", "export normalized semantic facts", true),
 		maintenance(app, streams, "verify", "verify index integrity", true),
@@ -48,6 +48,39 @@ func New(app application.Service, streams Streams) *cli.Command {
 		noop(app, streams, "version", "show the Weave version"),
 	}
 	return root
+}
+
+func repositoryCommands(app application.Service, streams Streams) *cli.Command {
+	flags := func(jsonOutput bool) []cli.Flag {
+		result := []cli.Flag{&cli.StringFlag{Name: "catalog", Usage: "absolute catalog database path"}}
+		if jsonOutput {
+			result = append(result, jsonFlag())
+		}
+		return result
+	}
+	return group("repos", "manage the explicit cross-repository catalog",
+		&cli.Command{Name: "add", Usage: "register one repository worktree", Flags: flags(true), Action: invokeCatalog(app, streams, "repos add", 0, 1)},
+		&cli.Command{Name: "remove", Usage: "remove a worktree by key, identity, or absolute root", Flags: flags(false), Action: invokeCatalog(app, streams, "repos remove", 1, 1)},
+		&cli.Command{Name: "list", Usage: "list registered repository worktrees", Flags: flags(true), Action: invokeCatalog(app, streams, "repos list", 0, 0)},
+		&cli.Command{Name: "status", Usage: "diagnose registered repository worktrees", Flags: flags(true), Action: invokeCatalog(app, streams, "repos status", 0, 0)},
+		&cli.Command{Name: "sync", Usage: "refresh registered repository metadata", Flags: flags(true), Action: invokeCatalog(app, streams, "repos sync", 0, 100)},
+	)
+}
+
+func invokeCatalog(app application.Service, streams Streams, path string, minimum, maximum int) cli.ActionFunc {
+	return func(ctx context.Context, cmd *cli.Command) error {
+		if count := cmd.Args().Len(); count < minimum || count > maximum {
+			return cli.Exit(fmt.Sprintf("%s expects %s", path, arity(minimum, maximum)), 2)
+		}
+		response, err := app.Execute(ctx, application.Invocation{
+			Command: path, Arguments: append([]string(nil), cmd.Args().Slice()...), JSON: cmd.Bool("json"),
+			CatalogPath: cmd.String("catalog"),
+		})
+		if err != nil {
+			return err
+		}
+		return renderInvocation(streams, response, cmd.Bool("json"))
+	}
 }
 
 func adapterInspection(app application.Service, streams Streams, name, usage string) *cli.Command {
@@ -272,6 +305,17 @@ func render(writer io.Writer, response application.Response, jsonOutput bool) er
 			status = "available"
 		}
 		if _, err := fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%s\n", adapter.Name, adapter.Kind, status, adapter.Path, adapter.Detail); err != nil {
+			return err
+		}
+	}
+	for _, repository := range response.Repositories {
+		state := "current"
+		if repository.Missing {
+			state = "missing"
+		} else if repository.Stale {
+			state = "stale"
+		}
+		if _, err := fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%s\n", repository.Identity, repository.WorktreeID, state, repository.Root, repository.DatabasePath); err != nil {
 			return err
 		}
 	}
