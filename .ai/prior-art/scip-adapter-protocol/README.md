@@ -178,4 +178,3 @@ Defer:
 - automatic indexer discovery/invocation profiles (each producer has different
   restore/build/network behavior and requires an explicit policy contract);
 - deriving call edges from SCIP references without producer-specific evidence.
-
