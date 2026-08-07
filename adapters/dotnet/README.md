@@ -4,6 +4,9 @@
 one-shot `weave.adapter/v0` process contract and is never run by ordinary Weave
 queries.
 
+The repository `global.json` stays on the latest installed .NET 9 feature band
+so Buildalyzer and its child MSBuild process select the same supported SDK.
+
 The implementation uses Roslyn/MSBuildWorkspace for C# and
 FSharp.Compiler.Service with Buildalyzer's design-time build results for F#.
 It does not parse either source language itself.

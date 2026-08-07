@@ -36,12 +36,18 @@ public sealed class CSharpIndexer(RepositoryPaths paths, IndexRequest request)
             throw new InvalidOperationException("weave-dotnet does not perform restore; restore the repository explicitly before indexing");
 
         var diagnostics = new List<AdapterDiagnostic>();
+        var workspaceFailures = new List<string>();
         using var workspace = MSBuildWorkspace.Create(BuildProperties());
-        workspace.WorkspaceFailed += (_, args) => diagnostics.Add(new(
-            args.Diagnostic.Kind == WorkspaceDiagnosticKind.Failure ? "error" : "warning",
-            "MSBuildWorkspace: " + args.Diagnostic.Message));
+        workspace.WorkspaceFailed += (_, args) =>
+        {
+            var message = "MSBuildWorkspace: " + args.Diagnostic.Message;
+            diagnostics.Add(new(args.Diagnostic.Kind == WorkspaceDiagnosticKind.Failure ? "error" : "warning", message));
+            if (args.Diagnostic.Kind == WorkspaceDiagnosticKind.Failure) workspaceFailures.Add(message);
+        };
 
         var projects = await LoadProjectsAsync(workspace, cancellationToken);
+        if (workspaceFailures.Count != 0)
+            throw new InvalidOperationException(string.Join(Environment.NewLine, workspaceFailures));
         var csProjects = projects.Where(p => p.Language == LanguageNames.CSharp)
             .OrderBy(p => p.FilePath, StringComparer.Ordinal).ThenBy(p => p.Name, StringComparer.Ordinal).ToArray();
         var units = new List<UnitFacts>(csProjects.Length);
