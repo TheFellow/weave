@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -70,16 +71,16 @@ func adapterStateBase(goos string, home func() (string, error), getenv func(stri
 		if err != nil {
 			return "", err
 		}
-		return filepath.Join(directory, "Library", "Application Support"), nil
+		return path.Join(directory, "Library", "Application Support"), nil
 	case "linux":
-		if value := getenv("XDG_STATE_HOME"); filepath.IsAbs(value) {
+		if value := getenv("XDG_STATE_HOME"); path.IsAbs(value) {
 			return value, nil
 		}
 		directory, err := home()
 		if err != nil {
 			return "", err
 		}
-		return filepath.Join(directory, ".local", "state"), nil
+		return path.Join(directory, ".local", "state"), nil
 	case "windows":
 		if value := getenv("LOCALAPPDATA"); filepath.IsAbs(value) {
 			return value, nil

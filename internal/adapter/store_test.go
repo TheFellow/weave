@@ -188,12 +188,7 @@ func TestManagedAdapterHelper(t *testing.T) {
 }
 
 func TestAdapterStateBaseIsCrossPlatform(t *testing.T) {
-	home := func() (string, error) {
-		if runtime.GOOS == "windows" {
-			return `C:\Users\r`, nil
-		}
-		return "/home/r", nil
-	}
+	home := func() (string, error) { return "/home/r", nil }
 	if got, _ := adapterStateBase("linux", home, func(name string) string {
 		if name == "XDG_STATE_HOME" {
 			return "/state"
