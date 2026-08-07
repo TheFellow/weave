@@ -8,10 +8,11 @@ agents. There is no model, hosted service, or required daemon in the indexing
 path.
 
 > **Status:** early alpha. Native Go indexing and the query/storage lifecycle
-> are usable. Installed C#/F#, Python, Rust, and C/C++ adapters participate in
-> query-driven freshness; same-version release companions are configured but
-> have not been exercised by a tag, and external adapters currently advertise
-> full rather than incremental refreshes. Output schemas are
+> are usable. Installed C#/F#, Python, Rust, C/C++, TypeScript/JavaScript, and
+> configured JVM adapters can participate in query-driven freshness; a broad
+> Universal Ctags fallback is available explicitly. Release companions are
+> configured but have not been exercised by a tag, and external adapters
+> currently advertise full rather than incremental refreshes. Output schemas are
 > versioned, but compatibility before the first tagged release is not promised.
 
 ## Install
@@ -69,6 +70,7 @@ package, file, document, section, route, or other indexed resource:
 weave graph AuthService --kind calls --kind implements > auth.dot
 weave graph README.md --direction outgoing --max-depth 3 --output docs.dot
 weave graph Handle --scope catalog --repo github.com/example/service --json
+weave graph README.md --interactive
 dot -Tsvg auth.dot -o auth.svg
 ```
 
@@ -88,6 +90,15 @@ mandatory and bounded even for catalog queries. `--output` writes DOT directly;
 without it DOT is written to stdout. Weave does not invoke Graphviz, so DOT
 generation works without a renderer installed. `--json` returns the same
 bounded neighborhood in the `weave.query/v1` envelope for agents.
+
+`--interactive` starts a temporary random loopback server and opens the same
+bounded graph in a human-facing browser explorer. Clicking a node refocuses the
+query; direction, depth, edge kind, provider, and evidence controls request new
+current DOT snapshots, which animate using stable semantic node and edge IDs.
+The view includes pan/zoom and focus history. D3, d3-graphviz, and Graphviz WASM
+are pinned inside the Weave binary, so the explorer loads no CDN or remote
+runtime assets. Use `--no-open` to print the tokenized local URL without
+launching a browser. The server exists only for that command and stops with it.
 
 ## Workspace and content navigation
 
@@ -321,6 +332,32 @@ An explicitly selected `WEAVE_ADAPTER_CONFIG` may opt `scip:scip-java` into
 query-driven freshness with a repository-appropriate conservative input set
 and the same permissions. Java and Kotlin are advertised; Scala is not, because
 the current upstream project no longer claims Scala support.
+
+## Broad Universal Ctags fallback
+
+[`weave-ctags`](adapters/ctags/README.md) is a compiled Go protocol wrapper for
+a separately installed, pinned Universal Ctags producer. It gives unsupported
+languages and formats a conservative definition outline without pretending to
+have compiler semantics. Every emitted symbol and definition occurrence is
+`syntactic`; calls, references, inheritance, and guessed edges are deliberately
+absent. Safely read tagless files still receive document units.
+
+Build the wrapper and invoke it explicitly while overlap policy with exact
+providers is still being evaluated:
+
+```console
+go install ./adapters/ctags/cmd/weave-ctags
+weave index \
+  --adapter "$(command -v weave-ctags)" \
+  --adapter-arg=--ctags=/absolute/path/to/uctags \
+  --adapter-arg=--producer-version=6.2.1
+```
+
+The wrapper rejects non-Universal variants such as macOS `/usr/bin/ctags`,
+disables ambient Ctags option files, indexes a private bounded snapshot of
+Git-visible regular UTF-8 files, and fingerprints the producer's parser
+capabilities. Universal Ctags remains a separate GPL-2.0 process and is not
+linked or bundled into the wrapper artifact.
 
 ## Derived data and recovery
 
