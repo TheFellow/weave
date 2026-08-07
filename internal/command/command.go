@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"strings"
 	"time"
 
 	"github.com/TheFellow/weave/internal/adapter"
@@ -286,14 +285,6 @@ func indexCommand(app application.Service, streams Streams) *cli.Command {
 			return renderInvocation(streams, response, cmd.Bool("json"))
 		},
 	}
-}
-
-func noop(app application.Service, streams Streams, path, usage string) *cli.Command {
-	name := path
-	if index := strings.LastIndexByte(path, ' '); index >= 0 {
-		name = path[index+1:]
-	}
-	return &cli.Command{Name: name, Usage: usage, Action: invoke(app, streams, path, 0, 0)}
 }
 
 func jsonFlag() cli.Flag { return &cli.BoolFlag{Name: "json", Usage: "emit versioned JSON"} }
