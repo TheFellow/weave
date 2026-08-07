@@ -16,6 +16,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/TheFellow/weave/internal/graph"
 	"github.com/TheFellow/weave/internal/repository"
@@ -25,6 +26,9 @@ import (
 const (
 	manifestSchema = "weave.freshness/v1"
 	defaultTimeout = 2 * time.Second
+	// The workspace provider can legitimately own hundreds of thousands of
+	// path units. Publication and reading must enforce the same encoded bound.
+	maxManifestBytes int64 = 256 << 20
 )
 
 // ProviderID participates in freshness equality.
@@ -55,6 +59,7 @@ type Manifest struct {
 	Detached           bool       `json:"detached"`
 	OverlayDigest      string     `json:"overlay_digest"`
 	Units              []Unit     `json:"units"`
+	Diagnostics        []string   `json:"diagnostics,omitempty"`
 	UpdatedAt          time.Time  `json:"updated_at"`
 }
 
@@ -72,6 +77,9 @@ type Result struct {
 	Batches []graph.UnitFacts
 	Removed []string
 	Units   []Unit
+	// Diagnostics are deterministic provider degradations that remain visible
+	// while this complete manifest is current.
+	Diagnostics []string
 }
 
 // Provider supplies complete semantic compilation-unit batches.
@@ -92,18 +100,19 @@ func (EmptyProvider) Refresh(context.Context, Request) (Result, error) {
 // Status is a cheap comparison between current Git state and the last complete
 // manifest.
 type Status struct {
-	Initialized        bool   `json:"initialized"`
-	Current            bool   `json:"current"`
-	Refreshed          bool   `json:"refreshed,omitempty"`
-	Reason             string `json:"reason,omitempty"`
-	RepositoryIdentity string `json:"repository_identity"`
-	WorktreeID         string `json:"worktree_id"`
-	Commit             string `json:"commit,omitempty"`
-	Tree               string `json:"tree,omitempty"`
-	Dirty              bool   `json:"dirty"`
-	ChangeCount        int    `json:"change_count"`
-	DatabasePath       string `json:"database_path"`
-	ManifestPath       string `json:"manifest_path"`
+	Initialized        bool     `json:"initialized"`
+	Current            bool     `json:"current"`
+	Refreshed          bool     `json:"refreshed,omitempty"`
+	Reason             string   `json:"reason,omitempty"`
+	RepositoryIdentity string   `json:"repository_identity"`
+	WorktreeID         string   `json:"worktree_id"`
+	Commit             string   `json:"commit,omitempty"`
+	Tree               string   `json:"tree,omitempty"`
+	Dirty              bool     `json:"dirty"`
+	ChangeCount        int      `json:"change_count"`
+	DatabasePath       string   `json:"database_path"`
+	ManifestPath       string   `json:"manifest_path"`
+	Diagnostics        []string `json:"diagnostics,omitempty"`
 }
 
 // Manager owns freshness for one directory/repository.
@@ -149,6 +158,9 @@ func (m Manager) Ensure(ctx context.Context, force bool) (Status, error) {
 	if err := validateResult(result, manifest); err != nil {
 		return Status{}, err
 	}
+	if err := requireUnchangedState(ctx, repo, state, "provider refresh"); err != nil {
+		return Status{}, err
+	}
 	if err := os.MkdirAll(repo.StorageDir, 0o755); err != nil {
 		return Status{}, fmt.Errorf("create Weave storage: %w", err)
 	}
@@ -167,13 +179,28 @@ func (m Manager) Ensure(ctx context.Context, force bool) (Status, error) {
 	if err := db.Close(); err != nil {
 		return Status{}, fmt.Errorf("close refreshed database: %w", err)
 	}
-	newManifest := buildManifest(repo, state, provider.ID(), result.Units)
+	if err := requireUnchangedState(ctx, repo, state, "graph publication"); err != nil {
+		return Status{}, err
+	}
+	newManifest := buildManifest(repo, state, provider.ID(), result.Units, result.Diagnostics)
 	if err := writeManifest(filepath.Join(repo.StorageDir, "manifest.json"), newManifest); err != nil {
 		return Status{}, err
 	}
 	status = statusFor(repo, state, &newManifest, provider.ID())
 	status.Refreshed = true
 	return status, nil
+}
+
+func requireUnchangedState(ctx context.Context, repo repository.Repository, expected repository.State, phase string) error {
+	current, err := repo.Inspect(ctx)
+	if err != nil {
+		return fmt.Errorf("reinspect repository after %s: %w", phase, err)
+	}
+	if current.Commit != expected.Commit || current.Tree != expected.Tree || current.Branch != expected.Branch ||
+		current.Detached != expected.Detached || overlayDigest(current) != overlayDigest(expected) {
+		return fmt.Errorf("repository state changed during %s; refresh must be retried", phase)
+	}
+	return nil
 }
 
 // Inspect reports freshness without changing repository state.
@@ -220,6 +247,7 @@ func statusFor(repo repository.Repository, state repository.State, manifest *Man
 		status.Reason = "index is not initialized"
 		return status
 	}
+	status.Diagnostics = append([]string(nil), manifest.Diagnostics...)
 	if manifest.Schema != manifestSchema || !manifest.Complete {
 		status.Reason = "freshness manifest is incomplete or unsupported"
 		return status
@@ -244,13 +272,16 @@ func statusFor(repo repository.Repository, state repository.State, manifest *Man
 	return status
 }
 
-func buildManifest(repo repository.Repository, state repository.State, provider ProviderID, units []Unit) Manifest {
+func buildManifest(repo repository.Repository, state repository.State, provider ProviderID, units []Unit, diagnostics []string) Manifest {
 	units = append([]Unit(nil), units...)
+	diagnostics = append([]string(nil), diagnostics...)
 	slices.SortFunc(units, func(a, b Unit) int { return strings.Compare(a.ID, b.ID) })
+	slices.Sort(diagnostics)
+	diagnostics = slices.Compact(diagnostics)
 	return Manifest{
 		Schema: manifestSchema, Complete: true, RepositoryIdentity: repo.Identity, WorktreeID: repo.WorktreeID,
 		Provider: provider, Commit: state.Commit, Tree: state.Tree, Branch: state.Branch, Detached: state.Detached,
-		OverlayDigest: overlayDigest(state), Units: units, UpdatedAt: time.Now().UTC(),
+		OverlayDigest: overlayDigest(state), Units: units, Diagnostics: diagnostics, UpdatedAt: time.Now().UTC(),
 	}
 }
 
@@ -261,6 +292,14 @@ func overlayDigest(state repository.State) string {
 }
 
 func validateResult(result Result, previous *Manifest) error {
+	if len(result.Diagnostics) > 256 {
+		return fmt.Errorf("invalid provider result: diagnostics exceed 256 entries")
+	}
+	for _, diagnostic := range result.Diagnostics {
+		if diagnostic == "" || len(diagnostic) > 8<<10 || strings.IndexByte(diagnostic, 0) >= 0 || !utf8.ValidString(diagnostic) {
+			return fmt.Errorf("invalid provider result: malformed diagnostic")
+		}
+	}
 	prior := map[string]Unit{}
 	if previous != nil {
 		for _, unit := range previous.Units {
@@ -295,7 +334,7 @@ func validateResult(result Result, previous *Manifest) error {
 		if returned[id] {
 			continue
 		}
-		if old, ok := prior[id]; !ok || old != unit {
+		if old, ok := prior[id]; !ok || !reusableUnit(old, unit) {
 			return fmt.Errorf("invalid provider result: unit %q has no replacement batch or reusable matching fingerprint", id)
 		}
 	}
@@ -309,13 +348,33 @@ func validateResult(result Result, previous *Manifest) error {
 	return nil
 }
 
+// Owner is assigned by CompositeProvider after a child has decided whether a
+// unit is reusable. Ignore an ownership-only change while upgrading a direct
+// provider manifest to the composite layout.
+func reusableUnit(left, right Unit) bool {
+	left.Owner = ""
+	right.Owner = ""
+	return left == right
+}
+
 func readManifest(path string) (*Manifest, error) {
+	return readManifestBounded(path, maxManifestBytes)
+}
+
+func readManifestBounded(path string, limit int64) (*Manifest, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
 	defer file.Close()
-	decoder := json.NewDecoder(io.LimitReader(file, 4<<20))
+	info, err := file.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("inspect freshness manifest: %w", err)
+	}
+	if info.Size() > limit {
+		return nil, fmt.Errorf("decode freshness manifest: encoded size exceeds %d bytes", limit)
+	}
+	decoder := json.NewDecoder(io.LimitReader(file, limit+1))
 	decoder.DisallowUnknownFields()
 	var manifest Manifest
 	if err := decoder.Decode(&manifest); err != nil {
@@ -328,6 +387,10 @@ func readManifest(path string) (*Manifest, error) {
 }
 
 func writeManifest(path string, manifest Manifest) error {
+	return writeManifestBounded(path, manifest, maxManifestBytes)
+}
+
+func writeManifestBounded(path string, manifest Manifest, limit int64) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("create manifest directory: %w", err)
 	}
@@ -341,7 +404,8 @@ func writeManifest(path string, manifest Manifest) error {
 		_ = temporary.Close()
 		return err
 	}
-	encoder := json.NewEncoder(temporary)
+	bounded := &manifestLimitWriter{writer: temporary, limit: limit}
+	encoder := json.NewEncoder(bounded)
 	encoder.SetIndent("", "  ")
 	if err := encoder.Encode(manifest); err != nil {
 		_ = temporary.Close()
@@ -365,6 +429,21 @@ func writeManifest(path string, manifest Manifest) error {
 		return fmt.Errorf("publish freshness manifest: %w", err)
 	}
 	return nil
+}
+
+type manifestLimitWriter struct {
+	writer  io.Writer
+	limit   int64
+	written int64
+}
+
+func (writer *manifestLimitWriter) Write(value []byte) (int, error) {
+	if int64(len(value)) > writer.limit-writer.written {
+		return 0, fmt.Errorf("encoded freshness manifest exceeds %d bytes", writer.limit)
+	}
+	n, err := writer.writer.Write(value)
+	writer.written += int64(n)
+	return n, err
 }
 
 func (m Manager) provider() Provider {

@@ -1,4 +1,4 @@
-# Weave: a deterministic semantic index for code
+# Weave: a deterministic semantic index for local knowledge
 
 ## Status
 
@@ -10,11 +10,12 @@ written rationale.
 
 ## The idea
 
-Weave is a local-first, Git-aware semantic index for source code. It assembles
-precise facts from language-native compiler tooling and existing open standards,
-stores those facts in a compact deterministic database, incrementally refreshes
-only what changed, and exposes a stable command-line interface for humans and
-coding agents.
+Weave is a local-first, Git-aware semantic index for the knowledge encoded on
+disk. It assembles precise facts from language-native compiler tooling,
+structured content, repository topology, and existing open standards, stores
+those facts in a compact deterministic database, incrementally refreshes only
+what changed, and exposes a stable command-line interface for humans and coding
+agents.
 
 Weave does not contain an LLM. It gives an LLM better evidence.
 
@@ -164,6 +165,26 @@ toolchain consistently, not translating every language into Go.
 Every relationship carries a kind, source location when available, provider,
 and confidence class. Results distinguish exact compiler facts, declared build
 relationships, generated relationships, inferences, and ambiguities.
+
+### The workspace is semantic, even when it does not compile
+
+Files, directories, documents, headings, routes, topics, links, embeds, and
+generated representations are first-class graph entities. A repository may be
+a website, a profile, a book, a policy corpus, or a collection of structured
+notes and still have a valuable semantic index. Buildability is not the
+admission test for knowledge.
+
+Structured-content providers use maintained parsers for their formats, retain
+source ranges, and label syntactic and declared evidence honestly. They do not
+execute site generators, templates, includes, diagrams, notebooks, or embedded
+code during safe automatic indexing. Compiler providers remain authoritative
+for compilable source; content providers connect prose and topology to those
+facts through stable repository/path identities.
+
+The long-term product is an index of selected local worktrees that lets a user,
+CLI, or agent navigate the semantics of files on disk faster than rediscovering
+them through raw filesystem traversal. Cross-repository catalog queries are a
+core part of that experience, not a hosted service.
 
 ## Explicit non-goals
 
@@ -352,6 +373,27 @@ provide best-effort declarations, imports, and syntactic calls for otherwise
 unsupported languages. Its provider and `Syntactic` evidence class are visible
 in every affected result.
 
+### Structured content and non-compiling artifacts
+
+Use source-only, format-native parsers for structured artifacts. The baseline
+workspace provider inventories Git-visible files and parses CommonMark/GFM,
+YAML front matter, selected inert HTML, headings, links, embeds, fenced blocks,
+routes, series, topics, and explicit generator provenance. Stable document and
+path IDs join those facts to compiler documents and across cataloged
+repositories.
+
+Renderer dialects are versioned profiles. GitHub repository Markdown, GitHub
+Pages/Jekyll, Hugo, mdBook, wikis, MDX, and note-taking syntax do not silently
+share heading, route, template, or include semantics. A provider may statically
+interpret a declared subset, but it must not run a builder or claim rendered
+truth it did not establish.
+
+Because this provider is always present, a malformed, non-UTF-8, oversized, or
+unsupported structured artifact degrades to bounded topology-only facts rather
+than blocking unrelated compiler queries. Unsupported and ambiguous references
+do not become invented graph endpoints; a future first-class content-reference
+fact will retain raw syntax, status, candidates, and diagnostics.
+
 ## Fact and evidence model
 
 Core entities include:
@@ -368,6 +410,10 @@ Core entities include:
 - Edge: directed typed relationship with evidence.
 - External symbol: referenced dependency not defined in an indexed repository.
 - Rule: a deterministic architecture constraint evaluated over facts.
+- Workspace resource: a repository, directory, file, asset, route, topic, or
+  external URL that can participate in navigation without compiling.
+- Structured section: a source-addressable heading or code block within a
+  content document.
 
 Evidence classes:
 
@@ -640,6 +686,11 @@ weave
   path
   impact
   dependencies
+  workspace
+    find
+    outline
+    links
+    backlinks
   architecture
     check
   repos

@@ -105,6 +105,23 @@ emit several `definition` occurrences for languages with repeated bindings.
 Queries should prefer those complete occurrences. Until a protobuf v1 schema is
 published, the Go model and this fixture must change together.
 
+The built-in workspace provider owns one path symbol for every Git-visible
+file. An adapter can join compiler truth to that symbol by emitting an exact
+`defines` edge from this provider-neutral endpoint to each declaration it
+resolves in the file:
+
+```text
+"workspace-file:" + hex(sha256(
+  "weave-workspace/v1\0file\0" + repository_identity + "\0" + repository_path
+))
+```
+
+`repository_path` is the exact case-sensitive `/`-spelled Git path. The adapter
+does not emit or own the path symbol; an absent workspace provider is a valid
+open endpoint. The ID excludes checkout location, branch, content hash,
+toolchain, and provider version. The Go provider implements this join first;
+other adapters may adopt it without changing the wire format.
+
 ## Atomicity, bounds, and failure
 
 The host stages and validates the complete stream before publishing anything.

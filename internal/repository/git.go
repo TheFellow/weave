@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"os/exec"
@@ -175,13 +176,21 @@ func (r Repository) Inspect(ctx context.Context) (State, error) {
 	}
 	for i := range state.Changes {
 		path := filepath.Join(r.Root, filepath.FromSlash(state.Changes[i].Path))
-		content, readErr := os.ReadFile(path)
-		if readErr == nil {
-			digest := sha256.Sum256(content)
-			state.Changes[i].ContentHash = "sha256:" + hex.EncodeToString(digest[:])
-		} else if !errors.Is(readErr, os.ErrNotExist) {
+		info, statErr := os.Lstat(path)
+		if errors.Is(statErr, os.ErrNotExist) {
+			continue
+		}
+		if statErr != nil {
+			return State{}, fmt.Errorf("inspect changed path %q: %w", state.Changes[i].Path, statErr)
+		}
+		if !info.Mode().IsRegular() {
+			continue
+		}
+		digest, readErr := hashRegularFile(path, info)
+		if readErr != nil {
 			return State{}, fmt.Errorf("hash changed path %q: %w", state.Changes[i].Path, readErr)
 		}
+		state.Changes[i].ContentHash = digest
 	}
 	slices.SortFunc(state.Changes, func(a, b Change) int {
 		if comparison := strings.Compare(a.Path, b.Path); comparison != 0 {
@@ -190,6 +199,26 @@ func (r Repository) Inspect(ctx context.Context) (State, error) {
 		return strings.Compare(a.OriginalPath, b.OriginalPath)
 	})
 	return state, nil
+}
+
+func hashRegularFile(name string, expected os.FileInfo) (string, error) {
+	file, err := os.Open(name)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	opened, err := file.Stat()
+	if err != nil {
+		return "", err
+	}
+	if !opened.Mode().IsRegular() || !os.SameFile(expected, opened) {
+		return "", errors.New("path changed identity before hashing")
+	}
+	hash := sha256.New()
+	if _, err := io.Copy(hash, file); err != nil {
+		return "", err
+	}
+	return "sha256:" + hex.EncodeToString(hash.Sum(nil)), nil
 }
 
 func parsePorcelainV2(data []byte) ([]Change, error) {

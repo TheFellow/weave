@@ -29,6 +29,7 @@ type packageAnalysis struct {
 	concretes  map[*types.TypeName]types.Type
 	functions  []functionExtent
 	localPaths map[string]bool
+	documents  map[string]string
 	version    string
 }
 
@@ -46,7 +47,7 @@ func analyzePackage(repository, root string, pkg *packages.Package, surfaces map
 	}
 	analysis := &packageAnalysis{
 		repository: repository, root: root, pkg: pkg,
-		objects: map[types.Object]string{}, types: map[*types.TypeName]string{}, localPaths: localPaths, version: version,
+		objects: map[types.Object]string{}, types: map[*types.TypeName]string{}, localPaths: localPaths, documents: map[string]string{}, version: version,
 		interfaces: map[*types.TypeName]*types.Interface{}, concretes: map[*types.TypeName]types.Type{},
 		facts: graph.UnitFacts{Unit: graph.Unit{
 			ID: unitID, Provider: "weave-go", ProviderVersion: version,
@@ -140,8 +141,10 @@ func (analysis *packageAnalysis) addDocuments() error {
 			return err
 		}
 		digest := sha256.Sum256(content)
+		documentID := analysis.documentID(path)
+		analysis.documents[documentID] = path
 		analysis.facts.Documents = append(analysis.facts.Documents, graph.Document{
-			ID: analysis.documentID(path), UnitID: analysis.facts.Unit.ID, Path: path, Language: "go",
+			ID: documentID, UnitID: analysis.facts.Unit.ID, Path: path, Language: "go",
 			ContentHash: "sha256:" + hex.EncodeToString(digest[:]), Provider: "weave-go", ProviderVersion: analysis.version,
 		})
 	}
@@ -178,6 +181,11 @@ func (analysis *packageAnalysis) addDefinitions() {
 		analysis.facts.Edges = append(analysis.facts.Edges, analysis.edge(
 			analysis.packageID(analysis.pkg.PkgPath), id, graph.EdgeDefines, documentID, sourceRange,
 		))
+		if sourcePath := analysis.documents[documentID]; sourcePath != "" {
+			analysis.facts.Edges = append(analysis.facts.Edges, analysis.edge(
+				graph.WorkspacePathID(analysis.repository, sourcePath), id, graph.EdgeDefines, documentID, sourceRange,
+			))
+		}
 		if owner := analysis.memberOwner(object); owner != "" {
 			analysis.facts.Edges = append(analysis.facts.Edges, analysis.edge(owner, id, graph.EdgeContains, documentID, sourceRange))
 		}

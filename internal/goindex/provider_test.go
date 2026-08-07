@@ -87,6 +87,10 @@ func TestProviderEmitsCompilerResolvedGoFacts(t *testing.T) {
 	if !hasEdge(edges, graph.EdgeCalls, "Invoke", "Handle", symbols) {
 		t.Error("missing interface Invoke -> Handler.Handle call")
 	}
+	runID := symbolID(symbols, "Run")
+	if runID == "" || !hasExactEdge(edges, graph.EdgeDefines, graph.WorkspacePathID("example.test/repository", "impl/impl.go"), runID) {
+		t.Error("missing provider-neutral workspace path -> Run definition edge")
+	}
 	if countKind(edges, graph.EdgeImports) < 2 || countKind(edges, graph.EdgeDependsOn) < 2 {
 		t.Fatalf("missing import/dependency facts: %#v", edges)
 	}
@@ -293,6 +297,24 @@ func symbolName(symbols []graph.Symbol, id string) string {
 		}
 	}
 	return ""
+}
+
+func symbolID(symbols []graph.Symbol, name string) string {
+	for _, symbol := range symbols {
+		if symbol.DisplayName == name {
+			return symbol.ID
+		}
+	}
+	return ""
+}
+
+func hasExactEdge(edges []graph.Edge, kind graph.EdgeKind, from, to string) bool {
+	for _, edge := range edges {
+		if edge.Kind == kind && edge.From == from && edge.To == to {
+			return true
+		}
+	}
+	return false
 }
 
 func hasEdge(edges []graph.Edge, kind graph.EdgeKind, from, to string, symbols []graph.Symbol) bool {

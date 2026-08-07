@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/TheFellow/weave/internal/adapter"
@@ -38,6 +39,7 @@ func New(app application.Service, streams Streams) *cli.Command {
 		traversal(app, streams, "path", "find a bounded path between symbols", 2),
 		impactCommand(app, streams),
 		lookup(app, streams, "dependencies", "find direct semantic dependencies"),
+		workspaceCommands(app, streams),
 		architectureCommand(app, streams),
 		repositoryCommands(app, streams),
 		ciCommands(app, streams),
@@ -48,6 +50,28 @@ func New(app application.Service, streams Streams) *cli.Command {
 		versionCommand(app, streams),
 	}
 	return root
+}
+
+func workspaceCommands(app application.Service, streams Streams) *cli.Command {
+	child := func(name, usage string) *cli.Command {
+		flags := []cli.Flag{
+			jsonFlag(), limitFlag(),
+			&cli.IntFlag{Name: "max-depth", Value: 8, Usage: "maximum containment depth", Validator: func(value int) error {
+				if value < 1 || value > 100 {
+					return fmt.Errorf("must be between 1 and 100")
+				}
+				return nil
+			}},
+		}
+		flags = append(flags, federationFlags()...)
+		return &cli.Command{Name: name, Usage: usage, Flags: flags, Action: invoke(app, streams, "workspace "+name, 1, 1)}
+	}
+	return &cli.Command{Name: "workspace", Aliases: []string{"ws"}, Usage: "navigate files and structured content as a semantic graph", Commands: []*cli.Command{
+		child("find", "find files, documents, sections, routes, topics, and resources"),
+		child("outline", "show a document or directory containment tree"),
+		child("links", "show links and semantic content relationships"),
+		child("backlinks", "show incoming content relationships"),
+	}}
 }
 
 func ciCommands(app application.Service, streams Streams) *cli.Command {
@@ -388,6 +412,13 @@ func renderInvocation(streams Streams, response application.Response, jsonOutput
 			return err
 		}
 	}
+	if response.Freshness != nil {
+		for _, diagnostic := range response.Freshness.Diagnostics {
+			if _, err := fmt.Fprintln(streams.Stderr, diagnostic); err != nil {
+				return err
+			}
+		}
+	}
 	for _, diagnostic := range response.Diagnostics {
 		if _, err := fmt.Fprintln(streams.Stderr, diagnostic); err != nil {
 			return err
@@ -461,6 +492,9 @@ func render(writer io.Writer, response application.Response, jsonOutput bool) er
 		}
 		_, err = fmt.Fprintln(writer)
 		return err
+	}
+	if strings.HasPrefix(response.Command, "workspace ") {
+		return renderWorkspace(writer, response)
 	}
 	for _, symbol := range response.Symbols {
 		if _, err := fmt.Fprintf(writer, "%s\t%s\t%s\t%s:%d:%d\n", symbol.ID, symbol.Kind, symbol.DisplayName, symbol.DocumentID, symbol.Definition.Start.Line+1, symbol.Definition.Start.Column+1); err != nil {
@@ -560,4 +594,45 @@ func render(writer io.Writer, response application.Response, jsonOutput bool) er
 		return err
 	}
 	return nil
+}
+
+func renderWorkspace(writer io.Writer, response application.Response) error {
+	byID := make(map[string]graph.Symbol, len(response.Symbols))
+	for _, symbol := range response.Symbols {
+		byID[symbol.ID] = symbol
+	}
+	if response.Command == "workspace links" || response.Command == "workspace backlinks" {
+		for _, edge := range response.Edges {
+			endpoint := edge.To
+			if response.Command == "workspace backlinks" {
+				endpoint = edge.From
+			}
+			label := "[unmaterialized endpoint]"
+			if symbol, ok := byID[endpoint]; ok {
+				label = symbol.StableName
+			}
+			if _, err := fmt.Fprintf(writer, "%s\t%s\t%s\n", edge.Kind, label, edge.Evidence); err != nil {
+				return err
+			}
+		}
+		return renderTruncation(writer, response.Truncated)
+	}
+	for _, symbol := range response.Symbols {
+		location := symbol.StableName
+		if symbol.DocumentID != "" {
+			location = fmt.Sprintf("%s:%d:%d", symbol.StableName, symbol.Definition.Start.Line+1, symbol.Definition.Start.Column+1)
+		}
+		if _, err := fmt.Fprintf(writer, "%s\t%s\t%s\t%s\n", symbol.Kind, location, symbol.DisplayName, symbol.Evidence); err != nil {
+			return err
+		}
+	}
+	return renderTruncation(writer, response.Truncated)
+}
+
+func renderTruncation(writer io.Writer, truncated bool) error {
+	if !truncated {
+		return nil
+	}
+	_, err := fmt.Fprintln(writer, "... truncated")
+	return err
 }

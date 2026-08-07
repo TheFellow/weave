@@ -1,9 +1,11 @@
 # Weave
 
-Weave is a local-first, Git-aware semantic index for source code. It extracts
-compiler-backed facts, keeps derived state outside commits, and exposes bounded,
-deterministic CLI queries for people and coding agents. There is no model,
-hosted service, or required daemon in the indexing path.
+Weave is a local-first, Git-aware semantic index for the knowledge encoded in a
+workspace. It combines compiler-backed facts with files, structured documents,
+sections, links, assets, routes, and metadata; keeps derived state outside
+commits; and exposes bounded deterministic CLI queries for people and coding
+agents. There is no model, hosted service, or required daemon in the indexing
+path.
 
 > **Status:** early alpha. Native Go indexing and the query/storage lifecycle
 > are usable. The compiler-native C#/F# adapter participates in query-driven
@@ -55,6 +57,40 @@ coordinates in JSON facts.
 `dependencies` returns direct `depends-on` and `imports` edges. Use `path` with
 `--kind depends-on` for a bounded transitive route. Every edge includes its
 provider and evidence class in JSON/export output.
+
+## Workspace and content navigation
+
+The built-in source-only workspace provider indexes every Git-visible path and
+parses Markdown/GFM, YAML front matter, inert HTML headings and links, fenced
+blocks, routes, topics, series, and explicit generated-from declarations. It
+does not run Jekyll, Liquid, Mermaid, embedded examples, plugins, or network
+requests. Malformed, non-UTF-8, or oversized structured files degrade to safe
+file-topology facts, so prose cannot make compiler-backed queries unavailable.
+That degradation is persisted with the current derived manifest and reported
+on stderr (and in JSON freshness diagnostics); transient read/identity failures
+abort publication and retry on a later invocation.
+
+```sh
+weave workspace find "presentation surfaces"
+weave workspace outline README.md
+weave workspace links README.md
+weave workspace backlinks docs/design.md
+weave workspace backlinks docs/design.md --scope catalog
+```
+
+`ws` is an alias for `workspace`. Documents, sections, directories, assets, and
+routes have stable repository-qualified graph identities. Relative Markdown
+links resolve against Git's exact path casing; known headings and declared
+permalinks are targetable. GitHub URLs remain real URL resources, with an
+inferred `resolves-to` edge only for unambiguous conventional refs so a
+cataloged repository can join them without discarding the authored URL or ref.
+Results retain `syntactic`, `declared`,
+`generated`, or `exact` evidence instead of treating prose as compiler truth.
+Compiler providers can join exact declarations to the same path anchors, so
+default impact traversal includes incoming links and embeds: changing a source
+file or asset can surface the READMEs and articles that explain or display it.
+See [ADR 0010](.ai/decisions/0010-workspace-and-structured-content-index.md)
+for the safe source-profile boundary and current renderer limitations.
 
 Exact relationships that compilers cannot establish can be checked into
 `.weave/bridges.json`. These declared/generated `depends-on`, `documents`, and
@@ -158,7 +194,10 @@ dependencies, interfaces/implementations, and direct static calls. C# covers
 compiler-resolved calls and project relationships; the initial F# slice omits
 call edges. Python covers compiler lexical bindings while deliberately omitting
 dynamic attribute/type resolution. Exact cross-language relationships use checked-in
-declared/generated bridges. Finer-grained .NET refresh, fuzzy search,
+declared/generated bridges. The built-in workspace provider covers Git-visible
+topology and the initial CommonMark/GFM plus static Jekyll-shaped content slice;
+renderer-complete profiles and content diagnostics remain future work.
+Finer-grained .NET refresh, fuzzy search,
 hooks/watch mode, MCP, automatic discovery of third-party language adapters,
 additional languages, and signed package-manager distribution remain future
 work.

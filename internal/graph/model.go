@@ -46,6 +46,10 @@ const (
 	EdgeHandles      EdgeKind = "handles"
 	EdgeReads        EdgeKind = "reads"
 	EdgeWrites       EdgeKind = "writes"
+	EdgeLinksTo      EdgeKind = "links-to"
+	EdgeEmbeds       EdgeKind = "embeds"
+	EdgeMemberOf     EdgeKind = "member-of"
+	EdgeResolvesTo   EdgeKind = "resolves-to"
 )
 
 // Position is a zero-based UTF-8 byte line/column position. Byte is the
@@ -87,18 +91,18 @@ type Document struct {
 
 // Symbol is a stable semantic entity, optionally with a definition location.
 type Symbol struct {
-	ID             string   `json:"id"`
-	UnitID         string   `json:"unit_id"`
-	StableName     string   `json:"stable_name"`
-	DisplayName    string   `json:"display_name"`
-	NormalizedName string   `json:"normalized_name"`
-	Kind           string   `json:"kind"`
-	DocumentID     string   `json:"document_id,omitempty"`
+	ID             string `json:"id"`
+	UnitID         string `json:"unit_id"`
+	StableName     string `json:"stable_name"`
+	DisplayName    string `json:"display_name"`
+	NormalizedName string `json:"normalized_name"`
+	Kind           string `json:"kind"`
+	DocumentID     string `json:"document_id,omitempty"`
 	// Definition is the canonical display anchor. All binding sites are retained
 	// as definition occurrences because some languages permit repeated bindings.
-	Definition     Range    `json:"definition"`
-	Provider       string   `json:"provider"`
-	Evidence       Evidence `json:"evidence"`
+	Definition Range    `json:"definition"`
+	Provider   string   `json:"provider"`
+	Evidence   Evidence `json:"evidence"`
 }
 
 // Occurrence is a definition or reference to a symbol in source.
@@ -299,7 +303,7 @@ func validEvidence(value Evidence) bool {
 }
 
 func validEdgeKind(value EdgeKind) bool {
-	return slices.Contains([]EdgeKind{EdgeDefines, EdgeReferences, EdgeCalls, EdgeImports, EdgeContains, EdgeExtends, EdgeImplements, EdgeInstantiates, EdgeDependsOn, EdgeTests, EdgeGenerates, EdgeDocuments, EdgeExposes, EdgeHandles, EdgeReads, EdgeWrites}, value)
+	return slices.Contains([]EdgeKind{EdgeDefines, EdgeReferences, EdgeCalls, EdgeImports, EdgeContains, EdgeExtends, EdgeImplements, EdgeInstantiates, EdgeDependsOn, EdgeTests, EdgeGenerates, EdgeDocuments, EdgeExposes, EdgeHandles, EdgeReads, EdgeWrites, EdgeLinksTo, EdgeEmbeds, EdgeMemberOf, EdgeResolvesTo}, value)
 }
 
 // IsEdgeKind reports whether value is part of the version-one edge vocabulary.

@@ -30,6 +30,11 @@ import (
 
 const QuerySchema = "weave.query/v1"
 
+// Native runtimes can have cold-start latency under concurrent CI load. Keep
+// doctor bounded without treating a healthy adapter as absent after five
+// seconds of scheduler or runtime startup delay.
+const adapterDoctorTimeout = 15 * time.Second
+
 // Invocation is a validated operation from a delivery surface.
 type Invocation struct {
 	Command        string
@@ -191,6 +196,8 @@ func (app Local) Execute(ctx context.Context, invocation Invocation) (Response, 
 	switch invocation.Command {
 	case "symbols":
 		response.Symbols, response.Truncated, err = db.FindSymbols(ctx, invocation.Arguments[0], invocation.Limit)
+	case "workspace find", "workspace outline", "workspace links", "workspace backlinks":
+		err = executeWorkspace(ctx, db, &response, invocation)
 	case "definition":
 		response.Symbols, response.Occurrences, response.Truncated, err = findDefinitions(ctx, db, invocation.Arguments[0], invocation.Limit)
 	case "references":
@@ -226,7 +233,7 @@ func (app Local) Execute(ctx context.Context, invocation Invocation) (Response, 
 	case "impact":
 		kinds := invocation.Kinds
 		if len(kinds) == 0 {
-			kinds = []graph.EdgeKind{graph.EdgeCalls, graph.EdgeReferences, graph.EdgeDependsOn, graph.EdgeImplements, graph.EdgeImports, graph.EdgeTests}
+			kinds = []graph.EdgeKind{graph.EdgeCalls, graph.EdgeReferences, graph.EdgeDependsOn, graph.EdgeImplements, graph.EdgeImports, graph.EdgeTests, graph.EdgeLinksTo, graph.EdgeEmbeds}
 		}
 		var roots []string
 		var snapshot graph.Snapshot
@@ -452,6 +459,7 @@ func (app Local) federated(ctx context.Context, response Response, invocation In
 	if maxRepos == 0 {
 		maxRepos = 32
 	}
+	var freshnessDiagnostics []string
 	store, err := federation.OpenFresh(ctx, path, invocation.Repositories, maxRepos, func(ctx context.Context, root string) error {
 		if app.FreshnessFor == nil {
 			return errors.New("automatic freshness is unavailable in this application")
@@ -460,7 +468,10 @@ func (app Local) federated(ctx context.Context, response Response, invocation In
 		if manager == nil {
 			return errors.New("freshness manager is unavailable")
 		}
-		_, err := manager.Ensure(ctx, false)
+		status, err := manager.Ensure(ctx, false)
+		for _, diagnostic := range status.Diagnostics {
+			freshnessDiagnostics = append(freshnessDiagnostics, status.RepositoryIdentity+": "+diagnostic)
+		}
 		return err
 	})
 	if err != nil {
@@ -470,6 +481,8 @@ func (app Local) federated(ctx context.Context, response Response, invocation In
 	switch invocation.Command {
 	case "symbols":
 		response.Symbols, response.Truncated, err = store.FindSymbols(ctx, invocation.Arguments[0], invocation.Limit)
+	case "workspace find", "workspace outline", "workspace links", "workspace backlinks":
+		err = executeWorkspace(ctx, store, &response, invocation)
 	case "definition":
 		response.Symbols, response.Occurrences, response.Truncated, err = findDefinitions(ctx, store, invocation.Arguments[0], invocation.Limit)
 	case "references":
@@ -504,7 +517,7 @@ func (app Local) federated(ctx context.Context, response Response, invocation In
 		}
 		kinds := invocation.Kinds
 		if len(kinds) == 0 {
-			kinds = []graph.EdgeKind{graph.EdgeCalls, graph.EdgeReferences, graph.EdgeDependsOn, graph.EdgeImplements, graph.EdgeImports, graph.EdgeTests}
+			kinds = []graph.EdgeKind{graph.EdgeCalls, graph.EdgeReferences, graph.EdgeDependsOn, graph.EdgeImplements, graph.EdgeImports, graph.EdgeTests, graph.EdgeLinksTo, graph.EdgeEmbeds}
 		}
 		var traversal query.Traversal
 		traversal, err = query.Impact(ctx, store, symbol.ID, kinds, bounds(invocation))
@@ -515,7 +528,8 @@ func (app Local) federated(ctx context.Context, response Response, invocation In
 	if err != nil {
 		return Response{}, fmt.Errorf("%s: %w", invocation.Command, err)
 	}
-	response.Diagnostics = store.Diagnostics()
+	response.Diagnostics = append(freshnessDiagnostics, store.Diagnostics()...)
+	slices.Sort(response.Diagnostics)
 	response.Sources = store.Sources()
 	return response, nil
 }
@@ -632,7 +646,7 @@ func inspectAdapters(ctx context.Context, doctor bool, runner adapter.Runner) []
 			status.Detail = "configured path unavailable: " + err.Error()
 		}
 		if doctor && status.Available && candidate.kind == "native" {
-			probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			probeCtx, cancel := context.WithTimeout(ctx, adapterDoctorTimeout)
 			capabilities, stderr, probeErr := runner.Describe(probeCtx, adapter.Executable{Path: path, Env: adapterEnvironment()})
 			cancel()
 			status.Checked = true
@@ -803,7 +817,7 @@ func (app Local) databasePath(ctx context.Context) (string, error) {
 
 func requiresDatabase(command string) bool {
 	switch command {
-	case "symbols", "definition", "references", "callers", "callees", "dependencies", "path", "impact", "export", "verify":
+	case "symbols", "definition", "references", "callers", "callees", "dependencies", "path", "impact", "export", "verify", "workspace find", "workspace outline", "workspace links", "workspace backlinks":
 		return true
 	default:
 		return false

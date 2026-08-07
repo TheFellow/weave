@@ -24,8 +24,9 @@ func TestEnsureRefreshesOnlyReturnedUnitsAndPublishesCompleteState(t *testing.T)
 	root := freshRepository(t)
 	provider := &fakeProvider{id: ProviderID{Name: "fixture", Version: "1"}}
 	provider.results = []Result{{
-		Batches: []graph.UnitFacts{facts("a", "Alpha"), facts("b", "Beta")},
-		Units:   []Unit{{ID: "b", InventoryDigest: "b1"}, {ID: "a", InventoryDigest: "a1"}},
+		Batches:     []graph.UnitFacts{facts("a", "Alpha"), facts("b", "Beta")},
+		Units:       []Unit{{ID: "b", InventoryDigest: "b1"}, {ID: "a", InventoryDigest: "a1"}},
+		Diagnostics: []string{"fixture warning"},
 	}, {
 		Batches: []graph.UnitFacts{facts("a", "AlphaChanged")},
 		Units:   []Unit{{ID: "a", InventoryDigest: "a2"}, {ID: "b", InventoryDigest: "b1"}},
@@ -36,7 +37,7 @@ func TestEnsureRefreshesOnlyReturnedUnitsAndPublishesCompleteState(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !first.Current || !first.Refreshed || provider.Calls() != 1 {
+	if !first.Current || !first.Refreshed || provider.Calls() != 1 || !slices.Equal(first.Diagnostics, []string{"fixture warning"}) {
 		t.Fatalf("first Ensure() = %#v, calls %d", first, provider.Calls())
 	}
 	manifest, err := readManifest(first.ManifestPath)
@@ -51,7 +52,7 @@ func TestEnsureRefreshesOnlyReturnedUnitsAndPublishesCompleteState(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !second.Current || second.Refreshed || provider.Calls() != 1 {
+	if !second.Current || second.Refreshed || provider.Calls() != 1 || !slices.Equal(second.Diagnostics, []string{"fixture warning"}) {
 		t.Fatalf("unchanged Ensure() = %#v, calls %d", second, provider.Calls())
 	}
 
@@ -115,6 +116,55 @@ func TestFailedRefreshNeverPublishesCurrentManifest(t *testing.T) {
 	}
 	if status.Current || status.Reason != "repository state changed" {
 		t.Fatalf("status after failed refresh = %#v", status)
+	}
+}
+
+func TestEnsureDoesNotPublishFactsFromAChangingWorktree(t *testing.T) {
+	ctx := context.Background()
+	root := freshRepository(t)
+	provider := &fakeProvider{
+		id: ProviderID{Name: "fixture", Version: "1"},
+		results: []Result{
+			{Batches: []graph.UnitFacts{facts("a", "Alpha")}, Units: []Unit{{ID: "a"}}},
+			{Batches: []graph.UnitFacts{facts("a", "Alpha")}, Units: []Unit{{ID: "a"}}},
+		},
+		mutate: func(Request) { writeFreshFile(t, root, "main.go", "package changed\n") },
+	}
+	manager := Manager{Directory: root, Provider: provider}
+	if _, err := manager.Ensure(ctx, false); err == nil || !strings.Contains(err.Error(), "state changed during provider refresh") {
+		t.Fatalf("changing refresh error = %v", err)
+	}
+	repo, err := repository.Discover(ctx, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(repo.StorageDir, "manifest.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("changing refresh published a manifest: %v", err)
+	}
+	status, err := manager.Ensure(ctx, false)
+	if err != nil || !status.Current {
+		t.Fatalf("retry status=%#v error=%v", status, err)
+	}
+}
+
+func TestManifestReadAndWriteShareEncodedBound(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "manifest.json")
+	manifest := Manifest{Schema: manifestSchema, Complete: true, Diagnostics: []string{strings.Repeat("\x01", 64)}}
+	if err := writeManifestBounded(path, manifest, 128); err == nil || !strings.Contains(err.Error(), "encoded freshness manifest exceeds") {
+		t.Fatalf("bounded write error = %v", err)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("oversized manifest was published: %v", err)
+	}
+	if err := writeManifestBounded(path, manifest, 4096); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readManifestBounded(path, 128); err == nil || !strings.Contains(err.Error(), "encoded size exceeds") {
+		t.Fatalf("bounded read error = %v", err)
+	}
+	decoded, err := readManifestBounded(path, 4096)
+	if err != nil || !slices.Equal(decoded.Diagnostics, manifest.Diagnostics) {
+		t.Fatalf("decoded manifest=%#v error=%v", decoded, err)
 	}
 }
 
@@ -186,6 +236,7 @@ type fakeProvider struct {
 	results  []Result
 	requests []Request
 	err      error
+	mutate   func(Request)
 }
 
 func (p *fakeProvider) ID() ProviderID { return p.id }
@@ -193,6 +244,11 @@ func (p *fakeProvider) Refresh(_ context.Context, request Request) (Result, erro
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.requests = append(p.requests, request)
+	if p.mutate != nil {
+		mutate := p.mutate
+		p.mutate = nil
+		mutate(request)
+	}
 	if p.err != nil {
 		return Result{}, p.err
 	}

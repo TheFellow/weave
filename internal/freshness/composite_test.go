@@ -12,7 +12,7 @@ import (
 )
 
 func TestCompositeProviderKeepsInventoriesDisjointAndRemovesAbsentOwner(t *testing.T) {
-	left := compositeFixture{id: ProviderID{Name: "left", Version: "1"}, result: Result{Units: []Unit{{ID: "l"}}}}
+	left := compositeFixture{id: ProviderID{Name: "left", Version: "1"}, result: Result{Units: []Unit{{ID: "l"}}, Diagnostics: []string{"degraded docs/a.md"}}}
 	right := compositeFixture{id: ProviderID{Name: "right", Version: "1"}, result: Result{Units: []Unit{{ID: "r"}}}}
 	provider := CompositeProvider{Providers: []Provider{left, right}}
 	result, err := provider.Refresh(context.Background(), Request{Previous: &Manifest{Units: []Unit{{ID: "old-left", Owner: "left"}, {ID: "gone", Owner: "gone"}}}})
@@ -24,6 +24,41 @@ func TestCompositeProviderKeepsInventoriesDisjointAndRemovesAbsentOwner(t *testi
 	}
 	if got, want := result.Removed, []string{"gone", "old-left"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("removed = %q, want %q", got, want)
+	}
+	if got, want := result.Diagnostics, []string{"left: degraded docs/a.md"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("diagnostics = %q, want %q", got, want)
+	}
+}
+
+func TestCompositeProviderPassesOwnerlessUnitsToChildren(t *testing.T) {
+	child := &capturingCompositeFixture{id: ProviderID{Name: "child", Version: "1"}}
+	provider := CompositeProvider{Providers: []Provider{child}}
+	previous := &Manifest{Units: []Unit{{ID: "unit", Owner: "child", InputFingerprint: "same"}}}
+	result, err := provider.Refresh(context.Background(), Request{Previous: previous})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if child.previous.Owner != "" {
+		t.Fatalf("child previous owner = %q, want empty", child.previous.Owner)
+	}
+	if len(result.Batches) != 0 || len(result.Units) != 1 || result.Units[0].Owner != "child" {
+		t.Fatalf("unexpected reused result: %#v", result)
+	}
+}
+
+func TestCompositeProviderUpgradesLegacyDirectManifest(t *testing.T) {
+	child := &capturingCompositeFixture{id: ProviderID{Name: "child", Version: "1"}}
+	provider := CompositeProvider{Providers: []Provider{child}}
+	previous := &Manifest{Provider: child.id, Units: []Unit{{ID: "unit", InputFingerprint: "same"}, {ID: "stale"}}}
+	result, err := provider.Refresh(context.Background(), Request{Previous: previous})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := result.Removed, []string{"stale"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("removed = %q, want %q", got, want)
+	}
+	if err := validateResult(result, previous); err != nil {
+		t.Fatalf("legacy upgrade did not validate: %v", err)
 	}
 }
 
@@ -65,6 +100,19 @@ func TestCompositeManagerPublishesProviderFactsWithoutCrossDeletion(t *testing.T
 type compositeFixture struct {
 	id     ProviderID
 	result Result
+}
+
+type capturingCompositeFixture struct {
+	id       ProviderID
+	previous Unit
+}
+
+func (fixture *capturingCompositeFixture) ID() ProviderID { return fixture.id }
+func (fixture *capturingCompositeFixture) Refresh(_ context.Context, request Request) (Result, error) {
+	if request.Previous != nil && len(request.Previous.Units) != 0 {
+		fixture.previous = request.Previous.Units[0]
+	}
+	return Result{Units: []Unit{{ID: "unit", InputFingerprint: "same"}}}, nil
 }
 
 func (fixture compositeFixture) ID() ProviderID { return fixture.id }

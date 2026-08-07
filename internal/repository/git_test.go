@@ -197,6 +197,45 @@ func TestReadOnlyGitCommandsDisableRepositoryFSMonitor(t *testing.T) {
 	}
 }
 
+func TestInspectDoesNotFollowChangedSymlinks(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation commonly requires elevated privileges")
+	}
+	root := newRepository(t)
+	writeFile(t, root, "README.md", "# Safe\n")
+	git(t, root, "add", ".")
+	git(t, root, "commit", "-m", "initial")
+	outside := filepath.Join(t.TempDir(), "outside-secret")
+	writeFile(t, filepath.Dir(outside), filepath.Base(outside), "must not be hashed")
+	if err := os.Symlink(outside, filepath.Join(root, "linked.md")); err != nil {
+		t.Fatal(err)
+	}
+	repo, err := Discover(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := repo.Inspect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertChange(t, state.Changes, "linked.md", "", '?', '?', '?', false)
+}
+
+func TestHashRegularFileRejectsPathIdentityChange(t *testing.T) {
+	root := t.TempDir()
+	first := filepath.Join(root, "first")
+	second := filepath.Join(root, "second")
+	writeFile(t, root, "first", "first")
+	writeFile(t, root, "second", "second")
+	expected, err := os.Lstat(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := hashRegularFile(second, expected); err == nil {
+		t.Fatal("hash accepted a different file identity")
+	}
+}
+
 func assertChange(t *testing.T, changes []Change, path, original string, kind, index, worktree byte, hasHash bool) {
 	t.Helper()
 	for _, change := range changes {

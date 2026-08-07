@@ -52,10 +52,15 @@ func (provider CompositeProvider) Refresh(ctx context.Context, request Request) 
 		result.Batches = append(result.Batches, childResult.Batches...)
 		result.Removed = append(result.Removed, childResult.Removed...)
 		result.Units = append(result.Units, childResult.Units...)
+		for _, diagnostic := range childResult.Diagnostics {
+			result.Diagnostics = append(result.Diagnostics, owner+": "+diagnostic)
+		}
 	}
 	if request.Previous != nil {
 		for _, unit := range request.Previous.Units {
-			if unit.Owner != "" && !active[unit.Owner] {
+			// The composite inventory is authoritative. This also cleans up
+			// ownerless units written by a pre-composite provider manifest.
+			if _, present := seenUnits[unit.ID]; !present {
 				result.Removed = append(result.Removed, unit.ID)
 			}
 		}
@@ -68,6 +73,11 @@ func (provider CompositeProvider) Refresh(ctx context.Context, request Request) 
 	})
 	slices.Sort(result.Removed)
 	result.Removed = slices.Compact(result.Removed)
+	slices.Sort(result.Diagnostics)
+	result.Diagnostics = slices.Compact(result.Diagnostics)
+	if len(result.Diagnostics) > 256 {
+		result.Diagnostics = append(result.Diagnostics[:255], "weave-composite: additional provider diagnostics truncated")
+	}
 	return result, nil
 }
 
@@ -81,6 +91,9 @@ func ownedManifest(previous *Manifest, child ProviderID, owner string) *Manifest
 	legacy := previous.Provider == child
 	for _, unit := range previous.Units {
 		if unit.Owner == owner || (legacy && unit.Owner == "") {
+			// Ownership is composite bookkeeping, not part of a child's
+			// semantic fingerprint. Providers always compare ownerless units.
+			unit.Owner = ""
 			copy.Units = append(copy.Units, unit)
 		}
 	}

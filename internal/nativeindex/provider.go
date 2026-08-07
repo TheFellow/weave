@@ -21,6 +21,7 @@ import (
 	"github.com/TheFellow/weave/internal/freshness"
 	"github.com/TheFellow/weave/internal/goindex"
 	"github.com/TheFellow/weave/internal/repository"
+	"github.com/TheFellow/weave/internal/workspaceindex"
 )
 
 const maxInputBytes = 512 << 20
@@ -30,7 +31,7 @@ const maxGitInventoryBytes = 16 << 20
 // Default returns the automatic provider set for a worktree. Only known
 // compiler-native adapter names or explicit environment paths are trusted.
 func Default(directory string) freshness.Provider {
-	providers := []freshness.Provider{goindex.Provider{}, bridge.Provider{}}
+	providers := []freshness.Provider{workspaceindex.Provider{}, goindex.Provider{}, bridge.Provider{}}
 	candidates := []Provider{
 		{Name: "weave-dotnet", Path: configuredPath("WEAVE_DOTNET_ADAPTER", "weave-dotnet"), Directory: directory, Profile: DotNetInputs, Permissions: adapter.Permissions{BuildTool: true}},
 		{Name: "weave-python", Path: configuredPath("WEAVE_PYTHON_ADAPTER", "weave-python"), Directory: directory, Profile: PythonInputs, ProbeProviderVersion: true},

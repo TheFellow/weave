@@ -15,6 +15,12 @@ func impactRoots(snapshot graph.Snapshot, files, packages []string) ([]string, [
 		path := filepath.ToSlash(filepath.Clean(document.Path))
 		documentsByPath[path] = append(documentsByPath[path], document.ID)
 	}
+	pathSymbols := map[string][]string{}
+	for _, symbol := range snapshot.Symbols {
+		if symbol.Kind == "file" || symbol.Kind == "asset" || symbol.Kind == "symlink" || symbol.Kind == "document" {
+			pathSymbols[filepath.ToSlash(filepath.Clean(symbol.StableName))] = append(pathSymbols[filepath.ToSlash(filepath.Clean(symbol.StableName))], symbol.ID)
+		}
+	}
 	rootSet := map[string]bool{}
 	missing := []string{}
 	fileSet := map[string]bool{}
@@ -24,7 +30,10 @@ func impactRoots(snapshot graph.Snapshot, files, packages []string) ([]string, [
 			return nil, nil, fmt.Errorf("impact file must be a repository-relative path: %q", value)
 		}
 		fileSet[path] = true
-		if len(documentsByPath[path]) == 0 {
+		for _, id := range pathSymbols[path] {
+			rootSet[id] = true
+		}
+		if len(documentsByPath[path]) == 0 && len(pathSymbols[path]) == 0 {
 			missing = append(missing, "file:"+path)
 		}
 	}

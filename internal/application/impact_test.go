@@ -34,6 +34,14 @@ func TestImpactRootsReportsUnmatchedInputsWithoutDiscardingMatches(t *testing.T)
 	}
 }
 
+func TestImpactRootsIncludeWorkspaceFilesWithoutCompilerDocuments(t *testing.T) {
+	snapshot := graph.Snapshot{Symbols: []graph.Symbol{{ID: "asset", StableName: "assets/diagram.svg", Kind: "asset"}}}
+	roots, diagnostics, err := impactRoots(snapshot, []string{"assets/diagram.svg"}, nil)
+	if err != nil || len(diagnostics) != 0 || !reflect.DeepEqual(roots, []string{"asset"}) {
+		t.Fatalf("roots=%q diagnostics=%q err=%v", roots, diagnostics, err)
+	}
+}
+
 func TestAffectedTestsRequiresGraphOrTestDocumentEvidence(t *testing.T) {
 	snapshot := graph.Snapshot{
 		Documents: []graph.Document{{ID: "go-test", Path: "service_test.go"}, {ID: "ordinary", Path: "service.go"}},

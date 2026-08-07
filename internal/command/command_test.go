@@ -93,6 +93,44 @@ func TestApplicationErrorIsReturned(t *testing.T) {
 	}
 }
 
+func TestWorkspaceCommandTreeForwardsBoundedFederatedQueries(t *testing.T) {
+	t.Parallel()
+	app := &recordingApplication{}
+	root := command.New(app, command.Streams{Stdin: strings.NewReader(""), Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}})
+	if err := root.Run(context.Background(), []string{"weave", "ws", "backlinks", "README.md#design", "--scope", "catalog", "--repo", "github.com/TheFellow/example", "--limit", "25", "--max-depth", "4"}); err != nil {
+		t.Fatal(err)
+	}
+	want := application.Invocation{
+		Command: "workspace backlinks", Arguments: []string{"README.md#design"}, Limit: 25, MaxDepth: 4,
+		Scope: "catalog", Repositories: []string{"github.com/TheFellow/example"}, MaxRepos: 32,
+	}
+	if !reflect.DeepEqual(app.invocations, []application.Invocation{want}) {
+		t.Fatalf("invocations = %#v, want %#v", app.invocations, want)
+	}
+}
+
+func TestWorkspaceTextRenderingUsesStableNamesNotOpaqueIDs(t *testing.T) {
+	var output, diagnostics bytes.Buffer
+	response := application.Response{
+		Command:   "workspace backlinks",
+		Truncated: true,
+		Symbols:   []graph.Symbol{{ID: "opaque-source-id", StableName: "README.md#design", DisplayName: "Design", Kind: "section", Evidence: graph.EvidenceSyntactic}},
+		Edges:     []graph.Edge{{From: "opaque-source-id", To: "opaque-target-id", Kind: graph.EdgeLinksTo, Evidence: graph.EvidenceDeclared}},
+		Freshness: &freshness.Status{Diagnostics: []string{"weave-workspace: degraded README.md"}},
+	}
+	app := &recordingApplication{response: response}
+	root := command.New(app, command.Streams{Stdin: strings.NewReader(""), Stdout: &output, Stderr: &diagnostics})
+	if err := root.Run(context.Background(), []string{"weave", "workspace", "backlinks", "README.md"}); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := output.String(), "links-to\tREADME.md#design\tdeclared\n... truncated\n"; got != want {
+		t.Fatalf("workspace output = %q, want %q", got, want)
+	}
+	if got, want := diagnostics.String(), "weave-workspace: degraded README.md\n"; got != want {
+		t.Fatalf("workspace diagnostics = %q, want %q", got, want)
+	}
+}
+
 func TestRepositoryCatalogCommands(t *testing.T) {
 	ctx := context.Background()
 	repositoryRoot := commandRepository(t)
@@ -341,10 +379,14 @@ func TestAdapterDoctorReportsMissingToolsWithoutExecutingThem(t *testing.T) {
 type recordingApplication struct {
 	invocations []application.Invocation
 	err         error
+	response    application.Response
 }
 
 func (a *recordingApplication) Execute(_ context.Context, invocation application.Invocation) (application.Response, error) {
 	a.invocations = append(a.invocations, invocation)
+	if a.response.Command != "" {
+		return a.response, a.err
+	}
 	return application.Response{Schema: application.QuerySchema, Command: invocation.Command}, a.err
 }
 
