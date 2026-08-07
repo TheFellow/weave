@@ -58,7 +58,7 @@ jobs:
       - name: Lints
         run: cargo clippy --locked --manifest-path adapters/rust/Cargo.toml --all-targets -- -D warnings
       - name: Package
-        run: cargo package --locked --manifest-path adapters/rust/Cargo.toml
+        run: cargo package --locked --manifest-path adapters/rust/Cargo.toml --target-dir "${{ runner.temp }}/cargo-package"
 
   rust-analyzer-e2e:
     runs-on: ubuntu-latest
