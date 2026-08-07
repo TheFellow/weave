@@ -23,6 +23,54 @@ builds:
         -X github.com/TheFellow/weave/internal/buildinfo.Version={{.Version}}
         -X github.com/TheFellow/weave/internal/buildinfo.Commit={{.Commit}}
         -X github.com/TheFellow/weave/internal/buildinfo.Date={{.Date}}
+  - id: weave-cpp
+    main: ./adapters/cpp/cmd/weave-cpp
+    binary: weave-cpp
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+  - id: weave-typescript
+    main: ./adapters/typescript/cmd/weave-typescript
+    binary: weave-typescript
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+  - id: weave-jvm
+    main: ./adapters/jvm/cmd/weave-jvm
+    binary: weave-jvm
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
 
 archives:
   - id: weave
@@ -36,6 +84,20 @@ archives:
     files:
       - README.md
       - LICENSE
+  - id: weave-adapters
+    ids: [weave-cpp, weave-typescript, weave-jvm]
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    name_template: >-
+      weave_adapters_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    files:
+      - README.md
+      - LICENSE
+      - adapters/cpp/README.md
+      - adapters/typescript/README.md
+      - adapters/jvm/README.md
 
 checksum:
   name_template: checksums.txt
