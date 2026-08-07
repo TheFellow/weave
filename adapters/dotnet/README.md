@@ -16,6 +16,7 @@ It does not parse either source language itself.
 ```console
 dotnet restore adapters/dotnet/Weave.Adapter.sln
 dotnet build adapters/dotnet/Weave.Adapter.sln --no-restore
+dotnet build adapters/dotnet/tests/fixtures/Mixed/Mixed.sln --configuration Debug
 dotnet test adapters/dotnet/Weave.Adapter.sln --no-build
 ```
 

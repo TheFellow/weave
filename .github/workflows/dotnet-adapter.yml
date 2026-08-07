@@ -29,5 +29,7 @@ jobs:
         run: dotnet restore adapters/dotnet/Weave.Adapter.sln
       - name: Build
         run: dotnet build adapters/dotnet/Weave.Adapter.sln --no-restore --configuration Release
+      - name: Prepare mixed-language fixture
+        run: dotnet build adapters/dotnet/tests/fixtures/Mixed/Mixed.sln --configuration Debug
       - name: Test
         run: dotnet test adapters/dotnet/Weave.Adapter.sln --no-build --configuration Release --logger "console;verbosity=normal"
