@@ -36,6 +36,9 @@ Registration is always explicit; there is no home-directory crawl.
 
 [Bazel remote caching](https://bazel.build/remote/caching) separates a content
 addressable store from an action cache and keys blobs by digest. The
+[Buck2 architectural model](https://buck2.build/docs/concepts/architecture/)
+likewise hashes an action's command and complete inputs, then resolves an action
+cache result to output digests in content-addressable storage. The
 [Nix content-addressing model](https://nix.dev/manual/nix/latest/store/store-object/content-address)
 similarly makes content identity independent of a mutable source pathname.
 Weave borrows the important boundary: catalog records locate independent graph
