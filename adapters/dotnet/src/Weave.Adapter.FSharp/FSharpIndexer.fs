@@ -55,12 +55,23 @@ type FSharpIndexer private () =
                 |> Option.defaultWith (fun () -> failwith ("F# project not found: " + projectPath))
             let results = analyzer.Build() |> Seq.sortBy (fun r -> r.TargetFramework) |> Seq.toArray
             let units = List<UnitFacts>()
+            let projectDirectory = Path.GetDirectoryName(Path.GetFullPath projectPath)
 
             for result in results do
                 cancellationToken.ThrowIfCancellationRequested()
                 if not result.Succeeded then
                     failwith ("F# design-time build failed for " + projectPath + ": " + log.ToString())
-                let options = checker.GetProjectOptionsFromCommandLineArgs(projectPath, result.CompilerArguments)
+                // Fsc arguments are relative to the project directory, while an adapter can
+                // be launched from anywhere. FCS otherwise resolves source paths against the
+                // adapter process working directory and silently checks an empty project.
+                let sourceArguments = HashSet<string>(result.SourceFiles, StringComparer.Ordinal)
+                let compilerArguments =
+                    result.CompilerArguments
+                    |> Array.map (fun argument ->
+                        if sourceArguments.Contains argument && not (Path.IsPathFullyQualified argument) then
+                            Path.GetFullPath(argument, projectDirectory)
+                        else argument)
+                let options = checker.GetProjectOptionsFromCommandLineArgs(projectPath, compilerArguments)
                 let! checkedProject = Async.StartAsTask(checker.ParseAndCheckProject(options), cancellationToken = cancellationToken)
 
                 let projectRelative = relativePath projectPath
@@ -187,7 +198,7 @@ type FSharpIndexer private () =
                 sortById facts.Edges (fun value -> value.Id)
                 unit.InputFingerprint <- Identity.Hash(
                     "weave-dotnet-fsharp-input/v1", projectRelative, actualVariant,
-                    String.Join("\n", options.SourceFiles), String.Join("\n", result.CompilerArguments),
+                    String.Join("\n", options.SourceFiles), String.Join("\n", compilerArguments),
                     String.Join("\n", facts.Documents |> Seq.map (fun d -> d.Path + "\000" + d.ContentHash)))
                 unit.SurfaceFingerprint <- Identity.Hash(
                     "weave-dotnet-fsharp-surface/v1",

@@ -4,7 +4,7 @@
   </PropertyGroup>
   <ItemGroup>
     <PackageVersion Include="Buildalyzer" Version="9.0.0" />
-    <PackageVersion Include="FSharp.Compiler.Service" Version="43.8.403" />
+    <PackageVersion Include="FSharp.Compiler.Service" Version="43.9.303" />
     <PackageVersion Include="Microsoft.Build" Version="17.14.28" />
     <PackageVersion Include="Microsoft.Build.Framework" Version="17.14.28" />
     <PackageVersion Include="Microsoft.Build.Locator" Version="1.11.2" />
