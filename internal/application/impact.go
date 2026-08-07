@@ -81,7 +81,7 @@ func impactRoots(snapshot graph.Snapshot, files, packages []string) ([]string, [
 		diagnostics = append(diagnostics, "impact roots absent from current graph: "+strings.Join(missing, ", "))
 	}
 	if len(roots) == 0 {
-		return nil, diagnostics, fmt.Errorf("no indexed graph roots matched the requested files or packages")
+		return nil, diagnostics, fmt.Errorf("no indexed graph roots matched the requested files or packages: %s", strings.Join(missing, ", "))
 	}
 	return roots, diagnostics, nil
 }

@@ -138,11 +138,14 @@ func semanticInputs(ctx context.Context, root string) ([]string, string, error) 
 	for _, path := range paths {
 		full := filepath.Join(root, filepath.FromSlash(path))
 		info, err := os.Lstat(full)
-		if err != nil || !info.Mode().IsRegular() {
+		if err != nil {
 			if os.IsNotExist(err) {
 				continue
 			}
 			return nil, "", fmt.Errorf("inspect .NET input %q: %w", path, err)
+		}
+		if !info.Mode().IsRegular() {
+			continue
 		}
 		total += info.Size()
 		if total > maxInputBytes {
@@ -167,7 +170,7 @@ func isSemanticInput(path string) bool {
 		return true
 	}
 	return base == "global.json" || base == "nuget.config" || base == "packages.lock.json" ||
-		base == "directory.build.props" || base == "directory.build.targets" || base == "directory.packages.props"
+		base == ".editorconfig" || base == "directory.build.props" || base == "directory.build.targets" || base == "directory.packages.props"
 }
 
 func changedSemanticPaths(changes []repository.Change) []string {
