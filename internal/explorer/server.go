@@ -162,11 +162,57 @@ func (handler *handler) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 		handler.static(writer, request, "assets/vendor/d3-graphviz.min.js", "text/javascript; charset=utf-8")
 	case handler.prefix + "api/graph":
 		handler.graph(writer, request)
+	case handler.prefix + "api/diff":
+		handler.diff(writer, request)
 	case handler.prefix + "api/config":
 		handler.config(writer, request)
 	default:
 		http.NotFound(writer, request)
 	}
+}
+
+func (handler *handler) diff(writer http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodPost {
+		writer.Header().Set("Allow", http.MethodPost)
+		http.Error(writer, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if origin := request.Header.Get("Origin"); origin != "" && origin != handler.origin {
+		http.Error(writer, "forbidden origin", http.StatusForbidden)
+		return
+	}
+	if site := request.Header.Get("Sec-Fetch-Site"); site != "" && site != "same-origin" && site != "none" {
+		http.Error(writer, "forbidden fetch site", http.StatusForbidden)
+		return
+	}
+	mediaType, _, err := mime.ParseMediaType(request.Header.Get("Content-Type"))
+	if err != nil || mediaType != "application/json" {
+		http.Error(writer, "content type must be application/json", http.StatusUnsupportedMediaType)
+		return
+	}
+	request.Body = http.MaxBytesReader(writer, request.Body, maxRequestBytes)
+	decoder := json.NewDecoder(request.Body)
+	decoder.DisallowUnknownFields()
+	var diffRequest DiffRequest
+	if err := decoder.Decode(&diffRequest); err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			http.Error(writer, "request body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
+		http.Error(writer, "invalid JSON request", http.StatusBadRequest)
+		return
+	}
+	if decoder.Decode(&struct{}{}) != io.EOF {
+		http.Error(writer, "request must contain one JSON object", http.StatusBadRequest)
+		return
+	}
+	result, err := handler.engine.Diff(request.Context(), diffRequest)
+	if err != nil {
+		writeJSON(writer, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(writer, http.StatusOK, result)
 }
 
 func (handler *handler) config(writer http.ResponseWriter, request *http.Request) {

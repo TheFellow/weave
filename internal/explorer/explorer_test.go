@@ -10,6 +10,7 @@ import (
 	"github.com/TheFellow/weave/internal/application"
 	"github.com/TheFellow/weave/internal/dot"
 	"github.com/TheFellow/weave/internal/graph"
+	"github.com/TheFellow/weave/internal/graphdiff"
 	"github.com/TheFellow/weave/internal/query"
 )
 
@@ -58,6 +59,40 @@ func TestEngineUsesGraphApplicationContractAndRendersStableTargets(t *testing.T)
 	}
 	if !reflect.DeepEqual(result.Options.Providers, []string{"heuristic", "scip:fixture"}) {
 		t.Fatalf("provider options = %#v", result.Options.Providers)
+	}
+}
+
+func TestEngineExposesSnapshotDiffTransitionContract(t *testing.T) {
+	t.Parallel()
+	transitions := graphdiff.TransitionSet{Nodes: []graphdiff.Transition{{ID: "symbol", Status: "changed"}}}
+	diff := graphdiff.Result{
+		Schema:      graphdiff.Schema,
+		Baseline:    graphdiff.Identity{Revision: "main", SnapshotDigest: "sha256:a"},
+		Head:        graphdiff.Identity{Revision: "worktree", SnapshotDigest: "sha256:b"},
+		Transitions: &transitions,
+	}
+	service := &fixtureService{response: application.Response{Command: "diff graph", Diff: &diff}}
+	base := application.Invocation{Arguments: []string{"Initial"}, Scope: "local"}
+	engine, err := New(service, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := engine.Diff(context.Background(), DiffRequest{Base: "main", Limit: 25, MaxDepth: 4, MaxEdges: 80, Kinds: []graph.EdgeKind{graph.EdgeCalls}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Transitions == nil || !reflect.DeepEqual(*result.Transitions, transitions) {
+		t.Fatalf("transition result = %#v", result)
+	}
+	want := base
+	want.Command = "diff graph"
+	want.Arguments = nil
+	want.JSON = true
+	want.DiffBase = "main"
+	want.Limit, want.MaxDepth, want.MaxEdges = 25, 4, 80
+	want.Kinds = []graph.EdgeKind{graph.EdgeCalls}
+	if got := service.Invocations(); !reflect.DeepEqual(got, []application.Invocation{want}) {
+		t.Fatalf("invocations = %#v, want %#v", got, want)
 	}
 }
 

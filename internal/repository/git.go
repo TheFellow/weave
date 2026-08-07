@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 )
 
 const maxGitOutput = 16 << 20
@@ -70,6 +71,191 @@ type State struct {
 	Branch   string
 	Detached bool
 	Changes  []Change
+}
+
+// Revision is one fully resolved commit and tree identity. Input is retained
+// only for display; comparisons and worktree materialization use the object IDs.
+type Revision struct {
+	Input  string `json:"revision"`
+	Commit string `json:"commit"`
+	Tree   string `json:"tree"`
+}
+
+// DiffChange is one Git-authoritative source inventory change.
+type DiffChange struct {
+	Status  byte
+	Path    string
+	OldPath string
+}
+
+// ResolveRevision resolves one user revision to exact commit and tree objects.
+func (r Repository) ResolveRevision(ctx context.Context, value string) (Revision, error) {
+	if value == "" || strings.HasPrefix(value, "-") || strings.IndexByte(value, 0) >= 0 {
+		return Revision{}, fmt.Errorf("invalid Git revision %q", value)
+	}
+	runner := gitRunner{directory: r.Root}
+	if ambiguous, err := ambiguousRevisionName(ctx, runner, value); err != nil {
+		return Revision{}, err
+	} else if ambiguous {
+		return Revision{}, fmt.Errorf("Git revision %q is ambiguous; use a fully qualified ref", value)
+	}
+	commit, err := runner.text(ctx, "rev-parse", "--verify", "--end-of-options", value+"^{commit}")
+	if err != nil {
+		return Revision{}, fmt.Errorf("resolve Git revision %q: %w", value, err)
+	}
+	tree, err := runner.text(ctx, "rev-parse", "--verify", "--end-of-options", commit+"^{tree}")
+	if err != nil {
+		return Revision{}, fmt.Errorf("resolve Git tree for %q: %w", value, err)
+	}
+	return Revision{Input: value, Commit: commit, Tree: tree}, nil
+}
+
+func ambiguousRevisionName(ctx context.Context, runner gitRunner, value string) (bool, error) {
+	if strings.HasPrefix(value, "refs/") {
+		return false, nil
+	}
+	base := value
+	if index := strings.IndexAny(base, "~^:@"); index >= 0 {
+		base = base[:index]
+	}
+	if base == "" || base == "HEAD" {
+		return false, nil
+	}
+	candidates := []string{"refs/heads/" + base, "refs/tags/" + base, "refs/remotes/" + base, "refs/" + base}
+	args := []string{"for-each-ref", "--format=%(refname)"}
+	args = append(args, candidates...)
+	raw, err := runner.run(ctx, args...)
+	if err != nil {
+		return false, fmt.Errorf("inspect Git revision %q: %w", value, err)
+	}
+	wanted := make(map[string]bool, len(candidates))
+	for _, candidate := range candidates {
+		wanted[candidate] = true
+	}
+	matches := 0
+	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+		if wanted[line] {
+			matches++
+		}
+	}
+	return matches > 1, nil
+}
+
+// DiffChanges reports source changes between an exact baseline and either an
+// exact head revision or the current index/worktree when head is nil.
+func (r Repository) DiffChanges(ctx context.Context, baseline Revision, head *Revision) ([]DiffChange, error) {
+	if baseline.Commit == "" {
+		return nil, errors.New("Git diff baseline commit is empty")
+	}
+	args := []string{"diff", "--name-status", "-z", "--find-renames", "--no-ext-diff", baseline.Commit}
+	if head != nil {
+		if head.Commit == "" {
+			return nil, errors.New("Git diff head commit is empty")
+		}
+		args = append(args, head.Commit)
+	}
+	args = append(args, "--")
+	raw, err := (gitRunner{directory: r.Root}).run(ctx, args...)
+	if err != nil {
+		return nil, fmt.Errorf("resolve Git source changes: %w", err)
+	}
+	changes, err := parseNameStatus(raw)
+	if err != nil {
+		return nil, err
+	}
+	if head == nil {
+		state, inspectErr := r.Inspect(ctx)
+		if inspectErr != nil {
+			return nil, inspectErr
+		}
+		present := make(map[string]bool, len(changes))
+		for _, change := range changes {
+			present[change.Path] = true
+		}
+		for _, change := range state.Changes {
+			if change.Kind == '?' && !present[change.Path] {
+				changes = append(changes, DiffChange{Status: 'A', Path: filepath.ToSlash(change.Path)})
+			}
+		}
+	}
+	slices.SortFunc(changes, func(a, b DiffChange) int {
+		return strings.Compare(a.OldPath+"\x00"+a.Path+"\x00"+string(a.Status), b.OldPath+"\x00"+b.Path+"\x00"+string(b.Status))
+	})
+	return changes, nil
+}
+
+func parseNameStatus(raw []byte) ([]DiffChange, error) {
+	fields := bytes.Split(raw, []byte{0})
+	var changes []DiffChange
+	for index := 0; index < len(fields); {
+		if len(fields[index]) == 0 {
+			index++
+			continue
+		}
+		status := fields[index]
+		index++
+		if len(status) == 0 || !strings.ContainsRune("ACDMRTUXB", rune(status[0])) {
+			return nil, fmt.Errorf("unrecognized Git name-status record %q", status)
+		}
+		paths := 1
+		if status[0] == 'R' || status[0] == 'C' {
+			paths = 2
+		}
+		if index+paths > len(fields) {
+			return nil, errors.New("truncated Git name-status output")
+		}
+		if paths == 2 {
+			changes = append(changes, DiffChange{Status: status[0], OldPath: filepath.ToSlash(string(fields[index])), Path: filepath.ToSlash(string(fields[index+1]))})
+		} else {
+			changes = append(changes, DiffChange{Status: status[0], Path: filepath.ToSlash(string(fields[index]))})
+		}
+		index += paths
+	}
+	return changes, nil
+}
+
+// WithDetachedWorktree materializes revision in a temporary linked worktree,
+// calls use, and removes both the checkout and Git metadata before returning.
+// It never switches or writes the caller's current worktree.
+func (r Repository) WithDetachedWorktree(ctx context.Context, revision Revision, use func(string) error) (err error) {
+	if revision.Commit == "" {
+		return errors.New("temporary worktree commit is empty")
+	}
+	parent, err := os.MkdirTemp("", "weave-diff-")
+	if err != nil {
+		return fmt.Errorf("create temporary worktree parent: %w", err)
+	}
+	target := filepath.Join(parent, "worktree")
+	hooks := filepath.Join(parent, "hooks-disabled")
+	if err := os.Mkdir(hooks, 0o700); err != nil {
+		_ = os.RemoveAll(parent)
+		return fmt.Errorf("create empty temporary hooks directory: %w", err)
+	}
+	registered := false
+	defer func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		// Always try the unique target path. A canceled `worktree add` can
+		// register metadata before the checkout directory becomes observable.
+		// Removal is harmless when registration never happened, and the original
+		// add error remains authoritative in that case.
+		_, removeErr := (gitRunner{directory: r.Root}).run(cleanupCtx, "worktree", "remove", "--force", target)
+		filesystemErr := os.RemoveAll(parent)
+		if registered && removeErr != nil {
+			err = errors.Join(err, fmt.Errorf("remove temporary Git worktree: %w", removeErr))
+		}
+		if filesystemErr != nil {
+			err = errors.Join(err, fmt.Errorf("remove temporary worktree files: %w", filesystemErr))
+		}
+	}()
+	if _, err := (gitRunner{directory: r.Root}).run(ctx, "-c", "core.hooksPath="+hooks, "worktree", "add", "--detach", target, revision.Commit); err != nil {
+		return fmt.Errorf("materialize Git revision %q: %w", revision.Input, err)
+	}
+	registered = true
+	if err := use(target); err != nil {
+		return err
+	}
+	return nil
 }
 
 // DiffPaths returns repository-relative paths changed between revision and the

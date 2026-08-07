@@ -24,6 +24,7 @@ import (
 	"github.com/TheFellow/weave/internal/federation"
 	"github.com/TheFellow/weave/internal/freshness"
 	"github.com/TheFellow/weave/internal/graph"
+	"github.com/TheFellow/weave/internal/graphdiff"
 	"github.com/TheFellow/weave/internal/query"
 	"github.com/TheFellow/weave/internal/repository"
 	"github.com/TheFellow/weave/internal/scipimport"
@@ -63,6 +64,8 @@ type Invocation struct {
 	ImpactFiles    []string
 	ImpactPackages []string
 	DiffRevision   string
+	DiffBase       string
+	DiffHead       string
 	LinkFrom       string
 	LinkTo         string
 	LinkNote       string
@@ -98,6 +101,7 @@ type Response struct {
 	Version      *buildinfo.Info        `json:"version,omitempty"`
 	Links        []bridge.Link          `json:"links,omitempty"`
 	Context      *contextquery.Result   `json:"context,omitempty"`
+	Diff         *graphdiff.Result      `json:"diff,omitempty"`
 }
 
 // AdapterStatus is an executable discovery result. List is side-effect free;
@@ -161,6 +165,9 @@ func (app Local) Execute(ctx context.Context, invocation Invocation) (Response, 
 	}
 	if invocation.Command == "architecture check" {
 		return app.architectureCheck(ctx, response, invocation)
+	}
+	if strings.HasPrefix(invocation.Command, "diff ") {
+		return app.snapshotDiff(ctx, response, invocation)
 	}
 	if invocation.Scope == "catalog" && requiresDatabase(invocation.Command) {
 		return app.federated(ctx, response, invocation)

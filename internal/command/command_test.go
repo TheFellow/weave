@@ -23,6 +23,7 @@ import (
 	"github.com/TheFellow/weave/internal/freshness"
 	"github.com/TheFellow/weave/internal/goindex"
 	"github.com/TheFellow/weave/internal/graph"
+	"github.com/TheFellow/weave/internal/graphdiff"
 	"github.com/TheFellow/weave/internal/query"
 	"github.com/TheFellow/weave/internal/storage"
 	"github.com/scip-code/scip/bindings/go/scip"
@@ -155,6 +156,47 @@ func TestGraphCommandForwardsBoundedCatalogQuery(t *testing.T) {
 	}
 	if !reflect.DeepEqual(app.invocations, []application.Invocation{want}) {
 		t.Fatalf("invocations = %#v, want %#v", app.invocations, want)
+	}
+}
+
+func TestDiffCommandTreeForwardsBoundsAndRendersStableContracts(t *testing.T) {
+	t.Parallel()
+	delta := graphdiff.Facts{Symbols: graphdiff.Delta[graph.Symbol]{Added: []graph.Symbol{{ID: "symbol:new", DisplayName: "New"}}}}
+	result := graphdiff.Result{
+		Schema:   graphdiff.Schema,
+		Baseline: graphdiff.Identity{Revision: "main", Commit: "aaa", Tree: "tree-a", SnapshotDigest: "sha256:a"},
+		Head:     graphdiff.Identity{Revision: "worktree", Commit: "bbb", Tree: "tree-b", Worktree: true, Dirty: true, Generation: "generation-b", SnapshotDigest: "sha256:b"},
+		Sources:  []graphdiff.SourceChange{{Status: "renamed", OldPath: "old.go", Path: "new.go"}},
+		Graph:    &delta,
+	}
+	app := &recordingApplication{response: application.Response{Command: "diff graph", Diff: &result}}
+	var stdout, stderr bytes.Buffer
+	root := command.New(app, command.Streams{Stdin: strings.NewReader(""), Stdout: &stdout, Stderr: &stderr})
+	if err := root.Run(context.Background(), []string{"weave", "diff", "graph", "--base", "main", "--head", "feature", "--limit", "25", "--max-depth", "4", "--max-edges", "80", "--kind", "calls"}); err != nil {
+		t.Fatal(err)
+	}
+	want := application.Invocation{Command: "diff graph", Limit: 25, MaxDepth: 4, MaxEdges: 80, Kinds: []graph.EdgeKind{graph.EdgeCalls}, DiffBase: "main", DiffHead: "feature", Scope: "local"}
+	if !reflect.DeepEqual(app.invocations, []application.Invocation{want}) {
+		t.Fatalf("invocations = %#v, want %#v", app.invocations, want)
+	}
+	for _, value := range []string{"baseline\tmain\taaa\ttree-a", "source\trenamed\told.go\tnew.go", "graph\tsymbol\tadded\tsymbol:new\tNew"} {
+		if !strings.Contains(stdout.String(), value) {
+			t.Fatalf("text diff = %q, want %q", stdout.String(), value)
+		}
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+
+	app.invocations = nil
+	stdout.Reset()
+	root = command.New(app, command.Streams{Stdin: strings.NewReader(""), Stdout: &stdout, Stderr: &stderr})
+	if err := root.Run(context.Background(), []string{"weave", "diff", "graph", "--base", "main", "--json"}); err != nil {
+		t.Fatal(err)
+	}
+	var decoded graphdiff.Result
+	if err := json.Unmarshal(stdout.Bytes(), &decoded); err != nil || decoded.Schema != graphdiff.Schema || decoded.Head.SnapshotDigest != "sha256:b" {
+		t.Fatalf("JSON diff = %q, %#v, %v", stdout.String(), decoded, err)
 	}
 }
 
@@ -390,6 +432,10 @@ func TestInvalidInvocationsReturnErrors(t *testing.T) {
 		{name: "invalid context source bytes", args: []string{"context", "x", "--max-source-bytes", "0"}},
 		{name: "invalid graph direction", args: []string{"graph", "x", "--direction", "sideways"}},
 		{name: "invalid graph edge bound", args: []string{"graph", "x", "--max-edges", "0"}},
+		{name: "missing diff baseline", args: []string{"diff", "graph"}},
+		{name: "unexpected diff argument", args: []string{"diff", "api", "extra", "--base", "main"}},
+		{name: "invalid diff edge kind", args: []string{"diff", "impact", "--base", "main", "--kind", "magic"}},
+		{name: "invalid diff edge bound", args: []string{"diff", "tests", "--base", "main", "--max-edges", "0"}},
 		{name: "JSON graph file", args: []string{"graph", "x", "--json", "--output", "graph.dot"}},
 		{name: "interactive JSON graph", args: []string{"graph", "x", "--interactive", "--json"}},
 		{name: "interactive graph file", args: []string{"graph", "x", "--interactive", "--output", "graph.dot"}},

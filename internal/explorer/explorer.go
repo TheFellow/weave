@@ -13,6 +13,7 @@ import (
 	"github.com/TheFellow/weave/internal/application"
 	"github.com/TheFellow/weave/internal/dot"
 	"github.com/TheFellow/weave/internal/graph"
+	"github.com/TheFellow/weave/internal/graphdiff"
 	"github.com/TheFellow/weave/internal/query"
 )
 
@@ -28,6 +29,17 @@ type Request struct {
 	Kinds     []graph.EdgeKind `json:"kinds,omitempty"`
 	Providers []string         `json:"providers,omitempty"`
 	Evidence  []graph.Evidence `json:"evidence,omitempty"`
+}
+
+// DiffRequest asks the existing explorer application boundary for a bounded
+// normalized graph transition. Omitted Head means the current dirty worktree.
+type DiffRequest struct {
+	Base     string           `json:"base"`
+	Head     string           `json:"head,omitempty"`
+	MaxDepth int              `json:"max_depth"`
+	Limit    int              `json:"limit"`
+	MaxEdges int              `json:"max_edges"`
+	Kinds    []graph.EdgeKind `json:"kinds,omitempty"`
 }
 
 // Node maps a stable SVG element back to its exact semantic graph target.
@@ -130,6 +142,66 @@ func (engine *Engine) Query(ctx context.Context, request Request) (Result, error
 		DOT: rendered.String(), Nodes: nodes, Options: options,
 		Truncated: response.Truncated, Diagnostics: response.Diagnostics,
 	}, nil
+}
+
+// Diff returns the same stable-ID transition contract used by the CLI. The
+// browser's keyed d3-graphviz renderer can consume its add/remove/change keys
+// without a second graph or diff implementation.
+func (engine *Engine) Diff(ctx context.Context, request DiffRequest) (graphdiff.Result, error) {
+	request, err := normalizeDiffRequest(request)
+	if err != nil {
+		return graphdiff.Result{}, err
+	}
+	invocation := engine.base
+	invocation.Command = "diff graph"
+	invocation.Arguments = nil
+	invocation.JSON = true
+	invocation.DiffBase = request.Base
+	invocation.DiffHead = request.Head
+	invocation.MaxDepth = request.MaxDepth
+	invocation.Limit = request.Limit
+	invocation.MaxEdges = request.MaxEdges
+	invocation.Kinds = append([]graph.EdgeKind(nil), request.Kinds...)
+	response, err := engine.app.Execute(ctx, invocation)
+	if err != nil {
+		return graphdiff.Result{}, err
+	}
+	if response.Diff == nil || response.Diff.Schema != graphdiff.Schema {
+		return graphdiff.Result{}, fmt.Errorf("graph diff returned no compatible transition contract")
+	}
+	return *response.Diff, nil
+}
+
+func normalizeDiffRequest(request DiffRequest) (DiffRequest, error) {
+	request.Base = strings.TrimSpace(request.Base)
+	request.Head = strings.TrimSpace(request.Head)
+	if request.Base == "" || len(request.Base) > 4096 || hasUnsafeText(request.Base) {
+		return DiffRequest{}, fmt.Errorf("base is required and must be at most 4096 characters without control characters")
+	}
+	if len(request.Head) > 4096 || hasUnsafeText(request.Head) {
+		return DiffRequest{}, fmt.Errorf("head must be at most 4096 characters without control characters")
+	}
+	if request.MaxDepth == 0 {
+		request.MaxDepth = 8
+	}
+	if request.Limit == 0 {
+		request.Limit = 100
+	}
+	if request.MaxEdges == 0 {
+		request.MaxEdges = 10000
+	}
+	if request.MaxDepth < 1 || request.MaxDepth > 100 || request.Limit < 1 || request.Limit > 5000 || request.MaxEdges < 1 || request.MaxEdges > 20000 {
+		return DiffRequest{}, fmt.Errorf("diff bounds exceed explorer limits")
+	}
+	if len(request.Kinds) > len(edgeKinds) {
+		return DiffRequest{}, fmt.Errorf("too many edge kinds")
+	}
+	for _, kind := range request.Kinds {
+		if !graph.IsEdgeKind(kind) {
+			return DiffRequest{}, fmt.Errorf("unknown edge kind %q", kind)
+		}
+	}
+	return request, nil
 }
 
 func normalizeRequest(request Request) (Request, error) {

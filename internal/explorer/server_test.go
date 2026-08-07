@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/TheFellow/weave/internal/application"
+	"github.com/TheFellow/weave/internal/graphdiff"
 )
 
 const (
@@ -60,6 +61,7 @@ func TestHandlerServesOnlyAllowlistedNoCacheAssets(t *testing.T) {
 		{http.MethodGet, "/" + fixtureToken + "/assets/../README.md", http.StatusNotFound},
 		{http.MethodGet, "/" + fixtureToken + "/assets/app.js?cache=1", http.StatusNotFound},
 		{http.MethodGet, "/" + fixtureToken + "/api/graph", http.StatusMethodNotAllowed},
+		{http.MethodGet, "/" + fixtureToken + "/api/diff", http.StatusMethodNotAllowed},
 		{http.MethodPost, "/" + fixtureToken + "/api/config", http.StatusMethodNotAllowed},
 	}
 	for _, test := range tests {
@@ -72,6 +74,30 @@ func TestHandlerServesOnlyAllowlistedNoCacheAssets(t *testing.T) {
 		if !strings.Contains(response.Header().Get("Cache-Control"), "no-store") {
 			t.Errorf("%s %s omitted no-store", test.method, test.path)
 		}
+	}
+}
+
+func TestHandlerServesBoundedSnapshotTransitions(t *testing.T) {
+	t.Parallel()
+	transition := graphdiff.TransitionSet{Nodes: []graphdiff.Transition{{ID: "symbol", Status: "added"}}}
+	value := graphdiff.Result{Schema: graphdiff.Schema, Baseline: graphdiff.Identity{Revision: "main", SnapshotDigest: "sha256:a"}, Head: graphdiff.Identity{Revision: "worktree", SnapshotDigest: "sha256:b"}, Transitions: &transition}
+	service := &fixtureService{response: application.Response{Command: "diff graph", Diff: &value}}
+	engine, err := New(service, application.Invocation{Arguments: []string{"focus"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := newHandler(engine, fixtureToken, fixtureOrigin)
+	request := httptest.NewRequest(http.MethodPost, fixtureOrigin+"/"+fixtureToken+"/api/diff", strings.NewReader(`{"base":"main","limit":10,"max_depth":2,"max_edges":20}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Origin", fixtureOrigin)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("response = %d %q", response.Code, response.Body.String())
+	}
+	var decoded graphdiff.Result
+	if err := json.Unmarshal(response.Body.Bytes(), &decoded); err != nil || decoded.Schema != graphdiff.Schema || decoded.Transitions == nil || decoded.Transitions.Nodes[0].ID != "symbol" {
+		t.Fatalf("transition response = %q %#v %v", response.Body.String(), decoded, err)
 	}
 }
 

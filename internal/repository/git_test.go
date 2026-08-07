@@ -4,11 +4,13 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -136,6 +138,168 @@ func TestDiffPathsIncludesWorkingTreeAndUntrackedChanges(t *testing.T) {
 	if _, err := repo.DiffPaths(context.Background(), "--output=/tmp/nope"); err == nil {
 		t.Fatal("option-like revision accepted")
 	}
+}
+
+func TestResolveRevisionAndDiffChangesForRefsAndDirtyOverlay(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	root := newRepository(t)
+	writeFile(t, root, "renamed.txt", "before\n")
+	writeFile(t, root, "deleted.txt", "delete\n")
+	git(t, root, "add", ".")
+	git(t, root, "commit", "-m", "baseline")
+	repo, err := Discover(ctx, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseline, err := repo.ResolveRevision(ctx, "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	git(t, root, "mv", "renamed.txt", "moved.txt")
+	git(t, root, "rm", "deleted.txt")
+	writeFile(t, root, "added.txt", "added\n")
+	git(t, root, "add", ".")
+	git(t, root, "commit", "-m", "head")
+	head, err := repo.ResolveRevision(ctx, "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if baseline.Commit == head.Commit || baseline.Tree == head.Tree {
+		t.Fatalf("revisions not resolved exactly: %#v %#v", baseline, head)
+	}
+	changes, err := repo.DiffChanges(ctx, baseline, &head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := diffChangesString(changes); got != "A:added.txt,D:deleted.txt,R:renamed.txt->moved.txt" {
+		t.Fatalf("ref changes = %q", got)
+	}
+
+	writeFile(t, root, "moved.txt", "dirty\n")
+	writeFile(t, root, "untracked name.txt", "new\n")
+	dirty, err := repo.DiffChanges(ctx, head, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := diffChangesString(dirty); got != "M:moved.txt,A:untracked name.txt" {
+		t.Fatalf("dirty changes = %q", got)
+	}
+	if _, err := repo.ResolveRevision(ctx, "--output=/tmp/nope"); err == nil {
+		t.Fatal("option-like revision accepted")
+	}
+	git(t, root, "branch", "ambiguous", "HEAD")
+	git(t, root, "tag", "ambiguous", "HEAD")
+	if _, err := repo.ResolveRevision(ctx, "ambiguous"); err == nil {
+		t.Fatal("ambiguous short revision accepted")
+	}
+}
+
+func TestWithDetachedWorktreeCleansCheckoutAndMetadata(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	root := newRepository(t)
+	writeFile(t, root, "value.txt", "baseline\n")
+	git(t, root, "add", ".")
+	git(t, root, "commit", "-m", "baseline")
+	repo, err := Discover(ctx, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	revision, err := repo.ResolveRevision(ctx, "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := git(t, root, "worktree", "list", "--porcelain")
+	metadataBefore := worktreeMetadata(t, root)
+	var temporary string
+	err = repo.WithDetachedWorktree(ctx, revision, func(path string) error {
+		temporary = path
+		content, readErr := os.ReadFile(filepath.Join(path, "value.txt"))
+		if readErr != nil || string(content) != "baseline\n" {
+			return fmt.Errorf("temporary content = %q, %v", content, readErr)
+		}
+		linked, discoverErr := Discover(ctx, path)
+		if discoverErr != nil {
+			return discoverErr
+		}
+		if linked.WorktreeID == "main" || linked.Identity != repo.Identity {
+			return fmt.Errorf("temporary identity = %#v", linked)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(temporary); !os.IsNotExist(err) {
+		t.Fatalf("temporary checkout remains: %v", err)
+	}
+	after := git(t, root, "worktree", "list", "--porcelain")
+	if before != after {
+		t.Fatalf("worktree metadata changed:\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+	if metadataAfter := worktreeMetadata(t, root); metadataBefore != metadataAfter {
+		t.Fatalf("worktree metadata changed: before=%q after=%q", metadataBefore, metadataAfter)
+	}
+}
+
+func TestWithDetachedWorktreeDisablesRepositoryCheckoutHooks(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell hook fixture is POSIX-only")
+	}
+	root := newRepository(t)
+	writeFile(t, root, "value.txt", "baseline\n")
+	git(t, root, "add", ".")
+	git(t, root, "commit", "-m", "baseline")
+	repo, err := Discover(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	revision, err := repo.ResolveRevision(context.Background(), "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(t.TempDir(), "post-checkout-ran")
+	hook := filepath.Join(root, ".git", "hooks", "post-checkout")
+	if err := os.WriteFile(hook, []byte("#!/bin/sh\nprintf ran > \"$WEAVE_HOOK_MARKER\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("WEAVE_HOOK_MARKER", marker)
+	if err := repo.WithDetachedWorktree(context.Background(), revision, func(string) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("post-checkout hook executed: %v", err)
+	}
+}
+
+func diffChangesString(changes []DiffChange) string {
+	values := make([]string, 0, len(changes))
+	for _, change := range changes {
+		if change.OldPath == "" {
+			values = append(values, string(change.Status)+":"+change.Path)
+		} else {
+			values = append(values, string(change.Status)+":"+change.OldPath+"->"+change.Path)
+		}
+	}
+	return strings.Join(values, ",")
+}
+
+func worktreeMetadata(t *testing.T, root string) string {
+	t.Helper()
+	entries, err := os.ReadDir(filepath.Join(root, ".git", "worktrees"))
+	if errors.Is(err, os.ErrNotExist) {
+		return ""
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	values := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		values = append(values, entry.Name())
+	}
+	slices.Sort(values)
+	return strings.Join(values, ",")
 }
 
 func TestLocalIdentityFallsBackToRootCommitThenLocalDirectory(t *testing.T) {

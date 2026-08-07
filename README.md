@@ -48,6 +48,9 @@ weave impact Handle --limit 50
 weave impact --file internal/service.go --limit 100
 weave impact --package github.com/example/project/internal/service
 weave impact --git-diff origin/main --json
+weave diff graph --base origin/main --json
+weave diff api --base origin/main --head HEAD
+weave diff tests --base origin/main
 weave graph Handle --kind calls --kind implements --output handle.dot
 weave links add guide-documents-handler --from 'docs/guide.md#flow' --to Handle --kind documents
 ```
@@ -208,6 +211,22 @@ package roots use compiler-emitted package ownership. Output is bounded and
 deterministic. An affected-tests projection is emitted only for explicit
 `tests` edges or compiler-indexed Go test declarations—Weave does not guess
 build targets from directory names.
+
+## Semantic snapshot diffs
+
+`weave diff graph|api|impact|tests --base REV [--head REV]` separates Git's
+source inventory from normalized semantic changes. Omitting `--head` compares
+against the current dirty worktree; supplying it compares two immutable refs.
+Historical refs are rebuilt in disposable detached worktrees without switching
+the user's branch, and their databases are removed afterward.
+
+JSON uses `weave.snapshot-diff/v1` and identifies each side by exact commit,
+tree, freshness observation, and a stable digest of the sorted normalized
+snapshot. Graph changes retain before/after facts and stable-ID transition keys
+for the local explorer. API results report only provider-owned surface
+fingerprints and leave compatibility `unknown`; they do not guess breaking
+changes from symbol names. Impact uses the normal reverse graph traversal, and
+each affected test includes its selection reason and evidence.
 
 ## C# and F# adapter
 

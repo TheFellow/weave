@@ -18,6 +18,7 @@ import (
 	"github.com/TheFellow/weave/internal/dot"
 	"github.com/TheFellow/weave/internal/explorer"
 	"github.com/TheFellow/weave/internal/graph"
+	"github.com/TheFellow/weave/internal/graphdiff"
 	"github.com/TheFellow/weave/internal/query"
 	cli "github.com/urfave/cli/v3"
 )
@@ -46,6 +47,7 @@ func New(app application.Service, streams Streams) *cli.Command {
 		lookup(app, streams, "callees", "find symbols called by a symbol"),
 		traversal(app, streams, "path", "find a bounded path between symbols", 2),
 		impactCommand(app, streams),
+		diffCommands(app, streams),
 		lookup(app, streams, "dependencies", "find direct semantic dependencies"),
 		graphCommand(app, streams),
 		linkCommands(app, streams),
@@ -60,6 +62,59 @@ func New(app application.Service, streams Streams) *cli.Command {
 		versionCommand(app, streams),
 	}
 	return root
+}
+
+func diffCommands(app application.Service, streams Streams) *cli.Command {
+	child := func(name, usage string) *cli.Command {
+		return &cli.Command{
+			Name: name, Usage: usage, UsageText: "weave diff " + name + " --base REV [--head REV] [options]",
+			Flags: []cli.Flag{
+				jsonFlag(), limitFlag(),
+				&cli.StringFlag{Name: "base", Usage: "Git revision providing the baseline graph"},
+				&cli.StringFlag{Name: "head", Usage: "Git revision providing the head graph (default: current dirty worktree)"},
+				&cli.IntFlag{Name: "max-depth", Value: 8, Usage: "maximum reverse-impact depth", Validator: func(value int) error {
+					if value < 1 || value > 100 {
+						return fmt.Errorf("must be between 1 and 100")
+					}
+					return nil
+				}},
+				&cli.IntFlag{Name: "max-edges", Value: 10000, Usage: "maximum impact edges examined", Validator: func(value int) error {
+					if value < 1 || value > 20000 {
+						return fmt.Errorf("must be between 1 and 20000")
+					}
+					return nil
+				}},
+				&cli.StringSliceFlag{Name: "kind", Usage: "reverse-impact edge kind (repeatable)"},
+			},
+			Action: func(ctx context.Context, cmd *cli.Command) error {
+				if cmd.Args().Len() != 0 {
+					return cli.Exit("diff "+name+" expects no positional arguments", 2)
+				}
+				if strings.TrimSpace(cmd.String("base")) == "" {
+					return cli.Exit("diff "+name+" requires --base", 2)
+				}
+				kinds, err := parseEdgeKinds(cmd.StringSlice("kind"))
+				if err != nil {
+					return cli.Exit(err.Error(), 2)
+				}
+				response, err := app.Execute(ctx, application.Invocation{
+					Command: "diff " + name, JSON: cmd.Bool("json"), Limit: cmd.Int("limit"),
+					MaxDepth: cmd.Int("max-depth"), MaxEdges: cmd.Int("max-edges"), Kinds: kinds,
+					DiffBase: cmd.String("base"), DiffHead: cmd.String("head"), Scope: "local",
+				})
+				if err != nil {
+					return err
+				}
+				return renderInvocation(streams, response, cmd.Bool("json"))
+			},
+		}
+	}
+	return &cli.Command{Name: "diff", Usage: "compare Git source changes with normalized semantic graph changes", Commands: []*cli.Command{
+		child("graph", "compare normalized graph facts"),
+		child("api", "compare provider-owned public API surfaces"),
+		child("impact", "find reverse impact of semantic changes"),
+		child("tests", "select evidence-backed tests affected by semantic changes"),
+	}}
 }
 
 func linkCommands(app application.Service, streams Streams) *cli.Command {
@@ -605,7 +660,7 @@ func renderInvocation(streams Streams, response application.Response, jsonOutput
 			return err
 		}
 	}
-	if response.Freshness != nil {
+	if response.Freshness != nil && !strings.HasPrefix(response.Command, "diff ") {
 		for _, diagnostic := range response.Freshness.Diagnostics {
 			if _, err := fmt.Fprintln(streams.Stderr, diagnostic); err != nil {
 				return err
@@ -642,6 +697,9 @@ func render(writer io.Writer, response application.Response, jsonOutput bool) er
 	if jsonOutput {
 		encoder := json.NewEncoder(writer)
 		encoder.SetEscapeHTML(false)
+		if response.Diff != nil {
+			return encoder.Encode(response.Diff)
+		}
 		if response.Architecture != nil && response.Command == "architecture check" {
 			return encoder.Encode(response.Architecture)
 		}
@@ -701,6 +759,9 @@ func render(writer io.Writer, response application.Response, jsonOutput bool) er
 	}
 	if response.Command == "context" && response.Context != nil {
 		return renderContext(writer, *response.Context)
+	}
+	if strings.HasPrefix(response.Command, "diff ") && response.Diff != nil {
+		return renderDiff(writer, *response.Diff)
 	}
 	if strings.HasPrefix(response.Command, "links ") {
 		for _, link := range response.Links {
@@ -804,6 +865,134 @@ func render(writer io.Writer, response application.Response, jsonOutput bool) er
 		}
 	}
 	if response.Truncated {
+		_, err := fmt.Fprintln(writer, "... truncated")
+		return err
+	}
+	return nil
+}
+
+func renderDiff(writer io.Writer, result graphdiff.Result) error {
+	if _, err := fmt.Fprintf(writer, "baseline\t%s\t%s\t%s\nhead\t%s\t%s\t%s\n", result.Baseline.Revision, result.Baseline.Commit, result.Baseline.Tree, result.Head.Revision, result.Head.Commit, result.Head.Tree); err != nil {
+		return err
+	}
+	for _, change := range result.Sources {
+		if change.OldPath != "" {
+			if _, err := fmt.Fprintf(writer, "source\t%s\t%s\t%s\n", change.Status, change.OldPath, change.Path); err != nil {
+				return err
+			}
+		} else if _, err := fmt.Fprintf(writer, "source\t%s\t%s\n", change.Status, change.Path); err != nil {
+			return err
+		}
+	}
+	if result.Graph != nil {
+		for _, unit := range result.Graph.Units.Added {
+			if _, err := fmt.Fprintf(writer, "graph\tunit\tadded\t%s\n", unit.ID); err != nil {
+				return err
+			}
+		}
+		for _, unit := range result.Graph.Units.Removed {
+			if _, err := fmt.Fprintf(writer, "graph\tunit\tremoved\t%s\n", unit.ID); err != nil {
+				return err
+			}
+		}
+		for _, change := range result.Graph.Units.Changed {
+			if _, err := fmt.Fprintf(writer, "graph\tunit\tchanged\t%s\n", change.After.ID); err != nil {
+				return err
+			}
+		}
+		for _, document := range result.Graph.Documents.Added {
+			if _, err := fmt.Fprintf(writer, "graph\tdocument\tadded\t%s\t%s\n", document.ID, document.Path); err != nil {
+				return err
+			}
+		}
+		for _, document := range result.Graph.Documents.Removed {
+			if _, err := fmt.Fprintf(writer, "graph\tdocument\tremoved\t%s\t%s\n", document.ID, document.Path); err != nil {
+				return err
+			}
+		}
+		for _, change := range result.Graph.Documents.Changed {
+			if _, err := fmt.Fprintf(writer, "graph\tdocument\tchanged\t%s\t%s\t%s\n", change.After.ID, change.Before.Path, change.After.Path); err != nil {
+				return err
+			}
+		}
+		for _, symbol := range result.Graph.Symbols.Added {
+			if _, err := fmt.Fprintf(writer, "graph\tsymbol\tadded\t%s\t%s\n", symbol.ID, symbol.DisplayName); err != nil {
+				return err
+			}
+		}
+		for _, symbol := range result.Graph.Symbols.Removed {
+			if _, err := fmt.Fprintf(writer, "graph\tsymbol\tremoved\t%s\t%s\n", symbol.ID, symbol.DisplayName); err != nil {
+				return err
+			}
+		}
+		for _, change := range result.Graph.Symbols.Changed {
+			if _, err := fmt.Fprintf(writer, "graph\tsymbol\tchanged\t%s\t%s\t%s\n", change.After.ID, change.Before.DisplayName, change.After.DisplayName); err != nil {
+				return err
+			}
+		}
+		for _, occurrence := range result.Graph.Occurrences.Added {
+			if _, err := fmt.Fprintf(writer, "graph\toccurrence\tadded\t%s\t%s\n", occurrence.ID, occurrence.SymbolID); err != nil {
+				return err
+			}
+		}
+		for _, occurrence := range result.Graph.Occurrences.Removed {
+			if _, err := fmt.Fprintf(writer, "graph\toccurrence\tremoved\t%s\t%s\n", occurrence.ID, occurrence.SymbolID); err != nil {
+				return err
+			}
+		}
+		for _, change := range result.Graph.Occurrences.Changed {
+			if _, err := fmt.Fprintf(writer, "graph\toccurrence\tchanged\t%s\t%s\n", change.After.ID, change.After.SymbolID); err != nil {
+				return err
+			}
+		}
+		for _, edge := range result.Graph.Edges.Added {
+			if _, err := fmt.Fprintf(writer, "graph\tedge\tadded\t%s\t%s\t%s\t%s\n", edge.ID, edge.From, edge.Kind, edge.To); err != nil {
+				return err
+			}
+		}
+		for _, edge := range result.Graph.Edges.Removed {
+			if _, err := fmt.Fprintf(writer, "graph\tedge\tremoved\t%s\t%s\t%s\t%s\n", edge.ID, edge.From, edge.Kind, edge.To); err != nil {
+				return err
+			}
+		}
+		for _, change := range result.Graph.Edges.Changed {
+			if _, err := fmt.Fprintf(writer, "graph\tedge\tchanged\t%s\t%s\t%s\t%s\n", change.After.ID, change.After.From, change.After.Kind, change.After.To); err != nil {
+				return err
+			}
+		}
+	}
+	if result.API != nil {
+		for _, surface := range result.API.Surfaces {
+			if _, err := fmt.Fprintf(writer, "api\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", surface.Change, surface.UnitID, surface.Provider, surface.Before, surface.After, surface.Evidence, surface.Compatibility); err != nil {
+				return err
+			}
+		}
+	}
+	if result.Impact != nil {
+		for _, root := range result.Impact.Roots {
+			if _, err := fmt.Fprintf(writer, "impact\troot\t%s\n", root); err != nil {
+				return err
+			}
+		}
+		for _, edge := range result.Impact.Edges {
+			if _, err := fmt.Fprintf(writer, "impact\tedge\t%s\t%s\t%s\n", edge.From, edge.Kind, edge.To); err != nil {
+				return err
+			}
+		}
+		if len(result.Impact.Edges) == 0 {
+			for _, node := range result.Impact.Nodes {
+				if _, err := fmt.Fprintf(writer, "impact\tnode\t%s\n", node); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	for _, test := range result.Tests {
+		if _, err := fmt.Fprintf(writer, "test\t%s\t%s\t%s\t%s\n", test.Symbol.ID, test.Evidence, test.Reason, test.EdgeID); err != nil {
+			return err
+		}
+	}
+	if result.Truncated {
 		_, err := fmt.Fprintln(writer, "... truncated")
 		return err
 	}
