@@ -56,7 +56,7 @@ Freshness is not skipped to improve the number.
 
 ## Size projection
 
-`TestHotProjectionIsSmallerThanVerboseWorktreeFixture` builds one worktree with
+`TestHotProjectionDoesNotExceedVerboseWorktreeFixture` builds one worktree with
 1,600 documents, definition occurrences, long paths, and symbols, then compares
 physical bstore files:
 
@@ -68,6 +68,9 @@ physical bstore files:
 The aggregate is 50% of this deliberately verbose fixture. It stores symbols,
 token postings, edges, and normalized provenance only; units, documents,
 occurrences, source text, and freshness manifests remain solely in worktrees.
+The portable test permits equal physical allocation because bbolt grows files
+in coarse platform-dependent steps; it never permits the projection to exceed
+the authoritative fixture.
 
 ## Decision
 

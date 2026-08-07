@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -123,12 +124,14 @@ func stateBase(goos, home string, getenv func(string) string, userConfigDir func
 		}
 		return userConfigDir()
 	case "darwin":
-		return filepath.Join(home, "Library", "Application Support"), nil
+		return path.Join(home, "Library", "Application Support"), nil
 	default:
-		if base := getenv("XDG_STATE_HOME"); base != "" && filepath.IsAbs(base) {
+		// Linux and other Unix state paths use slash semantics even when this
+		// helper is exercised by the Windows CI host for cross-platform rules.
+		if base := getenv("XDG_STATE_HOME"); base != "" && path.IsAbs(base) {
 			return base, nil
 		}
-		return filepath.Join(home, ".local", "state"), nil
+		return path.Join(home, ".local", "state"), nil
 	}
 }
 
