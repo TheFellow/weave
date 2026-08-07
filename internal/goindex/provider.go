@@ -20,7 +20,7 @@ import (
 	"golang.org/x/tools/go/packages"
 )
 
-const providerVersion = "1"
+const providerVersion = "2"
 
 // Provider indexes the active Go build without permitting dependency download
 // or go.mod/go.sum mutation. It preserves the user's Go toolchain selection so

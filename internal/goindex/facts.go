@@ -2,7 +2,6 @@ package goindex
 
 import (
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -568,11 +567,13 @@ func (analysis *packageAnalysis) documentID(path string) string {
 }
 
 func semanticID(kind string, parts ...string) string {
-	encoded := make([]string, len(parts))
-	for i, part := range parts {
-		encoded[i] = base64.RawURLEncoding.EncodeToString([]byte(part))
+	hash := sha256.New()
+	_, _ = hash.Write([]byte(kind))
+	for _, part := range parts {
+		_, _ = hash.Write([]byte{0})
+		_, _ = hash.Write([]byte(part))
 	}
-	return kind + ":" + strings.Join(encoded, ":")
+	return kind + ":" + hex.EncodeToString(hash.Sum(nil))
 }
 
 func objectKind(object types.Object) string {

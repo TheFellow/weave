@@ -2,6 +2,7 @@ package goindex
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -187,6 +188,16 @@ func TestGlobalEdgesHaveDeterministicSingleUnitOwnership(t *testing.T) {
 	dedupeGlobalEdges([]*packageAnalysis{first, second})
 	if len(first.facts.Edges) != 1 || len(second.facts.Edges) != 1 || second.facts.Edges[0].ID != "different-edge" {
 		t.Fatalf("edge ownership = %#v, %#v", first.facts.Edges, second.facts.Edges)
+	}
+}
+
+func TestSemanticIDsAreCompactStableAndDomainSeparated(t *testing.T) {
+	first := semanticID("edge", "very-long-semantic-endpoint", "target")
+	if first != semanticID("edge", "very-long-semantic-endpoint", "target") || len(first) != len("edge:")+sha256.Size*2 {
+		t.Fatalf("semantic ID = %q", first)
+	}
+	if first == semanticID("edge", "very-long-semantic-endpoint", "different") || first == semanticID("symbol", "very-long-semantic-endpoint", "target") {
+		t.Fatal("semantic ID did not separate payload or domain")
 	}
 }
 
