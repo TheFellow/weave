@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"go/types"
+	goversion "go/version"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -15,6 +16,7 @@ import (
 	"strings"
 
 	"github.com/TheFellow/weave/internal/freshness"
+	"golang.org/x/mod/modfile"
 	"golang.org/x/tools/go/packages"
 )
 
@@ -48,6 +50,9 @@ func (provider Provider) Refresh(ctx context.Context, request freshness.Request)
 	root := request.Repository.Root
 	if !hasGoWorkspace(root) {
 		return emptyResult(request.Previous), nil
+	}
+	if err := checkTargetGoVersion(root); err != nil {
+		return freshness.Result{}, err
 	}
 	configuration := &packages.Config{
 		Context: ctx,
@@ -115,6 +120,50 @@ func (provider Provider) Refresh(ctx context.Context, request freshness.Request)
 	slices.SortFunc(result.Units, func(a, b freshness.Unit) int { return strings.Compare(a.ID, b.ID) })
 	slices.Sort(result.Removed)
 	return result, nil
+}
+
+func checkTargetGoVersion(root string) error {
+	type versionFile struct {
+		name  string
+		parse func([]byte) (string, error)
+	}
+	files := []versionFile{
+		{"go.mod", func(content []byte) (string, error) {
+			parsed, err := modfile.ParseLax("go.mod", content, nil)
+			if err != nil || parsed.Go == nil {
+				return "", err
+			}
+			return parsed.Go.Version, nil
+		}},
+		{"go.work", func(content []byte) (string, error) {
+			parsed, err := modfile.ParseWork("go.work", content, nil)
+			if err != nil || parsed.Go == nil {
+				return "", err
+			}
+			return parsed.Go.Version, nil
+		}},
+	}
+	for _, file := range files {
+		content, err := os.ReadFile(filepath.Join(root, file.name))
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("read %s Go version: %w", file.name, err)
+		}
+		required, err := file.parse(content)
+		if err != nil {
+			return fmt.Errorf("parse %s Go version: %w", file.name, err)
+		}
+		if required == "" {
+			continue
+		}
+		target := "go" + required
+		if goversion.IsValid(target) && goversion.IsValid(runtime.Version()) && goversion.Compare(target, runtime.Version()) > 0 {
+			return fmt.Errorf("target %s requires Go %s, but this Weave binary was built with %s; install or build Weave with Go %s or newer (runtime indexing does not download toolchains)", file.name, required, runtime.Version(), required)
+		}
+	}
+	return nil
 }
 
 func hasGoWorkspace(root string) bool {

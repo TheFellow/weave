@@ -168,6 +168,18 @@ func TestProviderRejectsIllTypedRefresh(t *testing.T) {
 	}
 }
 
+func TestProviderRejectsTargetNewerThanBinaryActionably(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "go.mod", "module example.test/future\n\ngo 1.99\n")
+	write(t, root, "future.go", "package future\n")
+	_, err := (Provider{}).Refresh(context.Background(), request(root, nil))
+	if err == nil || !strings.Contains(err.Error(), "requires Go 1.99") ||
+		!strings.Contains(err.Error(), "install or build Weave") ||
+		!strings.Contains(err.Error(), "does not download toolchains") {
+		t.Fatalf("future toolchain error = %v", err)
+	}
+}
+
 func TestProviderLeavesNonGoRepositoryEmpty(t *testing.T) {
 	root := t.TempDir()
 	write(t, root, "README.md", "hello\n")
