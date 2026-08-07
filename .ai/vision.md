@@ -147,12 +147,19 @@ Human output should be concise and legible. JSON output must be versioned,
 stable, complete, and designed for automated consumers. MCP is a thin optional
 adapter over the same application boundary, never the primary implementation.
 
-Focused graph queries also emit deterministic Graphviz DOT without requiring
-Graphviz. DOT output must use readable labels rather than opaque identities,
-retain full identities and evidence in metadata, distinguish traversal roles,
-remain explicitly bounded, and work across the same local and catalog scopes as
-the underlying query. Rendering DOT to SVG, PNG, PDF, or an interactive viewer
-is the responsibility of Graphviz or another consumer.
+Focused graph queries also emit deterministic Graphviz DOT without requiring a
+system Graphviz installation. DOT output must use readable labels rather than
+opaque identities, retain full identities and evidence in metadata,
+distinguish traversal roles, remain explicitly bounded, and work across the
+same local and catalog scopes as the underlying query.
+
+A human-facing local explorer is a first-class consumer of that same DOT. It
+runs only on loopback, uses browser-side Graphviz layout, and animates nodes,
+edges, and shapes as the user changes focus, depth, direction, or relationship
+filters. Pan, zoom, history, tooltips, and click-to-navigate make the graph an
+inspectable map rather than a static picture. This surface is for people; it
+does not become an LLM protocol, change query semantics, or introduce another
+graph store. Magjac's `d3-graphviz` transition model is preferred prior art.
 
 A later presentation-layer tool may turn the same bounded graph results into
 reproducible animations. It should reuse Graphviz/DOT coordinates where they
@@ -213,14 +220,14 @@ The initial product is not:
 - An IDE replacement.
 - A full build system.
 - A universal parser maintained by this project.
-- An interactive graph visualization product or Graphviz renderer.
+- A general-purpose graph editor or IDE replacement. The bounded semantic graph
+  explorer is deliberately narrower.
 - A source-control system or replacement for Git.
 - A guarantee that unrelated languages can be semantically connected without
   build metadata, schemas, configuration, or declared bridges.
 
-Interactive visualization, natural-language query translation, and hosted
-artifact exchange may be built later by other tools consuming Weave's stable
-JSON or DOT interfaces.
+Natural-language query translation and hosted artifact exchange may be built
+later by other tools consuming Weave's stable JSON or DOT interfaces.
 
 ## System shape
 
@@ -298,10 +305,11 @@ do not express every build target, repository relationship, dirty overlay,
 confidence class, API fingerprint, or architecture rule Weave needs. The core
 will normalize SCIP and native adapter output into its own versioned fact model.
 
-The experimental adapter v0 uses newline-delimited JSON to accelerate
-experimentation and publishes cross-language fixtures under
-`protocol/adapter/v0/`. Before third-party adapters are promised stable
-compatibility, define a framed protobuf protocol with:
+The adapter contract uses bounded newline-delimited JSON and publishes
+cross-language fixtures under `protocol/adapter/v0/`. The durable inspiration
+from `protoc` is its executable plugin model, not a requirement to use protobuf
+as Weave's transport. Before third-party compatibility is declared stable,
+promote a versioned language-neutral specification with:
 
 - Handshake and capability negotiation.
 - Schema and adapter versions.
@@ -311,11 +319,13 @@ compatibility, define a framed protobuf protocol with:
 - Diagnostics and partial-failure reporting.
 - Cancellation and bounded resource behavior.
 
-The protobuf schema, not generated Go types, will be the v1 source of truth.
-Generated bindings may be offered for convenience, but any implementation that
-obeys the wire contract is equally valid. Preserve the simple protoc-like
-one-request/one-response mode even if a Bazel-worker-like persistent mode is
-added later.
+The wire specification and conformance fixtures, not Go implementation types,
+are the source of truth. Helper SDKs may be offered for convenience, but any
+compiled executable that obeys the process and byte contract is equally valid.
+Do not add protobuf merely for resemblance to `protoc`; adopt another encoding
+only when it solves a measured compatibility, size, or tooling problem.
+Preserve the simple one-request/one-response mode even if a
+Bazel-worker-like persistent mode is added later.
 
 ## Language strategy
 
