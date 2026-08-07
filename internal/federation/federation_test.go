@@ -34,7 +34,10 @@ func TestFederatedExactIdentityTraversalAndProvenance(t *testing.T) {
 			fixtureSymbol("app", caller, "Call", "call"),
 			fixtureSymbol("app", "scip go gomod example.com/app 1.0.0 Duplicate.", "Duplicate", "duplicate-a"),
 		},
-		Edges: []graph.Edge{{ID: "call-edge", UnitID: "app", From: caller, To: target, Kind: graph.EdgeCalls, Evidence: graph.EvidenceExact, Provider: "fixture"}},
+		Edges: []graph.Edge{
+			{ID: "call-edge", UnitID: "app", From: caller, To: target, Kind: graph.EdgeCalls, Evidence: graph.EvidenceExact, Provider: "fixture"},
+			{ID: "declared-bridge", UnitID: "app", From: caller, To: target, Kind: graph.EdgeDependsOn, Evidence: graph.EvidenceDeclared, Provider: "weave-bridges"},
+		},
 	})
 	writeFacts(t, entries[1].DatabasePath, graph.UnitFacts{
 		Unit: graph.Unit{ID: "shared", Provider: "fixture", ProviderVersion: "1"},
@@ -60,6 +63,10 @@ func TestFederatedExactIdentityTraversalAndProvenance(t *testing.T) {
 	path, err := query.Path(ctx, store, caller, target, []graph.EdgeKind{graph.EdgeCalls}, query.Bounds{MaxDepth: 4, MaxNodes: 20, MaxEdges: 100})
 	if err != nil || !reflect.DeepEqual(path.Nodes, []string{caller, target}) {
 		t.Fatalf("Path = %#v, %v", path, err)
+	}
+	bridgePath, err := query.Path(ctx, store, caller, target, []graph.EdgeKind{graph.EdgeDependsOn}, query.Bounds{MaxDepth: 4, MaxNodes: 20, MaxEdges: 100})
+	if err != nil || len(bridgePath.Edges) != 1 || bridgePath.Edges[0].Evidence != graph.EvidenceDeclared || bridgePath.Edges[0].Provider != "weave-bridges" {
+		t.Fatalf("declared bridge path = %#v, %v", bridgePath, err)
 	}
 	impact, err := query.Impact(ctx, store, target, []graph.EdgeKind{graph.EdgeCalls}, query.Bounds{MaxDepth: 4, MaxNodes: 20, MaxEdges: 100})
 	if err != nil || !reflect.DeepEqual(impact.Nodes, []string{target, caller}) {

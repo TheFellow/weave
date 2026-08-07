@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/TheFellow/weave/internal/adapter"
+	"github.com/TheFellow/weave/internal/bridge"
 	"github.com/TheFellow/weave/internal/freshness"
 	"github.com/TheFellow/weave/internal/goindex"
 	"github.com/TheFellow/weave/internal/repository"
@@ -27,7 +28,7 @@ const maxInputBytes = 512 << 20
 // Default returns the automatic provider set for a worktree. Only the known
 // weave-dotnet adapter is automatically trusted and executed.
 func Default(directory string) freshness.Provider {
-	providers := []freshness.Provider{goindex.Provider{}}
+	providers := []freshness.Provider{goindex.Provider{}, bridge.Provider{}}
 	configured := os.Getenv("WEAVE_DOTNET_ADAPTER")
 	if configured == "" {
 		configured = "weave-dotnet"

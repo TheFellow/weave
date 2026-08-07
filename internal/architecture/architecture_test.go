@@ -66,6 +66,30 @@ func TestLoadRejectsMalformedAndUnknownConfiguration(t *testing.T) {
 	}
 }
 
+func TestDeclaredBridgeToExternalSymbolParticipatesInPolicy(t *testing.T) {
+	config := architecture.Config{
+		Schema: architecture.Schema,
+		Layers: []architecture.Layer{
+			{ID: "service", Symbols: []string{"service.Handler"}},
+			{ID: "forbidden-contract", Symbols: []string{"scip openapi contracts 1 Legacy#"}},
+		},
+		Rules: []architecture.Rule{{
+			ID: "no-legacy-contract", Action: "forbid", From: "service", To: "forbidden-contract",
+			Kinds: []graph.EdgeKind{graph.EdgeDependsOn},
+		}},
+	}
+	report := architecture.Check(config, graph.Snapshot{
+		Symbols: []graph.Symbol{{ID: "service.Handler", StableName: "service.Handler"}},
+		Edges: []graph.Edge{{
+			ID: "bridge", From: "service.Handler", To: "scip openapi contracts 1 Legacy#",
+			Kind: graph.EdgeDependsOn, Provider: "weave-bridges", Evidence: graph.EvidenceDeclared,
+		}},
+	})
+	if len(report.Violations) != 1 || report.Violations[0].Evidence != graph.EvidenceDeclared || report.Violations[0].Provider != "weave-bridges" {
+		t.Fatalf("bridge policy report = %#v", report)
+	}
+}
+
 func TestSARIF21IsValidDeterministicJSON(t *testing.T) {
 	config := architecture.Config{Schema: architecture.Schema, Layers: []architecture.Layer{{ID: "api", Paths: []string{"internal/api/**"}}, {ID: "storage", Units: []string{"example.com/app/storage"}}}, Rules: []architecture.Rule{{ID: "api-no-storage", Action: "forbid", From: "api", To: "storage", Kinds: []graph.EdgeKind{graph.EdgeImports}}}}
 	report := architecture.Check(config, fixtureSnapshot())

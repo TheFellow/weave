@@ -55,6 +55,11 @@ coordinates in JSON facts.
 `--kind depends-on` for a bounded transitive route. Every edge includes its
 provider and evidence class in JSON/export output.
 
+Exact relationships that compilers cannot establish can be checked into
+`.weave/bridges.json`. These declared/generated `depends-on`, `documents`, and
+`generates` edges participate in the same local and federated queries and
+architecture rules. See [declared semantic bridges](docs/declared-bridges.md).
+
 Impact roots may be a symbol, repeated repository-relative `--file` and
 `--package` values, or `--git-diff REVISION` (which compares that revision to
 the current working tree). File roots use indexed definitions and references;
@@ -124,8 +129,8 @@ members still return bounded partial results with repository provenance.
 The native Go provider currently covers typed declarations/references, imports,
 dependencies, interfaces/implementations, and direct static calls. C# covers
 compiler-resolved calls and project relationships; the initial F# slice omits
-call edges. Exact cross-language relationships require declared/generated
-bridges. Packaged adapters, finer-grained .NET refresh, fuzzy search,
+call edges. Exact cross-language relationships use checked-in
+declared/generated bridges. Finer-grained .NET refresh, fuzzy search,
 hooks/watch mode, MCP, additional languages, and signed package-manager
 distribution remain future work.
 
