@@ -41,8 +41,9 @@ static async Task<int> MainAsync(string[] args)
         var diagnostics = new List<AdapterDiagnostic>(csharpDiagnostics);
         var fsharpProjects = Directory.EnumerateFiles(paths.Root, "*.fsproj", SearchOption.AllDirectories)
             .Where(path => !path.Split(Path.DirectorySeparatorChar).Any(part => part is "bin" or "obj" or ".git"))
-            .Order(StringComparer.Ordinal);
-        foreach (var project in fsharpProjects)
+            .ToArray();
+        var orderedFSharpProjects = FSharpProjectOrder.DependentsFirst(fsharpProjects, request.Variant);
+        foreach (var project in orderedFSharpProjects)
         {
             var result = await FSharpIndexer.IndexAsync(project, paths.Root, request.RepositoryIdentity, request.Variant, CancellationToken.None);
             units.AddRange(result.Units);

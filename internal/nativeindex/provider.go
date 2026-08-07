@@ -24,6 +24,7 @@ import (
 )
 
 const maxInputBytes = 512 << 20
+const maxAdapterOutputBytes = 256 << 20
 
 // Default returns the automatic provider set for a worktree. Only the known
 // weave-dotnet adapter is automatically trusted and executed.
@@ -85,7 +86,11 @@ func (provider Provider) Refresh(ctx context.Context, request freshness.Request)
 	if _, err := rand.Read(requestID); err != nil {
 		return freshness.Result{}, fmt.Errorf("create adapter request ID: %w", err)
 	}
-	result, err := provider.Runner.Index(runCtx, adapter.Executable{
+	runner := provider.Runner
+	if runner.Limits.MaxTotalBytes == 0 {
+		runner.Limits.MaxTotalBytes = maxAdapterOutputBytes
+	}
+	result, err := runner.Index(runCtx, adapter.Executable{
 		Path: provider.Path, Args: provider.Args, Dir: request.Repository.Root, Env: adapterEnvironment(),
 	}, adapter.IndexRequest{
 		RequestID: hex.EncodeToString(requestID), RepositoryRoot: request.Repository.Root,

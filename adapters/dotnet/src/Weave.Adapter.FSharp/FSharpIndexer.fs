@@ -45,9 +45,21 @@ type FSharpIndexer private () =
                             invalidArg "path" ("source symlink escapes repository root: " + path)
                 Path.GetRelativePath(root, full).Replace(Path.DirectorySeparatorChar, '/')
 
+            let isRepositoryPath path =
+                let full = Path.GetFullPath path
+                full.Equals(root, comparison) || full.StartsWith(rootPrefix, comparison)
+
             let diagnostics = List<AdapterDiagnostic>()
             use log = new StringWriter()
             let manager = new AnalyzerManager(AnalyzerManagerOptions(LogWriter = log))
+            // FCS needs loadable project-reference outputs. SDK reference
+            // assemblies can be absent after a safe design-time build because
+            // Buildalyzer deliberately does not build project references.
+            manager.SetGlobalProperty("ProduceReferenceAssembly", "false")
+            // Buildalyzer's design-time target list starts with Clean. Keep the
+            // trusted repository's prebuilt dependency outputs intact while
+            // still preventing BuildProjectReferences during indexing.
+            manager.SetGlobalProperty("CleanDependsOn", "")
             if not (String.IsNullOrWhiteSpace variant) then manager.SetGlobalProperty("Configuration", variant)
             let analyzer =
                 manager.GetProject(IOPath.Parse projectPath)
@@ -77,7 +89,13 @@ type FSharpIndexer private () =
                         if sourceArguments.Contains argument && not (Path.IsPathFullyQualified argument) then
                             Path.GetFullPath(argument, projectDirectory)
                         else argument)
-                let sourceFiles = result.SourceFiles |> Array.map absoluteProjectPath
+                // SDKs can inject compiler source from package caches (for
+                // example Microsoft.NET.Test.Sdk.Program.fs). FCS still sees
+                // those arguments, but repository facts must not ingest them.
+                let sourceFiles =
+                    result.SourceFiles
+                    |> Array.map absoluteProjectPath
+                    |> Array.filter isRepositoryPath
                 let options = checker.GetProjectOptionsFromCommandLineArgs(projectPath, compilerArguments)
                 let! checkedProject = Async.StartAsTask(checker.ParseAndCheckProject(options), cancellationToken = cancellationToken)
 

@@ -31,7 +31,7 @@ the useful-first-release definition has been achieved.
 | Fresh before every observed answer | **Partial** | Local and selected federated worktrees call `Freshness.Ensure`; composite Go/.NET inventories refresh before reads; failed catalog members are explicitly excluded | Explicit SCIP imports and arbitrary one-shot adapter imports have no producer lifecycle and can become stale. |
 | Incremental work proportional to change | **Partial** | Git overlay comparison; Go input/surface/inventory fingerprints; only changed unit batches are atomically replaced | Go still loads/analyzes the package universe to calculate fingerprints; no content-addressed fact reuse across branches; no measured RIBLT use. |
 | Stable human and JSON CLI | **Partial** | urfave/cli v3 tree; injected streams; deterministic text; `weave.query/v1`; truncation; command end-to-end tests | Exit codes do not yet distinguish unavailable capability, stale/corrupt storage, and internal failure; JSON compatibility policy is not published beyond schema labels. |
-| Cross-platform core and isolated native adapters | **Partial** | Pure-Go core; release build matrix for macOS/Linux/Windows amd64/arm64; one-shot adapter protocol; .NET CI and dry-run packages on all three OSes; same-version NuGet/host companion release artifacts configured | Core executable behavior is not tested on a three-OS CI matrix; no tagged release has exercised publication; .NET 9 adapter cannot evaluate .NET 10 F# targets. |
+| Cross-platform core and isolated native adapters | **Partial** | Pure-Go core; release build matrix for macOS/Linux/Windows amd64/arm64; one-shot adapter protocol; .NET 10 CI and dry-run packages on all three OSes; same-version NuGet/host companion release artifacts configured; genuine `fkyeah` indexing | Core executable behavior is not tested on a three-OS CI matrix; no tagged release has exercised publication. |
 | Bounded evidence rather than guesses | **Implemented** | `graph.Evidence`, validation, traversal/result bounds, protocol/import limits, provider-preserving JSON/export | Some external endpoints are intentionally unmaterialized and reported by `verify` as warnings. |
 
 ## System capability traceability
@@ -53,7 +53,7 @@ the useful-first-release definition has been achieved.
 | Versioned external adapter protocol | **Partial** | strict one-shot `weave.adapter/v0`, describe negotiation, literal argv, permissions, cancellation, partial diagnostics, fuzzing | Protocol remains newline JSON v0 rather than promised stable framed protobuf; no third-party compatibility promise. |
 | Adapter discovery and doctor | **Implemented** initial slice | PATH/environment discovery for `weave-dotnet` and `scip-dotnet`; executable validation; bounded native protocol/capability handshake; runtime visibility; tests | Doctor does not install or repair adapters, and SCIP producers do not share the native protocol handshake. |
 | C# precision | **Implemented** with automatic full refresh | Roslyn/MSBuild mixed-solution fixture; discovered adapter inventory/fingerprint lifecycle; unrelated-file reuse test | Any changed .NET semantic input causes the advertised full refresh. Visual Basic absent. |
-| F# precision | **Partial** | FCS typed definitions/references, ordered-file/project fingerprint, mixed solution tests | Calls and a formal binary-compatible API fingerprint are deferred. |
+| F# precision | **Partial** | .NET 10-hosted FCS typed definitions/references, MSBuild-evaluated dependency ordering, repository-only documents, ordered-file/project fingerprint, mixed solution tests, genuine `fkyeah` index/query | Calls and a formal binary-compatible API fingerprint are deferred; referenced outputs must be built before safe design-time indexing. |
 | Cross-language bridges | **Implemented** initial explicit slice | strict `.weave/bridges.json` v1; exact `symbol:` endpoints; declared/generated depends/documents/generates facts; freshness/export/query/federation/policy tests | No build-system adapters auto-import bridge declarations; endpoint discovery remains explicit from export IDs by design. |
 | Global catalog and bounded federation | **Partial** | catalog add/remove/list/status/sync; refresh-before-open, stale-member exclusion, exact-ID bounded federation, provenance and partial-failure tests; checked-in exact bridges join catalog members | External-symbol resolution and bridges are exact-ID only; there is no hosted/shared catalog. |
 | Architecture policy | **Implemented** initial slice | versioned checked-in config, allow/forbid edge rules, evidence paths, text/JSON/SARIF, exit 3 | Higher-level “must have test”, instantiation-count, and approved-boundary rule families are absent. |
@@ -61,7 +61,7 @@ the useful-first-release definition has been achieved.
 | Cross-platform release packaging | **Implemented** configuration, not yet published | `.goreleaser.yaml`, tagged release workflow, checksums, build metadata, `version` tests; same-version .NET tool package and six RID archives; three-OS package dry runs | No tag/release has exercised GitHub publication; no signing, SBOM, Homebrew/WinGet/Scoop package; no NuGet.org push by design. |
 | Repository/adapter trust boundary | **Partial** | Literal argv, explicit build/restore/network/generator permissions, no shell interpolation, path containment, strict/bounded input | The Go compiler may include an ignored `.go` file that participates in a package; explicit ignored-source exclusion and OS-level child memory limits are absent. |
 | Security fuzzing | **Implemented** initial boundary set | adapter-frame and SCIP-import fuzz targets; bounded 5-second campaigns passed | Long-running scheduled/OSS-Fuzz integration and database-file fuzzing remain future work. |
-| Performance baselines | **Partial** | storage microbenchmarks plus bounded reproducible harness and all four named attempts in `.ai/benchmarks/2026-08-06-repositories.md`; two material Go correctness/performance classes fixed | Cedar exceeds the .NET bound and FKYeah exposes .NET 10 incompatibility; dirty one-file incremental samples remain unrecorded; 1.11 GB Go database remains large. |
+| Performance baselines | **Partial** | storage microbenchmarks plus bounded reproducible harness and all four named attempts in `.ai/benchmarks/2026-08-06-repositories.md`; two material Go correctness/performance classes fixed; .NET 10 `fkyeah` follow-up succeeds | Cedar exceeds the .NET bound; dirty one-file incremental samples remain unrecorded; 1.11 GB Go database remains large. |
 
 ## CLI command audit
 
@@ -83,7 +83,7 @@ the useful-first-release definition has been achieved.
 | # | Criterion | Status | Evidence and exact limitation |
 | ---: | --- | --- | --- |
 | 1 | Install one executable | **Partial** | `go install` works and tagged archives are configured; no tagged release exists yet. |
-| 2 | Enter Go, C#, or F# repository | **Partial** | Go is built in. Same-version `weave-dotnet` companion archives/tool package are configured; C#/F# is automatic once installed. Publication is untested, Cedar exceeds the bound, and .NET 10 F# targets are incompatible today. |
+| 2 | Enter Go, C#, or F# repository | **Partial** | Go is built in. Same-version .NET 10 `weave-dotnet` companion archives/tool package are configured; C#/F# is automatic once installed. Publication is untested and Cedar exceeds the bound. |
 | 3 | Query without daemon | **Implemented** | All operations are one-shot local commands. |
 | 4 | Current definitions/references/dependency paths/impact with source evidence | **Implemented for Go and C#; partial overall** | Go and installed C# facts refresh before local/federated reads; F# lacks calls; explicit SCIP imports remain unmanaged. |
 | 5 | Change a file and refresh without full rebuild | **Partial** | Go publishes only changed fingerprint units and dirty-file smoke passed, although package loading remains broad. .NET skips unrelated edits but performs a complete adapter refresh for semantic changes because that is its advertised capability. |
@@ -96,7 +96,7 @@ the useful-first-release definition has been achieved.
 **Conclusion:** this is a credible Go-first alpha and a strong implementation
 foundation, but it is not yet the complete useful first release as written.
 The blocking differences are an actually published/tagged install artifact,
-.NET 10 compatibility and bounded large-solution performance, finer-grained
+bounded large-solution performance, finer-grained
 .NET refresh, and unmanaged explicit SCIP import currency. The automatic
 installed-adapter and catalog lifecycle is usable, but is not equivalent to
 shipping one executable for all three languages.
@@ -112,7 +112,7 @@ shipping one executable for all three languages.
    format without weakening its declarative evidence.
 4. Extend test evidence beyond Go declarations/explicit `tests` edges and model
    build targets only through compiler/build-system providers, never heuristics.
-5. Resolve the measured Cedar/FKYeah adapter limits, add dirty-file samples, and
+5. Resolve the measured Cedar adapter limit, add dirty-file samples, and
    reduce the measured 1.11 GB Go index without sacrificing bounded adjacency.
 6. Add installation/recovery guidance to doctor, stable adapter protobuf only
    when third-party compatibility is ready, and an actual schema migration

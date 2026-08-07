@@ -94,3 +94,13 @@ and identity changes were necessary.
   one-file dirty-overlay matrix is still needed; current Go invalidation also
   reloads the compiler package universe before selecting changed publications.
 
+## Follow-up: .NET 10 host
+
+On 2026-08-07 the adapter, tests, CI, and release companion moved to `net10.0`.
+After a normal trusted-repository build, a fresh `fkyeah` index completed within
+the existing four-minute adapter bound and an exact `JsonRpc` query returned FCS
+facts from the resulting current manifest. The fix also orders F# projects from
+MSBuild-evaluated `ProjectReference` edges (dependents first), retains prebuilt
+reference outputs during Buildalyzer design-time evaluation, and excludes
+SDK-injected package-cache source from repository documents. This supersedes the
+SDK-host incompatibility above without rewriting the historical baseline.
