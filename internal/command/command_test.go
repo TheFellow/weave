@@ -4,12 +4,15 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/TheFellow/weave/internal/application"
 	"github.com/TheFellow/weave/internal/command"
+	"github.com/TheFellow/weave/internal/graph"
+	"github.com/TheFellow/weave/internal/storage"
 )
 
 func TestPlaceholderCommandsSucceedSilently(t *testing.T) {
@@ -23,13 +26,6 @@ func TestPlaceholderCommandsSucceedSilently(t *testing.T) {
 		{name: "init", args: []string{"init"}, want: "init"},
 		{name: "index", args: []string{"index"}, want: "index"},
 		{name: "status", args: []string{"status"}, want: "status"},
-		{name: "symbols", args: []string{"symbols"}, want: "symbols"},
-		{name: "definition", args: []string{"definition"}, want: "definition"},
-		{name: "references", args: []string{"references"}, want: "references"},
-		{name: "callers", args: []string{"callers"}, want: "callers"},
-		{name: "callees", args: []string{"callees"}, want: "callees"},
-		{name: "path", args: []string{"path"}, want: "path"},
-		{name: "impact", args: []string{"impact"}, want: "impact"},
 		{name: "dependencies", args: []string{"dependencies"}, want: "dependencies"},
 		{name: "architecture check", args: []string{"architecture", "check"}, want: "architecture check"},
 		{name: "repos add", args: []string{"repos", "add"}, want: "repos add"},
@@ -37,9 +33,6 @@ func TestPlaceholderCommandsSucceedSilently(t *testing.T) {
 		{name: "repos list", args: []string{"repos", "list"}, want: "repos list"},
 		{name: "adapters list", args: []string{"adapters", "list"}, want: "adapters list"},
 		{name: "adapters doctor", args: []string{"adapters", "doctor"}, want: "adapters doctor"},
-		{name: "export", args: []string{"export"}, want: "export"},
-		{name: "verify", args: []string{"verify"}, want: "verify"},
-		{name: "gc", args: []string{"gc"}, want: "gc"},
 		{name: "version", args: []string{"version"}, want: "version"},
 	}
 
@@ -103,6 +96,11 @@ func TestInvalidInvocationsReturnErrors(t *testing.T) {
 		{name: "unknown nested command", args: []string{"repos", "unknown"}},
 		{name: "unknown flag", args: []string{"status", "--unknown"}},
 		{name: "unexpected argument", args: []string{"status", "unexpected"}},
+		{name: "missing symbol", args: []string{"symbols"}},
+		{name: "extra path argument", args: []string{"path", "a", "b", "c"}},
+		{name: "invalid limit", args: []string{"symbols", "x", "--limit", "0"}},
+		{name: "invalid edge kind", args: []string{"impact", "x", "--kind", "magic"}},
+		{name: "invalid max depth", args: []string{"path", "x", "y", "--max-depth", "0"}},
 	}
 
 	for _, test := range tests {
@@ -134,7 +132,101 @@ type recordingApplication struct {
 	err         error
 }
 
-func (a *recordingApplication) Execute(_ context.Context, invocation application.Invocation) error {
+func (a *recordingApplication) Execute(_ context.Context, invocation application.Invocation) (application.Response, error) {
 	a.invocations = append(a.invocations, invocation)
-	return a.err
+	return application.Response{Schema: application.QuerySchema, Command: invocation.Command}, a.err
+}
+
+func TestRealQueryCommands(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "index.db")
+	db, err := storage.Open(ctx, path, storage.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	facts := commandFixture()
+	if err := db.ReplaceUnit(ctx, facts); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name     string
+		args     []string
+		contains []string
+		empty    bool
+	}{
+		{name: "symbols", args: []string{"symbols", "handle"}, contains: []string{"fixture:handle\tfunction\tHandleRequest"}},
+		{name: "definition", args: []string{"definition", "authorize"}, contains: []string{"fixture:authorize\tfunction\tauthorize"}},
+		{name: "references", args: []string{"references", "authorize"}, contains: []string{"fixture:authorize\treference\tfixture:main.go:8:3"}},
+		{name: "callers", args: []string{"callers", "authorize"}, contains: []string{"fixture:handle\tcalls\tfixture:authorize"}},
+		{name: "callees", args: []string{"callees", "HandleRequest"}, contains: []string{"fixture:handle\tcalls\tfixture:authorize"}},
+		{name: "path", args: []string{"path", "HandleRequest", "authorize"}, contains: []string{"fixture:handle\tcalls\tfixture:authorize"}},
+		{name: "impact", args: []string{"impact", "authorize"}, contains: []string{"fixture:handle\tcalls\tfixture:authorize"}},
+		{name: "empty text", args: []string{"symbols", "missing"}, empty: true},
+		{name: "empty json", args: []string{"symbols", "missing", "--json"}, contains: []string{`"schema":"weave.query/v1"`, `"query":["missing"]`, `"truncated":false`}},
+		{name: "export", args: []string{"export", "--json"}, contains: []string{`"schema":"weave.export/v1"`, `"fixture:handle"`}},
+		{name: "verify", args: []string{"verify"}, empty: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			root := command.New(application.Local{DatabasePath: path}, command.Streams{Stdin: strings.NewReader(""), Stdout: &stdout, Stderr: &stderr})
+			if err := root.Run(ctx, append([]string{"weave"}, test.args...)); err != nil {
+				t.Fatalf("Run() error = %v", err)
+			}
+			if test.empty && stdout.Len() != 0 {
+				t.Fatalf("stdout = %q, want empty", stdout.String())
+			}
+			for _, value := range test.contains {
+				if !strings.Contains(stdout.String(), value) {
+					t.Errorf("stdout = %q, want substring %q", stdout.String(), value)
+				}
+			}
+			if stderr.Len() != 0 {
+				t.Errorf("stderr = %q", stderr.String())
+			}
+		})
+	}
+}
+
+func TestGCCommandCompactsClosedDatabase(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "index.db")
+	db, err := storage.Open(ctx, path, storage.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.ReplaceUnit(ctx, commandFixture()); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var stdout bytes.Buffer
+	root := command.New(application.Local{DatabasePath: path}, command.Streams{Stdin: strings.NewReader(""), Stdout: &stdout, Stderr: &bytes.Buffer{}})
+	if err := root.Run(ctx, []string{"weave", "gc"}); err != nil {
+		t.Fatal(err)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("stdout = %q", stdout.String())
+	}
+}
+
+func commandFixture() graph.UnitFacts {
+	rng := graph.Range{Start: graph.Position{Line: 7, Column: 2, Byte: 70}, End: graph.Position{Line: 7, Column: 11, Byte: 79}}
+	return graph.UnitFacts{
+		Unit:      graph.Unit{ID: "fixture", Provider: "fixture", ProviderVersion: "1"},
+		Documents: []graph.Document{{ID: "fixture:main.go", UnitID: "fixture", Path: "main.go", Language: "go", Provider: "fixture", ProviderVersion: "1"}},
+		Symbols: []graph.Symbol{
+			{ID: "fixture:handle", UnitID: "fixture", StableName: "fixture.HandleRequest", DisplayName: "HandleRequest", Kind: "function", DocumentID: "fixture:main.go", Definition: rng, Provider: "fixture", Evidence: graph.EvidenceExact},
+			{ID: "fixture:authorize", UnitID: "fixture", StableName: "fixture.authorize", DisplayName: "authorize", Kind: "function", DocumentID: "fixture:main.go", Definition: rng, Provider: "fixture", Evidence: graph.EvidenceExact},
+		},
+		Occurrences: []graph.Occurrence{{ID: "occ", UnitID: "fixture", SymbolID: "fixture:authorize", DocumentID: "fixture:main.go", Role: "reference", Range: rng, Provider: "fixture", Evidence: graph.EvidenceExact}},
+		Edges:       []graph.Edge{{ID: "edge", UnitID: "fixture", From: "fixture:handle", To: "fixture:authorize", Kind: graph.EdgeCalls, Provider: "fixture", Evidence: graph.EvidenceExact}},
+	}
 }

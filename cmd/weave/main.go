@@ -11,7 +11,11 @@ import (
 )
 
 func main() {
-	app := command.New(application.Noop{}, command.Streams{
+	database := os.Getenv("WEAVE_DATABASE")
+	if database == "" {
+		database = ".git/weave/index.db"
+	}
+	app := command.New(application.Local{DatabasePath: database}, command.Streams{
 		Stdin:  os.Stdin,
 		Stdout: os.Stdout,
 		Stderr: os.Stderr,

@@ -3,94 +3,203 @@ package command
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"strings"
 
 	"github.com/TheFellow/weave/internal/application"
+	"github.com/TheFellow/weave/internal/graph"
 	cli "github.com/urfave/cli/v3"
 )
 
-// Streams are the process streams used by the command tree. Keeping them
-// explicit makes output ownership testable and prevents command actions from
-// reaching for process globals.
 type Streams struct {
-	Stdin  io.Reader
-	Stdout io.Writer
-	Stderr io.Writer
+	Stdin          io.Reader
+	Stdout, Stderr io.Writer
 }
 
 // New returns the complete Weave command tree.
 func New(app application.Service, streams Streams) *cli.Command {
 	root := &cli.Command{
-		Name:      "weave",
-		Usage:     "build and query a local semantic index",
-		Reader:    streams.Stdin,
-		Writer:    streams.Stdout,
-		ErrWriter: streams.Stderr,
-		// The executable boundary owns presentation and process exit. Command.Run
-		// remains a normal, directly testable Go function.
+		Name: "weave", Usage: "build and query a local semantic index",
+		Reader: streams.Stdin, Writer: streams.Stdout, ErrWriter: streams.Stderr,
 		ExitErrHandler: func(context.Context, *cli.Command, error) {},
 	}
-
 	root.Commands = []*cli.Command{
-		leaf(app, "init", "initialize Weave for a repository"),
-		leaf(app, "index", "build or refresh the semantic index"),
-		leaf(app, "status", "show index and freshness status"),
-		leaf(app, "symbols", "find symbols"),
-		leaf(app, "definition", "find symbol definitions"),
-		leaf(app, "references", "find symbol references"),
-		leaf(app, "callers", "find callers of a symbol"),
-		leaf(app, "callees", "find symbols called by a symbol"),
-		leaf(app, "path", "find a bounded path between symbols"),
-		leaf(app, "impact", "find code affected by a change"),
-		leaf(app, "dependencies", "find semantic dependencies"),
-		group("architecture", "evaluate architecture rules",
-			leaf(app, "architecture check", "check architecture rules"),
-		),
-		group("repos", "manage the cross-repository catalog",
-			leaf(app, "repos add", "add a repository to the catalog"),
-			leaf(app, "repos remove", "remove a repository from the catalog"),
-			leaf(app, "repos list", "list cataloged repositories"),
-		),
-		group("adapters", "inspect semantic adapters",
-			leaf(app, "adapters list", "list available adapters"),
-			leaf(app, "adapters doctor", "diagnose adapter availability"),
-		),
-		leaf(app, "export", "export normalized semantic facts"),
-		leaf(app, "verify", "verify index integrity and reproducibility"),
-		leaf(app, "gc", "compact and garbage-collect derived data"),
-		leaf(app, "version", "show the Weave version"),
+		noop(app, streams, "init", "initialize Weave for a repository"),
+		noop(app, streams, "index", "build or refresh the semantic index"),
+		noop(app, streams, "status", "show index and freshness status"),
+		lookup(app, streams, "symbols", "find symbols"),
+		lookup(app, streams, "definition", "find symbol definitions"),
+		lookup(app, streams, "references", "find symbol references"),
+		lookup(app, streams, "callers", "find callers of a symbol"),
+		lookup(app, streams, "callees", "find symbols called by a symbol"),
+		traversal(app, streams, "path", "find a bounded path between symbols", 2),
+		traversal(app, streams, "impact", "find code affected by a symbol", 1),
+		noop(app, streams, "dependencies", "find semantic dependencies"),
+		group("architecture", "evaluate architecture rules", noop(app, streams, "architecture check", "check architecture rules")),
+		group("repos", "manage the cross-repository catalog", noop(app, streams, "repos add", "add a repository to the catalog"), noop(app, streams, "repos remove", "remove a repository from the catalog"), noop(app, streams, "repos list", "list cataloged repositories")),
+		group("adapters", "inspect semantic adapters", noop(app, streams, "adapters list", "list available adapters"), noop(app, streams, "adapters doctor", "diagnose adapter availability")),
+		maintenance(app, streams, "export", "export normalized semantic facts", true),
+		maintenance(app, streams, "verify", "verify index integrity", true),
+		maintenance(app, streams, "gc", "compact derived data", false),
+		noop(app, streams, "version", "show the Weave version"),
 	}
-
 	return root
 }
 
 func group(name, usage string, children ...*cli.Command) *cli.Command {
-	return &cli.Command{
-		Name:     name,
-		Usage:    usage,
-		Commands: children,
-	}
+	return &cli.Command{Name: name, Usage: usage, Commands: children}
 }
 
-func leaf(app application.Service, path, usage string) *cli.Command {
+func lookup(app application.Service, streams Streams, name, usage string) *cli.Command {
+	return &cli.Command{Name: name, Usage: usage, Flags: []cli.Flag{jsonFlag(), limitFlag()}, Action: invoke(app, streams, name, 1, 1)}
+}
+
+func traversal(app application.Service, streams Streams, name, usage string, arguments int) *cli.Command {
+	return &cli.Command{Name: name, Usage: usage, Flags: []cli.Flag{
+		jsonFlag(), limitFlag(), &cli.IntFlag{Name: "max-depth", Value: 8, Usage: "maximum traversal depth", Validator: func(v int) error {
+			if v < 1 || v > 100 {
+				return fmt.Errorf("must be between 1 and 100")
+			}
+			return nil
+		}},
+		&cli.StringSliceFlag{Name: "kind", Usage: "edge kind to traverse (repeatable)"},
+	}, Action: invoke(app, streams, name, arguments, arguments)}
+}
+
+func maintenance(app application.Service, streams Streams, name, usage string, jsonOutput bool) *cli.Command {
+	var flags []cli.Flag
+	if jsonOutput {
+		flags = append(flags, jsonFlag())
+	}
+	return &cli.Command{Name: name, Usage: usage, Flags: flags, Action: invoke(app, streams, name, 0, 0)}
+}
+
+func noop(app application.Service, streams Streams, path, usage string) *cli.Command {
 	name := path
 	if index := strings.LastIndexByte(path, ' '); index >= 0 {
 		name = path[index+1:]
 	}
+	return &cli.Command{Name: name, Usage: usage, Action: invoke(app, streams, path, 0, 0)}
+}
 
-	return &cli.Command{
-		Name:  name,
-		Usage: usage,
-		Action: func(ctx context.Context, cmd *cli.Command) error {
-			if cmd.Args().Len() != 0 {
-				return cli.Exit(fmt.Sprintf("%s accepts no arguments", path), 2)
+func jsonFlag() cli.Flag { return &cli.BoolFlag{Name: "json", Usage: "emit versioned JSON"} }
+func limitFlag() cli.Flag {
+	return &cli.IntFlag{Name: "limit", Value: 50, Usage: "maximum results", Validator: func(v int) error {
+		if v < 1 || v > 100000 {
+			return fmt.Errorf("must be between 1 and 100000")
+		}
+		return nil
+	}}
+}
+
+func invoke(app application.Service, streams Streams, path string, minArgs, maxArgs int) cli.ActionFunc {
+	return func(ctx context.Context, cmd *cli.Command) error {
+		if count := cmd.Args().Len(); count < minArgs || count > maxArgs {
+			return cli.Exit(fmt.Sprintf("%s expects %s", path, arity(minArgs, maxArgs)), 2)
+		}
+		var kinds []graph.EdgeKind
+		for _, value := range cmd.StringSlice("kind") {
+			kind := graph.EdgeKind(value)
+			if !graph.IsEdgeKind(kind) {
+				return cli.Exit(fmt.Sprintf("unknown edge kind %q", value), 2)
 			}
-			return app.Execute(ctx, application.Invocation{
-				Command:   path,
-				Arguments: append([]string(nil), cmd.Args().Slice()...),
-			})
-		},
+			kinds = append(kinds, kind)
+		}
+		response, err := app.Execute(ctx, application.Invocation{
+			Command: path, Arguments: append([]string(nil), cmd.Args().Slice()...), JSON: cmd.Bool("json"),
+			Limit: cmd.Int("limit"), MaxDepth: cmd.Int("max-depth"), Kinds: kinds,
+		})
+		if err != nil {
+			return err
+		}
+		return render(streams.Stdout, response, cmd.Bool("json"))
 	}
+}
+
+func arity(minimum, maximum int) string {
+	if minimum == maximum {
+		if minimum == 0 {
+			return "no arguments"
+		}
+		if minimum == 1 {
+			return "one argument"
+		}
+		return fmt.Sprintf("%d arguments", minimum)
+	}
+	return fmt.Sprintf("between %d and %d arguments", minimum, maximum)
+}
+
+func render(writer io.Writer, response application.Response, jsonOutput bool) error {
+	if jsonOutput {
+		encoder := json.NewEncoder(writer)
+		encoder.SetEscapeHTML(false)
+		if response.Export != nil {
+			return encoder.Encode(struct {
+				Schema string `json:"schema"`
+				Facts  any    `json:"facts"`
+			}{"weave.export/v1", response.Export})
+		}
+		return encoder.Encode(response)
+	}
+	for _, symbol := range response.Symbols {
+		if _, err := fmt.Fprintf(writer, "%s\t%s\t%s\t%s:%d:%d\n", symbol.ID, symbol.Kind, symbol.DisplayName, symbol.DocumentID, symbol.Definition.Start.Line+1, symbol.Definition.Start.Column+1); err != nil {
+			return err
+		}
+	}
+	for _, occurrence := range response.Occurrences {
+		if _, err := fmt.Fprintf(writer, "%s\t%s\t%s:%d:%d\n", occurrence.SymbolID, occurrence.Role, occurrence.DocumentID, occurrence.Range.Start.Line+1, occurrence.Range.Start.Column+1); err != nil {
+			return err
+		}
+	}
+	for _, edge := range response.Edges {
+		if _, err := fmt.Fprintf(writer, "%s\t%s\t%s\n", edge.From, edge.Kind, edge.To); err != nil {
+			return err
+		}
+	}
+	if len(response.Edges) == 0 {
+		for _, node := range response.Nodes {
+			if _, err := fmt.Fprintln(writer, node); err != nil {
+				return err
+			}
+		}
+	}
+	for _, issue := range response.Issues {
+		if _, err := fmt.Fprintf(writer, "%s\t%s\t%s\n", issue.Kind, issue.Record, issue.Detail); err != nil {
+			return err
+		}
+	}
+	if response.Export != nil {
+		for _, unit := range response.Export.Units {
+			if _, err := fmt.Fprintf(writer, "unit\t%s\n", unit.ID); err != nil {
+				return err
+			}
+		}
+		for _, document := range response.Export.Documents {
+			if _, err := fmt.Fprintf(writer, "document\t%s\t%s\n", document.ID, document.Path); err != nil {
+				return err
+			}
+		}
+		for _, symbol := range response.Export.Symbols {
+			if _, err := fmt.Fprintf(writer, "symbol\t%s\t%s\n", symbol.ID, symbol.DisplayName); err != nil {
+				return err
+			}
+		}
+		for _, occurrence := range response.Export.Occurrences {
+			if _, err := fmt.Fprintf(writer, "occurrence\t%s\t%s\n", occurrence.ID, occurrence.SymbolID); err != nil {
+				return err
+			}
+		}
+		for _, edge := range response.Export.Edges {
+			if _, err := fmt.Fprintf(writer, "edge\t%s\t%s\t%s\t%s\n", edge.ID, edge.From, edge.Kind, edge.To); err != nil {
+				return err
+			}
+		}
+	}
+	if response.Truncated {
+		_, err := fmt.Fprintln(writer, "... truncated")
+		return err
+	}
+	return nil
 }

@@ -300,6 +300,9 @@ func validEdgeKind(value EdgeKind) bool {
 	return slices.Contains([]EdgeKind{EdgeDefines, EdgeReferences, EdgeCalls, EdgeImports, EdgeContains, EdgeExtends, EdgeImplements, EdgeInstantiates, EdgeDependsOn, EdgeTests, EdgeGenerates, EdgeDocuments, EdgeExposes, EdgeHandles, EdgeReads, EdgeWrites}, value)
 }
 
+// IsEdgeKind reports whether value is part of the version-one edge vocabulary.
+func IsEdgeKind(value EdgeKind) bool { return validEdgeKind(value) }
+
 // NormalizeName produces the language-neutral searchable spelling of a name.
 func NormalizeName(value string) string { return strings.ToLower(strings.TrimSpace(value)) }
 
