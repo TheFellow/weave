@@ -16,6 +16,7 @@ import (
 
 	"github.com/TheFellow/weave/internal/adapter"
 	"github.com/TheFellow/weave/internal/architecture"
+	"github.com/TheFellow/weave/internal/buildinfo"
 	"github.com/TheFellow/weave/internal/catalog"
 	"github.com/TheFellow/weave/internal/ci"
 	"github.com/TheFellow/weave/internal/federation"
@@ -71,6 +72,7 @@ type Response struct {
 	Architecture *architecture.Report   `json:"architecture,omitempty"`
 	SARIF        *architecture.SARIFLog `json:"-"`
 	CI           *ci.Status             `json:"ci,omitempty"`
+	Version      *buildinfo.Info        `json:"version,omitempty"`
 }
 
 // AdapterStatus is a side-effect-free executable discovery result. Discovery
@@ -109,6 +111,11 @@ type Local struct {
 // Execute runs one local use case.
 func (app Local) Execute(ctx context.Context, invocation Invocation) (Response, error) {
 	response := Response{Schema: QuerySchema, Command: invocation.Command, Query: append([]string(nil), invocation.Arguments...)}
+	if invocation.Command == "version" {
+		value := buildinfo.Read()
+		response.Version = &value
+		return response, nil
+	}
 	if strings.HasPrefix(invocation.Command, "repos ") {
 		return app.repositories(ctx, response, invocation)
 	}
@@ -194,6 +201,11 @@ func (app Local) Execute(ctx context.Context, invocation Invocation) (Response, 
 			} else {
 				response.Edges, response.Truncated, err = db.EdgesFrom(ctx, symbol.ID, []graph.EdgeKind{graph.EdgeCalls}, invocation.Limit)
 			}
+		}
+	case "dependencies":
+		var symbol graph.Symbol
+		if symbol, err = query.Resolve(ctx, db, invocation.Arguments[0]); err == nil {
+			response.Edges, response.Truncated, err = db.EdgesFrom(ctx, symbol.ID, []graph.EdgeKind{graph.EdgeDependsOn, graph.EdgeImports}, invocation.Limit)
 		}
 	case "path":
 		var from, to graph.Symbol
@@ -330,8 +342,8 @@ func attachIntegritySARIF(log *architecture.SARIFLog, issues []storage.Issue) {
 			invocation.ExecutionSuccessful = false
 		}
 		invocation.ToolExecutionNotifications = append(invocation.ToolExecutionNotifications, architecture.SARIFNotification{
-			Level: level,
-			Message: architecture.SARIFMessage{Text: issue.Record + ": " + issue.Detail},
+			Level:      level,
+			Message:    architecture.SARIFMessage{Text: issue.Record + ": " + issue.Detail},
 			Descriptor: architecture.SARIFDescriptorReference{ID: ruleID},
 		})
 	}
@@ -690,7 +702,7 @@ func (app Local) databasePath(ctx context.Context) (string, error) {
 
 func requiresDatabase(command string) bool {
 	switch command {
-	case "symbols", "definition", "references", "callers", "callees", "path", "impact", "export", "verify":
+	case "symbols", "definition", "references", "callers", "callees", "dependencies", "path", "impact", "export", "verify":
 		return true
 	default:
 		return false

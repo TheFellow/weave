@@ -37,13 +37,11 @@ func TestPlaceholderCommandsSucceedSilently(t *testing.T) {
 		{name: "init", args: []string{"init"}, want: "init"},
 		{name: "index", args: []string{"index"}, want: "index"},
 		{name: "status", args: []string{"status"}, want: "status"},
-		{name: "dependencies", args: []string{"dependencies"}, want: "dependencies"},
 		{name: "architecture check", args: []string{"architecture", "check"}, want: "architecture check"},
 		{name: "repos add", args: []string{"repos", "add"}, want: "repos add"},
 		{name: "repos list", args: []string{"repos", "list"}, want: "repos list"},
 		{name: "adapters list", args: []string{"adapters", "list"}, want: "adapters list"},
 		{name: "adapters doctor", args: []string{"adapters", "doctor"}, want: "adapters doctor"},
-		{name: "version", args: []string{"version"}, want: "version"},
 	}
 
 	for _, test := range tests {
@@ -376,6 +374,7 @@ func TestRealQueryCommands(t *testing.T) {
 		{name: "references", args: []string{"references", "authorize"}, contains: []string{"fixture:authorize\treference\tfixture:main.go:8:3"}},
 		{name: "callers", args: []string{"callers", "authorize"}, contains: []string{"fixture:handle\tcalls\tfixture:authorize"}},
 		{name: "callees", args: []string{"callees", "HandleRequest"}, contains: []string{"fixture:handle\tcalls\tfixture:authorize"}},
+		{name: "dependencies", args: []string{"dependencies", "HandleRequest"}, contains: []string{"fixture:handle\tdepends-on\tfixture:authorize"}},
 		{name: "path", args: []string{"path", "HandleRequest", "authorize"}, contains: []string{"fixture:handle\tcalls\tfixture:authorize"}},
 		{name: "impact", args: []string{"impact", "authorize"}, contains: []string{"fixture:handle\tcalls\tfixture:authorize"}},
 		{name: "empty text", args: []string{"symbols", "missing"}, empty: true},
@@ -400,6 +399,33 @@ func TestRealQueryCommands(t *testing.T) {
 			}
 			if stderr.Len() != 0 {
 				t.Errorf("stderr = %q", stderr.String())
+			}
+		})
+	}
+}
+
+func TestVersionTextAndJSONRequireNoRepository(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		args []string
+		want []string
+	}{
+		{name: "text", args: []string{"version"}, want: []string{"weave ", "go1."}},
+		{name: "json", args: []string{"version", "--json"}, want: []string{`"schema":"weave.query/v1"`, `"command":"version"`, `"version":{"version":`}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			root := command.New(application.Local{}, command.Streams{Stdin: strings.NewReader(""), Stdout: &stdout, Stderr: &stderr})
+			if err := root.Run(context.Background(), append([]string{"weave"}, test.args...)); err != nil {
+				t.Fatal(err)
+			}
+			for _, want := range test.want {
+				if !strings.Contains(stdout.String(), want) {
+					t.Fatalf("stdout = %q, want %q", stdout.String(), want)
+				}
+			}
+			if stderr.Len() != 0 {
+				t.Fatalf("stderr = %q", stderr.String())
 			}
 		})
 	}
@@ -789,6 +815,9 @@ func commandFixture() graph.UnitFacts {
 			{ID: "fixture:authorize", UnitID: "fixture", StableName: "fixture.authorize", DisplayName: "authorize", Kind: "function", DocumentID: "fixture:main.go", Definition: rng, Provider: "fixture", Evidence: graph.EvidenceExact},
 		},
 		Occurrences: []graph.Occurrence{{ID: "occ", UnitID: "fixture", SymbolID: "fixture:authorize", DocumentID: "fixture:main.go", Role: "reference", Range: rng, Provider: "fixture", Evidence: graph.EvidenceExact}},
-		Edges:       []graph.Edge{{ID: "edge", UnitID: "fixture", From: "fixture:handle", To: "fixture:authorize", Kind: graph.EdgeCalls, Provider: "fixture", Evidence: graph.EvidenceExact}},
+		Edges: []graph.Edge{
+			{ID: "edge", UnitID: "fixture", From: "fixture:handle", To: "fixture:authorize", Kind: graph.EdgeCalls, Provider: "fixture", Evidence: graph.EvidenceExact},
+			{ID: "dependency", UnitID: "fixture", From: "fixture:handle", To: "fixture:authorize", Kind: graph.EdgeDependsOn, Provider: "fixture", Evidence: graph.EvidenceDeclared},
+		},
 	}
 }

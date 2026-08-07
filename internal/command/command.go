@@ -38,7 +38,7 @@ func New(app application.Service, streams Streams) *cli.Command {
 		lookup(app, streams, "callees", "find symbols called by a symbol"),
 		traversal(app, streams, "path", "find a bounded path between symbols", 2),
 		traversal(app, streams, "impact", "find code affected by a symbol", 1),
-		noop(app, streams, "dependencies", "find semantic dependencies"),
+		lookup(app, streams, "dependencies", "find direct semantic dependencies"),
 		architectureCommand(app, streams),
 		repositoryCommands(app, streams),
 		ciCommands(app, streams),
@@ -46,7 +46,7 @@ func New(app application.Service, streams Streams) *cli.Command {
 		maintenance(app, streams, "export", "export normalized semantic facts", true),
 		maintenance(app, streams, "verify", "verify index integrity", true),
 		maintenance(app, streams, "gc", "compact derived data", false),
-		noop(app, streams, "version", "show the Weave version"),
+		versionCommand(app, streams),
 	}
 	return root
 }
@@ -162,6 +162,10 @@ func invokeCatalog(app application.Service, streams Streams, path string, minimu
 
 func adapterInspection(app application.Service, streams Streams, name, usage string) *cli.Command {
 	return &cli.Command{Name: name, Usage: usage, Flags: []cli.Flag{jsonFlag()}, Action: invoke(app, streams, "adapters "+name, 0, 0)}
+}
+
+func versionCommand(app application.Service, streams Streams) *cli.Command {
+	return &cli.Command{Name: "version", Usage: "show the Weave version", Flags: []cli.Flag{jsonFlag()}, Action: invoke(app, streams, "version", 0, 0)}
 }
 
 func group(name, usage string, children ...*cli.Command) *cli.Command {
@@ -394,6 +398,24 @@ func render(writer io.Writer, response application.Response, jsonOutput bool) er
 	}
 	if response.Command == "ci key" && response.CI != nil {
 		_, err := fmt.Fprintln(writer, response.CI.CacheKey)
+		return err
+	}
+	if response.Command == "version" && response.Version != nil {
+		_, err := fmt.Fprintf(writer, "weave %s (%s/%s, %s)", response.Version.Version, response.Version.OS, response.Version.Arch, response.Version.GoVersion)
+		if err != nil {
+			return err
+		}
+		if response.Version.Commit != "" {
+			if _, err := fmt.Fprintf(writer, " commit %s", response.Version.Commit); err != nil {
+				return err
+			}
+		}
+		if response.Version.Dirty {
+			if _, err := fmt.Fprint(writer, " dirty"); err != nil {
+				return err
+			}
+		}
+		_, err = fmt.Fprintln(writer)
 		return err
 	}
 	for _, symbol := range response.Symbols {
