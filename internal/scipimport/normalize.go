@@ -79,16 +79,14 @@ func normalizeDocument(document *scip.Document, source []byte, identity, path, p
 		if len(information.Symbol) > limits.MaxStringBytes || len(information.DisplayName) > limits.MaxStringBytes {
 			return graph.UnitFacts{}, fmt.Errorf("symbol information %d exceeds string limit", number)
 		}
-		if _, err := scip.ParseSymbol(information.Symbol); err != nil {
+		parsed, err := scip.ParseSymbol(information.Symbol)
+		if err != nil {
 			return graph.UnitFacts{}, fmt.Errorf("symbol information %d invalid symbol: %w", number, err)
 		}
-		display := information.DisplayName
-		if display == "" {
-			display = information.Symbol
-		}
+		display, kind := symbolPresentation(information, parsed)
 		symbol := graph.Symbol{
 			ID: symbolID(identity, provider, path, information.Symbol), UnitID: unitID, StableName: information.Symbol,
-			DisplayName: display, Kind: strings.ToLower(information.Kind.String()), Provider: provider, Evidence: graph.EvidenceExact,
+			DisplayName: display, Kind: kind, Provider: provider, Evidence: graph.EvidenceExact,
 		}
 		if definition, ok := definitions[information.Symbol]; ok {
 			symbol.DocumentID, symbol.Definition = documentID, definition
@@ -126,6 +124,55 @@ func normalizeDocument(document *scip.Document, source []byte, identity, path, p
 		return graph.UnitFacts{}, err
 	}
 	return facts, nil
+}
+
+func symbolPresentation(information *scip.SymbolInformation, parsed *scip.Symbol) (string, string) {
+	display := information.DisplayName
+	kind := ""
+	if information.Kind != scip.SymbolInformation_UnspecifiedKind {
+		kind = strings.ToLower(information.Kind.String())
+	}
+	if len(parsed.Descriptors) != 0 {
+		descriptor := parsed.Descriptors[len(parsed.Descriptors)-1]
+		if display == "" {
+			display = descriptor.Name
+		}
+		if kind == "" {
+			kind = descriptorKind(descriptor.Suffix)
+		}
+	}
+	if display == "" {
+		display = information.Symbol
+	}
+	if kind == "" {
+		kind = "symbol"
+	}
+	return display, kind
+}
+
+func descriptorKind(suffix scip.Descriptor_Suffix) string {
+	switch suffix {
+	case scip.Descriptor_Namespace:
+		return "namespace"
+	case scip.Descriptor_Type:
+		return "type"
+	case scip.Descriptor_Term:
+		return "term"
+	case scip.Descriptor_Method:
+		return "method"
+	case scip.Descriptor_TypeParameter:
+		return "typeparameter"
+	case scip.Descriptor_Parameter:
+		return "parameter"
+	case scip.Descriptor_Meta:
+		return "meta"
+	case scip.Descriptor_Local:
+		return "local"
+	case scip.Descriptor_Macro:
+		return "macro"
+	default:
+		return "symbol"
+	}
 }
 
 func hasRole(occurrence *scip.Occurrence, role scip.SymbolRole) bool {

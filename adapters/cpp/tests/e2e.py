@@ -77,7 +77,7 @@ def main():
         semantic = [
             value for value in symbols if value.get("provider") == "scip:scip-clang"
         ]
-        if not semantic or not any(value.get("kind") in ("class", "struct") for value in semantic):
+        if not semantic or not any(value.get("kind") == "type" for value in semantic):
             raise RuntimeError("compiler-backed Square symbol was not queryable: {}".format(symbols))
 
         definitions = json.loads(

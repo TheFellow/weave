@@ -166,6 +166,8 @@ func TestImportCanonicalizesRepeatedGlobalSymbolInformation(t *testing.T) {
 	for _, document := range documents {
 		document.Occurrences[0].Symbol = global
 		document.Symbols[0].Symbol = global
+		document.Symbols[0].DisplayName = ""
+		document.Symbols[0].Kind = scip.SymbolInformation_UnspecifiedKind
 		document.Symbols[0].Relationships = nil
 	}
 	data, err := proto.Marshal(fixtureIndex(documents...))
@@ -182,6 +184,9 @@ func TestImportCanonicalizesRepeatedGlobalSymbolInformation(t *testing.T) {
 		symbols += len(facts.Symbols)
 		if len(facts.Symbols) != 0 {
 			definitionPath = facts.Documents[0].Path
+			if facts.Symbols[0].DisplayName != "x" || facts.Symbols[0].Kind != "method" {
+				t.Fatalf("descriptor presentation = %#v", facts.Symbols[0])
+			}
 		}
 	}
 	if symbols != 1 || definitionPath != "a.h" {
