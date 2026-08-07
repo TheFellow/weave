@@ -26,7 +26,9 @@ weave version
 
 Tagged releases publish checksummed archives for macOS, Linux, and Windows on
 amd64 and arm64. Until the first tag exists, `go install` or `go build -o weave
-./cmd/weave` is the supported path.
+./cmd/weave` is the supported path. Prerelease archives also include SPDX SBOMs
+and keyless GitHub build provenance, but are not yet Apple- or Windows-signed;
+see [release installation and verification](docs/release-installation.md).
 
 ## Go quickstart
 
@@ -374,7 +376,9 @@ weave index           # deterministic rebuild
 ```
 
 Schema mismatch, checksum failure, and invalid physical storage are reported as
-rebuildable derived-state errors. Back up source, not the index.
+rebuildable derived-state errors. Back up source, not the index. The
+[release installation and recovery guide](docs/release-installation.md) also
+documents catalog recovery, upgrades, and rollback.
 
 ## CI and architecture policy
 

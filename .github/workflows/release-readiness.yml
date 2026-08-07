@@ -1,0 +1,84 @@
+name: release readiness
+
+on:
+  pull_request:
+    paths:
+      - "**/*.go"
+      - "go.mod"
+      - "go.sum"
+      - "README.md"
+      - "LICENSE"
+      - ".goreleaser.yaml"
+      - "tools/releasecheck/**"
+      - ".github/workflows/release-readiness.yml"
+      - ".github/workflows/release.yml"
+  push:
+    branches: [main]
+    paths:
+      - "**/*.go"
+      - "go.mod"
+      - "go.sum"
+      - "README.md"
+      - "LICENSE"
+      - ".goreleaser.yaml"
+      - "tools/releasecheck/**"
+      - ".github/workflows/release-readiness.yml"
+      - ".github/workflows/release.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  core:
+    name: core (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Test core and release validator
+        run: go test ./...
+      - name: Build and execute native core
+        shell: bash
+        run: |
+          binary="$RUNNER_TEMP/weave${{ runner.os == 'Windows' && '.exe' || '' }}"
+          go build -trimpath -o "$binary" ./cmd/weave
+          "$binary" version --json
+
+  snapshot:
+    name: inspect release snapshot
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Download pinned Syft
+        id: syft
+        # anchore/sbom-action v0.24.0
+        uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610
+        with:
+          syft-version: v1.50.0
+      - name: Expose and verify Syft
+        shell: bash
+        run: |
+          echo "$(dirname '${{ steps.syft.outputs.cmd }}')" >> "$GITHUB_PATH"
+          '${{ steps.syft.outputs.cmd }}' version
+      - name: Build non-publishing release snapshot
+        # goreleaser/goreleaser-action v7.2.3
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94
+        with:
+          distribution: goreleaser
+          version: v2.17.1
+          args: release --snapshot --clean
+      - name: Inspect archives, SBOMs, metadata, and checksums
+        run: go run ./tools/releasecheck --dist dist

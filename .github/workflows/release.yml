@@ -7,6 +7,9 @@ on:
 
 permissions:
   contents: write
+  id-token: write
+  attestations: write
+  artifact-metadata: write
 
 jobs:
   release:
@@ -25,6 +28,16 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.14"
+      - name: Download pinned Syft
+        id: syft
+        # anchore/sbom-action v0.24.0
+        uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610
+        with:
+          syft-version: v1.50.0
+      - name: Expose and verify Syft
+        run: |
+          echo "$(dirname '${{ steps.syft.outputs.cmd }}')" >> "$GITHUB_PATH"
+          '${{ steps.syft.outputs.cmd }}' version
       - name: Test
         run: go test ./...
       - name: Package .NET companion
@@ -39,10 +52,23 @@ jobs:
           python -m unittest discover -s adapters/python/tests -p "test_*.py" -v
           go build -o "$RUNNER_TEMP/weave" ./cmd/weave
           python adapters/python/tests/e2e.py "$RUNNER_TEMP/weave"
-      - uses: goreleaser/goreleaser-action@v6
+      - name: Build draft release
+        # goreleaser/goreleaser-action v7.2.3
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94
         with:
           distribution: goreleaser
-          version: "~> v2"
+          version: v2.17.1
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Inspect exact release artifacts
+        run: go run ./tools/releasecheck --dist dist --extra adapter-dist --require-companions
+      - name: Attest checksum-listed release artifacts
+        # actions/attest v4.2.2
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
+        with:
+          subject-checksums: dist/checksums.txt
+      - name: Publish verified draft
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "$GITHUB_REF_NAME" --draft=false

@@ -909,6 +909,43 @@ Targets are hypotheses until measured and recorded.
 Benchmarks must include `go-modular-monolith`, `arch-lint`, `cedar-dotnet`, and
 `fkyeah` once their adapters exist.
 
+## Approved completion pass
+
+The following work is approved as an ordered completion pass. Each increment
+must preserve the principles above, begin with recorded open-source prior art,
+ship with behavioral tests, and leave the preceding capability usable:
+
+1. Prove release readiness with cross-platform builds, inspectable archives,
+   checksums, SBOMs, provenance where the hosting platform supports it, and
+   documented installation and derived-state recovery.
+2. Add one bounded `context`/`explore` query that composes symbols, evidence,
+   source excerpts, relationships, documents, and provenance without creating a
+   second query implementation or an LLM dependency.
+3. Materialize a disposable machine-wide read cache under the platform user
+   data directory for fast global search and traversal. Per-worktree databases
+   remain freshness authorities; the aggregate is never a new source of truth.
+4. Introduce a measured compact-storage revision with interned repeated values,
+   numeric hot-path identities, and separately retrievable verbose evidence
+   while retaining stable external identities and deterministic rebuilds.
+5. Make graph changes first class through Git-aware graph, impact, API, and
+   affected-test diffs, including the existing explorer's animated transitions.
+6. Offer an optional `weave watch` index warmer for interactive latency. Every
+   query still performs the authoritative freshness check and no daemon becomes
+   required.
+7. Complete the bounded human explorer with source/evidence inspection,
+   expand-one-hop, search, pin/hide, snapshot comparison, and contextual-link
+   editing. It remains a semantic navigator, not a general graph editor.
+8. Turn adapters into a practical ecosystem with install, conformance-test, and
+   richer doctor workflows, a language-neutral compatibility suite, explicit
+   input-claim routing, and independently packaged executables.
+9. Add schema and build providers for high-value declared/generated links such
+   as Protobuf, OpenAPI, GraphQL, SQL migrations, Terraform, and build graphs,
+   preferring maintained parsers and generators over project-owned grammars.
+
+Breadth alone is not completion. A new language or provider follows this pass
+when it adds material evidence; it does not displace work that makes the graph
+smaller, fresher, easier to query, easier to inspect, or safer to distribute.
+
 ## Delivery sequence
 
 ### Milestone 0: research and contracts

@@ -5,3 +5,5 @@
 **/.pytest_cache/
 **/target/
 adapters/python/build/
+/adapter-dist/
+/dist/

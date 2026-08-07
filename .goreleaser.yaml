@@ -17,12 +17,13 @@ builds:
       - arm64
     flags:
       - -trimpath
+    mod_timestamp: "{{ .CommitTimestamp }}"
     ldflags:
       - >-
         -s -w
         -X github.com/TheFellow/weave/internal/buildinfo.Version={{.Version}}
         -X github.com/TheFellow/weave/internal/buildinfo.Commit={{.Commit}}
-        -X github.com/TheFellow/weave/internal/buildinfo.Date={{.Date}}
+        -X github.com/TheFellow/weave/internal/buildinfo.Date={{.CommitDate}}
   - id: weave-cpp
     main: ./adapters/cpp/cmd/weave-cpp
     binary: weave-cpp
@@ -37,6 +38,7 @@ builds:
       - arm64
     flags:
       - -trimpath
+    mod_timestamp: "{{ .CommitTimestamp }}"
     ldflags:
       - -s -w
   - id: weave-typescript
@@ -53,6 +55,7 @@ builds:
       - arm64
     flags:
       - -trimpath
+    mod_timestamp: "{{ .CommitTimestamp }}"
     ldflags:
       - -s -w
   - id: weave-jvm
@@ -69,6 +72,7 @@ builds:
       - arm64
     flags:
       - -trimpath
+    mod_timestamp: "{{ .CommitTimestamp }}"
     ldflags:
       - -s -w
   # This is the protocol wrapper only. Universal Ctags is a separately
@@ -87,6 +91,7 @@ builds:
       - arm64
     flags:
       - -trimpath
+    mod_timestamp: "{{ .CommitTimestamp }}"
     ldflags:
       - -s -w
 
@@ -99,9 +104,20 @@ archives:
         formats: [zip]
     name_template: >-
       {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    builds_info:
+      owner: root
+      group: root
+      mode: 0755
+      mtime: "{{ .CommitDate }}"
     files:
-      - README.md
-      - LICENSE
+      - src: README.md
+        info: &release_file_info
+          owner: root
+          group: root
+          mode: 0644
+          mtime: "{{ .CommitDate }}"
+      - src: LICENSE
+        info: *release_file_info
   - id: weave-adapters
     ids: [weave-cpp, weave-typescript, weave-jvm, weave-ctags]
     formats: [tar.gz]
@@ -110,20 +126,48 @@ archives:
         formats: [zip]
     name_template: >-
       weave_adapters_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    builds_info:
+      owner: root
+      group: root
+      mode: 0755
+      mtime: "{{ .CommitDate }}"
     files:
-      - README.md
-      - LICENSE
-      - adapters/cpp/README.md
-      - adapters/typescript/README.md
-      - adapters/jvm/README.md
-      - adapters/ctags/README.md
+      - src: README.md
+        info: *release_file_info
+      - src: LICENSE
+        info: *release_file_info
+      - src: adapters/cpp/README.md
+        info: *release_file_info
+      - src: adapters/typescript/README.md
+        info: *release_file_info
+      - src: adapters/jvm/README.md
+        info: *release_file_info
+      - src: adapters/ctags/README.md
+        info: *release_file_info
+
+sboms:
+  - id: archive-spdx
+    artifacts: archive
+    documents:
+      - "${artifact}.spdx.json"
+    cmd: syft
+    args: ["$artifact", "--output", "spdx-json=$document"]
 
 checksum:
   name_template: checksums.txt
-
-release:
+  algorithm: sha256
   extra_files:
     - glob: ./adapter-dist/*
+
+release:
+  # A tag workflow promotes the draft only after local artifact validation and
+  # keyless provenance succeed. A failure leaves a recoverable private draft.
+  draft: true
+  extra_files:
+    - glob: ./adapter-dist/*
+
+metadata:
+  mod_timestamp: "{{ .CommitTimestamp }}"
 
 changelog:
   sort: asc
