@@ -3,6 +3,7 @@ package storage
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -10,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/TheFellow/weave/internal/graph"
@@ -36,8 +38,11 @@ type Options struct {
 
 // DB is a concurrency-safe handle to one Weave graph database.
 type DB struct {
-	path string
-	db   *bstore.DB
+	path     string
+	db       *bstore.DB
+	internMu sync.RWMutex
+	interns  map[uint32]string
+	stateMu  sync.RWMutex
 }
 
 type metadataRecord struct {
@@ -48,75 +53,6 @@ type metadataRecord struct {
 type generationRecord struct {
 	ID         uint8 `bstore:"typename WeaveGeneration,noauto"`
 	Generation string
-}
-
-type unitRecord struct {
-	ID                 string `bstore:"typename WeaveUnit"`
-	Provider           string
-	ProviderVersion    string
-	Language           string
-	Variant            string
-	InputFingerprint   string
-	SurfaceFingerprint string
-	InventoryDigest    string
-}
-
-type documentRecord struct {
-	ID              string `bstore:"typename WeaveDocument"`
-	UnitID          string `bstore:"index,index UnitID+Path"`
-	Path            string
-	Language        string
-	ContentHash     string
-	Provider        string
-	ProviderVersion string
-}
-
-type symbolRecord struct {
-	ID             string `bstore:"typename WeaveSymbol"`
-	UnitID         string `bstore:"index"`
-	StableName     string `bstore:"index"`
-	DisplayName    string
-	NormalizedName string `bstore:"index"`
-	Kind           string `bstore:"index"`
-	DocumentID     string `bstore:"index"`
-	Definition     graph.Range
-	Provider       string
-	Evidence       string
-}
-
-type occurrenceRecord struct {
-	ID         string `bstore:"typename WeaveOccurrence"`
-	UnitID     string `bstore:"index"`
-	SymbolID   string `bstore:"index SymbolID+DocumentID"`
-	DocumentID string `bstore:"index"`
-	Role       string `bstore:"index"`
-	Range      graph.Range
-	Provider   string
-	Evidence   string
-}
-
-type edgeRecord struct {
-	ID         string `bstore:"typename WeaveEdge"`
-	UnitID     string `bstore:"index"`
-	From       string `bstore:"index From+Kind+To FromKindTo"`
-	To         string `bstore:"index To+Kind+From ToKindFrom"`
-	Kind       string
-	Evidence   string
-	DocumentID string `bstore:"index"`
-	Range      graph.Range
-	Provider   string
-}
-
-type tokenRecord struct {
-	ID       string `bstore:"typename WeaveSymbolToken"`
-	UnitID   string `bstore:"index"`
-	Token    string `bstore:"index Token+SymbolID"`
-	SymbolID string `bstore:"index"`
-}
-
-var recordTypes = []any{
-	metadataRecord{}, generationRecord{}, unitRecord{}, documentRecord{}, symbolRecord{},
-	occurrenceRecord{}, edgeRecord{}, tokenRecord{},
 }
 
 // Open opens or creates a database and validates its Weave schema marker.
@@ -133,7 +69,24 @@ func Open(ctx context.Context, path string, options Options) (*DB, error) {
 	if timeout <= 0 {
 		timeout = openTimeout
 	}
-	db, err := bstore.Open(ctx, path, &bstore.Options{MustExist: options.MustExist, Timeout: timeout}, recordTypes...)
+	if _, statErr := os.Stat(path); statErr == nil {
+		version, found, err := storageVersion(path, timeout)
+		if err != nil {
+			return nil, err
+		}
+		if !found {
+			return nil, logicalCorrupt("storage schema marker is absent")
+		}
+		if version != StorageSchemaVersion {
+			return nil, fmt.Errorf("%w: database has storage version %d, executable supports %d; remove this disposable per-worktree index and run weave index", ErrSchema, version, StorageSchemaVersion)
+		}
+	} else if !errors.Is(statErr, fs.ErrNotExist) {
+		return nil, fmt.Errorf("stat database: %w", statErr)
+	}
+	types := make([]any, 0, len(recordTypes)+1)
+	types = append(types, metadataRecord{})
+	types = append(types, recordTypes...)
+	db, err := bstore.Open(ctx, path, &bstore.Options{MustExist: options.MustExist, Timeout: timeout}, types...)
 	if err != nil {
 		return nil, classify("open database", err)
 	}
@@ -142,13 +95,86 @@ func Open(ctx context.Context, path string, options Options) (*DB, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	if err := store.reloadInterns(ctx); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	return store, nil
+}
+
+func (db *DB) reloadInterns(ctx context.Context) error {
+	records, err := bstore.QueryDB[internRecord](ctx, db.db).List()
+	if err != nil {
+		return classify("load intern dictionary", err)
+	}
+	values := map[uint32]string{0: ""}
+	for _, record := range records {
+		values[record.ID] = record.Value
+	}
+	db.internMu.Lock()
+	db.interns = values
+	db.internMu.Unlock()
+	return nil
+}
+
+func (db *DB) internDictionary() map[uint32]string {
+	db.internMu.RLock()
+	values := db.interns
+	db.internMu.RUnlock()
+	return values
+}
+
+// storageVersion reads the unchanged v1/v2 metadata record through bbolt's
+// read-only API. This prevents bstore's automatic registration machinery from
+// modifying an unsupported database before Weave rejects it. metadataRecord's
+// on-disk shape is deliberately frozen: type-version uvarint, one field bitmap
+// byte, then the Version uvarint.
+func storageVersion(path string, timeout time.Duration) (uint32, bool, error) {
+	db, err := bolt.Open(path, 0o600, &bolt.Options{ReadOnly: true, Timeout: timeout})
+	if err != nil {
+		return 0, false, classify("inspect database schema", err)
+	}
+	var version uint64
+	found := false
+	err = db.View(func(tx *bolt.Tx) error {
+		typeBucket := tx.Bucket([]byte("WeaveMetadata"))
+		if typeBucket == nil {
+			return nil
+		}
+		records := typeBucket.Bucket([]byte("records"))
+		if records == nil {
+			return nil
+		}
+		value := records.Get([]byte{1})
+		if value == nil {
+			return nil
+		}
+		_, n := binary.Uvarint(value)
+		if n <= 0 || len(value) <= n {
+			return logicalCorrupt("invalid storage schema record")
+		}
+		value = value[n+1:]
+		parsed, m := binary.Uvarint(value)
+		if m <= 0 || parsed > uint64(^uint32(0)) {
+			return logicalCorrupt("invalid storage schema version")
+		}
+		version, found = parsed, true
+		return nil
+	})
+	closeErr := db.Close()
+	if err != nil {
+		return 0, false, err
+	}
+	if closeErr != nil {
+		return 0, false, closeErr
+	}
+	return uint32(version), found, nil
 }
 
 func (db *DB) ensureMetadata(ctx context.Context) error {
 	metadata, err := bstore.QueryDB[metadataRecord](ctx, db.db).FilterID(uint8(1)).Get()
 	if err == bstore.ErrAbsent {
-		if err := db.db.Insert(ctx, &metadataRecord{ID: 1, Version: graph.SchemaVersion}); err != nil {
+		if err := db.db.Insert(ctx, &metadataRecord{ID: 1, Version: StorageSchemaVersion}); err != nil {
 			return classify("initialize schema", err)
 		}
 		return nil
@@ -156,8 +182,8 @@ func (db *DB) ensureMetadata(ctx context.Context) error {
 	if err != nil {
 		return classify("read schema", err)
 	}
-	if metadata.Version != graph.SchemaVersion {
-		return fmt.Errorf("%w: database has version %d, executable supports %d; rebuild the derived index", ErrSchema, metadata.Version, graph.SchemaVersion)
+	if metadata.Version != StorageSchemaVersion {
+		return fmt.Errorf("%w: database has storage version %d, executable supports %d; remove this disposable per-worktree index and run weave index", ErrSchema, metadata.Version, StorageSchemaVersion)
 	}
 	return nil
 }
@@ -311,6 +337,8 @@ func prepareReplacement(batches []graph.UnitFacts, removed []string) error {
 			}
 		}
 	}
+	slices.SortFunc(batches, func(a, b graph.UnitFacts) int { return strings.Compare(a.Unit.ID, b.Unit.ID) })
+	slices.Sort(removed)
 	return nil
 }
 
@@ -327,7 +355,9 @@ func factCount(facts graph.UnitFacts) int {
 }
 
 func (db *DB) replacePrepared(ctx context.Context, batches []graph.UnitFacts, removed []string) error {
-	return classify("replace compilation units", db.db.Write(ctx, func(tx *bstore.Tx) error {
+	db.stateMu.Lock()
+	defer db.stateMu.Unlock()
+	err := classify("replace compilation units", db.db.Write(ctx, func(tx *bstore.Tx) error {
 		for _, id := range removed {
 			if err := deleteUnit(tx, id); err != nil {
 				return err
@@ -337,141 +367,432 @@ func (db *DB) replacePrepared(ctx context.Context, batches []graph.UnitFacts, re
 			if err := deleteUnit(tx, facts.Unit.ID); err != nil {
 				return err
 			}
-			if err := insertUnit(tx, facts); err != nil {
+		}
+		retained := newRetention(tx)
+		for _, facts := range batches {
+			if err := insertUnit(tx, retained, facts); err != nil {
 				return err
 			}
 		}
-		return nil
+		return retained.flush()
 	}))
+	if err != nil {
+		return err
+	}
+	return db.reloadInterns(ctx)
 }
 
 func deleteUnit(tx *bstore.Tx, unitID string) error {
-	for _, deleteOwned := range []func() error{
+	unit, err := bstore.QueryTx[unitRecord](tx).FilterEqual("StableID", unitID).Get()
+	if err == bstore.ErrAbsent {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	documents, err := bstore.QueryTx[documentRecord](tx).FilterEqual("Unit", unit.ID).List()
+	if err != nil {
+		return err
+	}
+	symbols, err := bstore.QueryTx[symbolRecord](tx).FilterEqual("Unit", unit.ID).List()
+	if err != nil {
+		return err
+	}
+	occurrences, err := bstore.QueryTx[occurrenceRecord](tx).FilterEqual("Unit", unit.ID).List()
+	if err != nil {
+		return err
+	}
+	edges, err := bstore.QueryTx[edgeRecord](tx).FilterEqual("Unit", unit.ID).List()
+	if err != nil {
+		return err
+	}
+	symbolIDs := recordIDs(symbols, func(v symbolRecord) uint64 { return v.ID })
+	occurrenceIDs := recordIDs(occurrences, func(v occurrenceRecord) uint64 { return v.ID })
+	edgeIDs := recordIDs(edges, func(v edgeRecord) uint64 { return v.ID })
+	symbolDetails, err := listSymbolDetails(tx, symbolIDs)
+	if err != nil {
+		return err
+	}
+	occurrenceDetails, err := listOccurrenceDetails(tx, occurrenceIDs)
+	if err != nil {
+		return err
+	}
+	edgeDetails, err := listEdgeDetails(tx, edgeIDs)
+	if err != nil {
+		return err
+	}
+
+	interns := map[uint32]uint64{}
+	addInterns := func(values ...uint32) {
+		for _, value := range values {
+			if value != 0 {
+				interns[value]++
+			}
+		}
+	}
+	addInterns(unit.Provider, unit.ProviderVersion, unit.Language)
+	for _, record := range documents {
+		addInterns(record.Language, record.Provider, record.ProviderVersion)
+	}
+	for _, record := range symbols {
+		addInterns(record.Kind)
+	}
+	for _, record := range symbolDetails {
+		addInterns(record.Provider)
+	}
+	for _, record := range occurrences {
+		addInterns(record.Role)
+	}
+	for _, record := range occurrenceDetails {
+		addInterns(record.Provider)
+	}
+	for _, record := range edgeDetails {
+		addInterns(record.Provider)
+	}
+	entities := map[uint64]uint64{}
+	for _, record := range symbols {
+		entities[record.ID]++
+	}
+	for _, record := range occurrences {
+		entities[record.Symbol]++
+	}
+	for _, record := range edges {
+		entities[record.From]++
+		entities[record.To]++
+	}
+
+	if _, err := bstore.QueryTx[tokenRecord](tx).FilterEqual("Unit", unit.ID).Delete(); err != nil {
+		return err
+	}
+	for _, remove := range []func() error{
+		func() error { return deleteSymbolDetails(tx, symbolIDs) },
+		func() error { return deleteOccurrenceDetails(tx, occurrenceIDs) },
+		func() error { return deleteEdgeDetails(tx, edgeIDs) },
 		func() error {
-			_, err := bstore.QueryTx[tokenRecord](tx).FilterEqual("UnitID", unitID).Delete()
+			_, err := bstore.QueryTx[edgeRecord](tx).FilterEqual("Unit", unit.ID).Delete()
 			return err
 		},
 		func() error {
-			_, err := bstore.QueryTx[edgeRecord](tx).FilterEqual("UnitID", unitID).Delete()
+			_, err := bstore.QueryTx[occurrenceRecord](tx).FilterEqual("Unit", unit.ID).Delete()
 			return err
 		},
 		func() error {
-			_, err := bstore.QueryTx[occurrenceRecord](tx).FilterEqual("UnitID", unitID).Delete()
+			_, err := bstore.QueryTx[symbolRecord](tx).FilterEqual("Unit", unit.ID).Delete()
 			return err
 		},
 		func() error {
-			_, err := bstore.QueryTx[symbolRecord](tx).FilterEqual("UnitID", unitID).Delete()
-			return err
-		},
-		func() error {
-			_, err := bstore.QueryTx[documentRecord](tx).FilterEqual("UnitID", unitID).Delete()
+			_, err := bstore.QueryTx[documentRecord](tx).FilterEqual("Unit", unit.ID).Delete()
 			return err
 		},
 	} {
-		if err := deleteOwned(); err != nil {
+		if err := remove(); err != nil {
 			return err
 		}
 	}
-	_, err := bstore.QueryTx[unitRecord](tx).FilterID(unitID).Delete()
-	return err
+	if err := tx.Delete(&unit); err != nil {
+		return err
+	}
+	if err := releaseEntities(tx, entities); err != nil {
+		return err
+	}
+	return releaseInterns(tx, interns)
 }
 
-func insertUnit(tx *bstore.Tx, facts graph.UnitFacts) error {
-	unitID := facts.Unit.ID
-	unit := toUnitRecord(facts.Unit)
+func insertUnit(tx *bstore.Tx, retained *retention, facts graph.UnitFacts) error {
+	provider, err := retained.intern(facts.Unit.Provider)
+	if err != nil {
+		return err
+	}
+	providerVersion, err := retained.intern(facts.Unit.ProviderVersion)
+	if err != nil {
+		return err
+	}
+	language, err := retained.intern(facts.Unit.Language)
+	if err != nil {
+		return err
+	}
+	unit := unitRecord{StableID: facts.Unit.ID, Provider: provider, ProviderVersion: providerVersion, Language: language, Variant: facts.Unit.Variant, InputFingerprint: facts.Unit.InputFingerprint, SurfaceFingerprint: facts.Unit.SurfaceFingerprint, InventoryDigest: facts.Unit.InventoryDigest}
 	if err := tx.Insert(&unit); err != nil {
 		return err
 	}
-	for _, document := range facts.Documents {
-		record := toDocumentRecord(document)
+	documents := append([]graph.Document(nil), facts.Documents...)
+	slices.SortFunc(documents, func(a, b graph.Document) int { return strings.Compare(a.ID, b.ID) })
+	documentIDs := make(map[string]uint64, len(documents))
+	for _, document := range documents {
+		language, err := retained.intern(document.Language)
+		if err != nil {
+			return err
+		}
+		provider, err := retained.intern(document.Provider)
+		if err != nil {
+			return err
+		}
+		providerVersion, err := retained.intern(document.ProviderVersion)
+		if err != nil {
+			return err
+		}
+		record := documentRecord{StableID: document.ID, Unit: unit.ID, UnitStable: facts.Unit.ID, Path: document.Path, Language: language, ContentHash: document.ContentHash, Provider: provider, ProviderVersion: providerVersion}
 		if err := tx.Insert(&record); err != nil {
 			return err
 		}
+		documentIDs[document.ID] = record.ID
 	}
-	for _, symbol := range facts.Symbols {
-		record := toSymbolRecord(symbol)
+	symbols := append([]graph.Symbol(nil), facts.Symbols...)
+	slices.SortFunc(symbols, func(a, b graph.Symbol) int { return strings.Compare(a.ID, b.ID) })
+	for _, symbol := range symbols {
+		entity, err := retained.entity(symbol.ID)
+		if err != nil {
+			return err
+		}
+		kind, err := retained.intern(symbol.Kind)
+		if err != nil {
+			return err
+		}
+		provider, err := retained.intern(symbol.Provider)
+		if err != nil {
+			return err
+		}
+		evidence, ok := evidenceCode(symbol.Evidence)
+		if !ok {
+			return fmt.Errorf("invalid symbol evidence %q", symbol.Evidence)
+		}
+		record := symbolRecord{ID: entity, StableID: symbol.ID, Unit: unit.ID, UnitStable: facts.Unit.ID, StableName: symbol.StableName, DisplayName: symbol.DisplayName, NormalizedName: symbol.NormalizedName, Kind: kind, Document: documentIDs[symbol.DocumentID], DocumentStable: symbol.DocumentID}
 		if err := tx.Insert(&record); err != nil {
+			return err
+		}
+		detail := symbolDetailRecord{ID: entity, Definition: symbol.Definition, Provider: provider, Evidence: evidence}
+		if err := tx.Insert(&detail); err != nil {
 			return err
 		}
 		for _, token := range graph.Tokens(symbol.DisplayName) {
-			posting := tokenRecord{ID: tokenID(token, symbol.ID), UnitID: unitID, Token: token, SymbolID: symbol.ID}
+			posting := tokenRecord{Unit: unit.ID, Token: token, Symbol: entity, SymbolStable: symbol.ID}
 			if err := tx.Insert(&posting); err != nil {
 				return err
 			}
 		}
 	}
-	for _, occurrence := range facts.Occurrences {
-		record := toOccurrenceRecord(occurrence)
+	occurrences := append([]graph.Occurrence(nil), facts.Occurrences...)
+	slices.SortFunc(occurrences, func(a, b graph.Occurrence) int { return strings.Compare(a.ID, b.ID) })
+	for _, occurrence := range occurrences {
+		entity, err := retained.entity(occurrence.SymbolID)
+		if err != nil {
+			return err
+		}
+		role, err := retained.intern(occurrence.Role)
+		if err != nil {
+			return err
+		}
+		provider, err := retained.intern(occurrence.Provider)
+		if err != nil {
+			return err
+		}
+		evidence, ok := evidenceCode(occurrence.Evidence)
+		if !ok {
+			return fmt.Errorf("invalid occurrence evidence %q", occurrence.Evidence)
+		}
+		document := documentIDs[occurrence.DocumentID]
+		record := occurrenceRecord{StableID: occurrence.ID, Unit: unit.ID, UnitStable: facts.Unit.ID, Symbol: entity, SymbolStable: occurrence.SymbolID, Document: document, DocumentStable: occurrence.DocumentID, Role: role}
 		if err := tx.Insert(&record); err != nil {
 			return err
 		}
+		detail := occurrenceDetailRecord{ID: record.ID, Range: occurrence.Range, Provider: provider, Evidence: evidence}
+		if err := tx.Insert(&detail); err != nil {
+			return err
+		}
 	}
-	for _, edge := range facts.Edges {
-		record := toEdgeRecord(edge)
+	edges := append([]graph.Edge(nil), facts.Edges...)
+	slices.SortFunc(edges, func(a, b graph.Edge) int { return strings.Compare(a.ID, b.ID) })
+	for _, edge := range edges {
+		from, err := retained.entity(edge.From)
+		if err != nil {
+			return err
+		}
+		to, err := retained.entity(edge.To)
+		if err != nil {
+			return err
+		}
+		kind, ok := edgeKindCode(edge.Kind)
+		if !ok {
+			return fmt.Errorf("invalid edge kind %q", edge.Kind)
+		}
+		provider, err := retained.intern(edge.Provider)
+		if err != nil {
+			return err
+		}
+		evidence, ok := evidenceCode(edge.Evidence)
+		if !ok {
+			return fmt.Errorf("invalid edge evidence %q", edge.Evidence)
+		}
+		record := edgeRecord{StableID: edge.ID, Unit: unit.ID, UnitStable: facts.Unit.ID, From: from, To: to, Kind: kind, FromStable: edge.From, ToStable: edge.To, DocumentStable: edge.DocumentID}
 		if err := tx.Insert(&record); err != nil {
+			return err
+		}
+		detail := edgeDetailRecord{ID: record.ID, Evidence: evidence, Document: documentIDs[edge.DocumentID], Range: edge.Range, Provider: provider}
+		if err := tx.Insert(&detail); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
+func recordIDs[T any](records []T, id func(T) uint64) []uint64 {
+	result := make([]uint64, len(records))
+	for i, record := range records {
+		result[i] = id(record)
+	}
+	return result
+}
+
+func listSymbolDetails(tx *bstore.Tx, ids []uint64) ([]symbolDetailRecord, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	return bstore.QueryTx[symbolDetailRecord](tx).FilterIDs(ids).List()
+}
+func listOccurrenceDetails(tx *bstore.Tx, ids []uint64) ([]occurrenceDetailRecord, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	return bstore.QueryTx[occurrenceDetailRecord](tx).FilterIDs(ids).List()
+}
+func listEdgeDetails(tx *bstore.Tx, ids []uint64) ([]edgeDetailRecord, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	return bstore.QueryTx[edgeDetailRecord](tx).FilterIDs(ids).List()
+}
+func deleteSymbolDetails(tx *bstore.Tx, ids []uint64) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	_, err := bstore.QueryTx[symbolDetailRecord](tx).FilterIDs(ids).Delete()
+	return err
+}
+func deleteOccurrenceDetails(tx *bstore.Tx, ids []uint64) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	_, err := bstore.QueryTx[occurrenceDetailRecord](tx).FilterIDs(ids).Delete()
+	return err
+}
+func deleteEdgeDetails(tx *bstore.Tx, ids []uint64) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	_, err := bstore.QueryTx[edgeDetailRecord](tx).FilterIDs(ids).Delete()
+	return err
+}
+
 // Symbol returns a symbol by stable ID.
 func (db *DB) Symbol(ctx context.Context, id string) (graph.Symbol, bool, error) {
-	record, err := bstore.QueryDB[symbolRecord](ctx, db.db).FilterID(id).Get()
+	db.stateMu.RLock()
+	defer db.stateMu.RUnlock()
+	record, err := bstore.QueryDB[symbolRecord](ctx, db.db).FilterEqual("StableID", id).Get()
 	if err == bstore.ErrAbsent {
 		return graph.Symbol{}, false, nil
 	}
 	if err != nil {
 		return graph.Symbol{}, false, classify("get symbol", err)
 	}
-	return fromSymbolRecord(record), true, nil
+	values, err := db.hydrateSymbols(ctx, []symbolRecord{record})
+	if err != nil {
+		return graph.Symbol{}, false, classify("hydrate symbol", err)
+	}
+	return values[0], true, nil
 }
 
 // Document returns a document by stable ID.
 func (db *DB) Document(ctx context.Context, id string) (graph.Document, bool, error) {
-	record, err := bstore.QueryDB[documentRecord](ctx, db.db).FilterID(id).Get()
+	db.stateMu.RLock()
+	defer db.stateMu.RUnlock()
+	record, err := bstore.QueryDB[documentRecord](ctx, db.db).FilterEqual("StableID", id).Get()
 	if err == bstore.ErrAbsent {
 		return graph.Document{}, false, nil
 	}
 	if err != nil {
 		return graph.Document{}, false, classify("get document", err)
 	}
-	return fromDocumentRecord(record), true, nil
+	values, err := db.hydrateDocuments(ctx, []documentRecord{record})
+	if err != nil {
+		return graph.Document{}, false, classify("hydrate document", err)
+	}
+	return values[0], true, nil
 }
 
 // Symbols returns all symbols in canonical order. This is intended for export
 // and verification; user-facing searches should use FindSymbols.
 func (db *DB) Symbols(ctx context.Context) ([]graph.Symbol, error) {
-	records, err := bstore.QueryDB[symbolRecord](ctx, db.db).SortAsc("ID").List()
+	db.stateMu.RLock()
+	defer db.stateMu.RUnlock()
+	records, err := bstore.QueryDB[symbolRecord](ctx, db.db).SortAsc("StableID").List()
 	if err != nil {
 		return nil, classify("list symbols", err)
 	}
-	return mapSlice(records, fromSymbolRecord), nil
+	values, err := db.hydrateSymbols(ctx, records)
+	return values, classify("hydrate symbols", err)
 }
 
 // ScanHotFacts visits the compact projection used by machine-wide symbol
-// search and graph traversal. It deliberately excludes units, documents,
-// occurrences, source text, and verbose evidence. Callbacks run in canonical
-// order and must not retain bstore transaction state.
+// search and graph traversal. It excludes units, standalone documents,
+// occurrences, and source text; the public Symbol/Edge values still hydrate
+// their required evidence from cold detail records in bounded batches.
+// Callbacks run in deterministic stable fact-ID order, must not reenter this DB,
+// and must not retain bstore transaction state. Aggregate ingestion is
+// order-independent and normalizes its own indexes.
 func (db *DB) ScanHotFacts(ctx context.Context, symbol func(graph.Symbol) error, edge func(graph.Edge) error) error {
+	db.stateMu.RLock()
+	defer db.stateMu.RUnlock()
 	if symbol == nil || edge == nil {
 		return fmt.Errorf("%w: hot-fact callbacks are required", ErrInvalid)
 	}
-	if err := bstore.QueryDB[symbolRecord](ctx, db.db).SortAsc("ID").ForEach(func(record symbolRecord) error {
-		return symbol(fromSymbolRecord(record))
-	}); err != nil {
-		return classify("scan symbols", err)
+	const batchSize = 1_024
+	var lastSymbol string
+	for {
+		records, err := bstore.QueryDB[symbolRecord](ctx, db.db).FilterGreater("StableID", lastSymbol).SortAsc("StableID").Limit(batchSize).List()
+		if err != nil {
+			return classify("scan symbols", err)
+		}
+		if len(records) == 0 {
+			break
+		}
+		values, err := db.hydrateSymbols(ctx, records)
+		if err != nil {
+			return classify("hydrate symbol scan", err)
+		}
+		for _, value := range values {
+			if err := symbol(value); err != nil {
+				return err
+			}
+		}
+		lastSymbol = records[len(records)-1].StableID
 	}
-	if err := bstore.QueryDB[edgeRecord](ctx, db.db).SortAsc("ID").ForEach(func(record edgeRecord) error {
-		return edge(fromEdgeRecord(record))
-	}); err != nil {
-		return classify("scan edges", err)
+	var lastEdge string
+	for {
+		records, err := bstore.QueryDB[edgeRecord](ctx, db.db).FilterGreater("StableID", lastEdge).SortAsc("StableID").Limit(batchSize).List()
+		if err != nil {
+			return classify("scan edges", err)
+		}
+		if len(records) == 0 {
+			break
+		}
+		values, err := db.hydrateEdges(ctx, records)
+		if err != nil {
+			return classify("hydrate edge scan", err)
+		}
+		for _, value := range values {
+			if err := edge(value); err != nil {
+				return err
+			}
+		}
+		lastEdge = records[len(records)-1].StableID
 	}
 	return nil
 }
 
 // FindSymbols performs bounded exact, name-prefix, and token-prefix lookup.
 func (db *DB) FindSymbols(ctx context.Context, query string, limit int) ([]graph.Symbol, bool, error) {
+	db.stateMu.RLock()
+	defer db.stateMu.RUnlock()
 	if err := validLimit(limit); err != nil {
 		return nil, false, err
 	}
@@ -480,59 +801,59 @@ func (db *DB) FindSymbols(ctx context.Context, query string, limit int) ([]graph
 		return nil, false, fmt.Errorf("%w: symbol query is empty", ErrInvalid)
 	}
 	candidateLimit := limit*4 + 1
-	byID := map[string]graph.Symbol{}
-	if symbol, ok, err := db.Symbol(ctx, query); err != nil {
-		return nil, false, err
-	} else if ok {
-		byID[symbol.ID] = symbol
+	byID := map[uint64]symbolRecord{}
+	if record, err := bstore.QueryDB[symbolRecord](ctx, db.db).FilterEqual("StableID", query).Get(); err == nil {
+		byID[record.ID] = record
+	} else if err != bstore.ErrAbsent {
+		return nil, false, classify("get exact symbol", err)
 	}
-	stableRecords, err := bstore.QueryDB[symbolRecord](ctx, db.db).FilterEqual("StableName", query).Limit(limit + 1).List()
+	stableRecords, err := bstore.QueryDB[symbolRecord](ctx, db.db).FilterEqual("StableName", query).SortAsc("StableID").Limit(limit + 1).List()
 	if err != nil {
 		return nil, false, classify("search stable symbol names", err)
 	}
 	for _, record := range stableRecords {
-		byID[record.ID] = fromSymbolRecord(record)
+		byID[record.ID] = record
 	}
 
 	nameRecords, err := bstore.QueryDB[symbolRecord](ctx, db.db).
 		FilterGreaterEqual("NormalizedName", normalized).
 		FilterLess("NormalizedName", prefixEnd(normalized)).
-		SortAsc("NormalizedName", "ID").Limit(candidateLimit).List()
+		SortAsc("NormalizedName", "StableID").Limit(candidateLimit).List()
 	if err != nil {
 		return nil, false, classify("search symbol names", err)
 	}
 	for _, record := range nameRecords {
-		byID[record.ID] = fromSymbolRecord(record)
+		byID[record.ID] = record
 	}
 
 	postings, err := bstore.QueryDB[tokenRecord](ctx, db.db).
 		FilterGreaterEqual("Token", normalized).
 		FilterLess("Token", prefixEnd(normalized)).
-		SortAsc("Token", "SymbolID").Limit(candidateLimit).List()
+		SortAsc("Token", "SymbolStable").Limit(candidateLimit).List()
 	if err != nil {
 		return nil, false, classify("search symbol tokens", err)
 	}
 	for _, posting := range postings {
-		if _, exists := byID[posting.SymbolID]; exists {
+		if _, exists := byID[posting.Symbol]; exists {
 			continue
 		}
-		symbol, ok, err := db.Symbol(ctx, posting.SymbolID)
-		if err != nil {
-			return nil, false, err
+		record, err := bstore.QueryDB[symbolRecord](ctx, db.db).FilterID(posting.Symbol).Get()
+		if err != nil && err != bstore.ErrAbsent {
+			return nil, false, classify("get token symbol", err)
 		}
-		if ok {
-			byID[symbol.ID] = symbol
+		if err == nil {
+			byID[record.ID] = record
 		}
 	}
 
-	results := make([]graph.Symbol, 0, len(byID))
-	for _, symbol := range byID {
-		results = append(results, symbol)
+	records := make([]symbolRecord, 0, len(byID))
+	for _, record := range byID {
+		records = append(records, record)
 	}
-	slices.SortFunc(results, func(a, b graph.Symbol) int {
-		rank := func(symbol graph.Symbol) int {
+	slices.SortFunc(records, func(a, b symbolRecord) int {
+		rank := func(symbol symbolRecord) int {
 			switch {
-			case symbol.ID == query || symbol.StableName == query:
+			case symbol.StableID == query || symbol.StableName == query:
 				return 0
 			case symbol.NormalizedName == normalized:
 				return 1
@@ -548,29 +869,51 @@ func (db *DB) FindSymbols(ctx context.Context, query string, limit int) ([]graph
 		if a.NormalizedName != b.NormalizedName {
 			return strings.Compare(a.NormalizedName, b.NormalizedName)
 		}
-		return strings.Compare(a.ID, b.ID)
+		return strings.Compare(a.StableID, b.StableID)
 	})
-	truncated := len(stableRecords) > limit || len(nameRecords) == candidateLimit || len(postings) == candidateLimit || len(results) > limit
-	if len(results) > limit {
-		results = results[:limit]
+	truncated := len(stableRecords) > limit || len(nameRecords) == candidateLimit || len(postings) == candidateLimit || len(records) > limit
+	if len(records) > limit {
+		records = records[:limit]
+	}
+	results, err := db.hydrateSymbols(ctx, records)
+	if err != nil {
+		return nil, false, classify("hydrate symbol search", err)
 	}
 	return results, truncated, nil
 }
 
 // Occurrences returns bounded occurrences for a symbol in source order.
 func (db *DB) Occurrences(ctx context.Context, symbolID string, roles []string, limit int) ([]graph.Occurrence, bool, error) {
+	db.stateMu.RLock()
+	defer db.stateMu.RUnlock()
 	if err := validLimit(limit); err != nil {
 		return nil, false, err
 	}
-	query := bstore.QueryDB[occurrenceRecord](ctx, db.db).FilterEqual("SymbolID", symbolID)
+	entity, err := bstore.QueryDB[entityRecord](ctx, db.db).FilterEqual("StableID", symbolID).Get()
+	if err == bstore.ErrAbsent {
+		return []graph.Occurrence{}, false, nil
+	}
+	if err != nil {
+		return nil, false, classify("resolve occurrence symbol", err)
+	}
+	query := bstore.QueryDB[occurrenceRecord](ctx, db.db).FilterEqual("Symbol", entity.ID)
 	if len(roles) > 0 {
-		values := make([]any, len(roles))
-		for i := range roles {
-			values[i] = roles[i]
+		values := make([]any, 0, len(roles))
+		for _, role := range roles {
+			id, ok, err := db.internID(ctx, role)
+			if err != nil {
+				return nil, false, classify("resolve occurrence role", err)
+			}
+			if ok {
+				values = append(values, id)
+			}
+		}
+		if len(values) == 0 {
+			return []graph.Occurrence{}, false, nil
 		}
 		query.FilterEqual("Role", values...)
 	}
-	records, err := query.SortAsc("DocumentID", "ID").Limit(limit + 1).List()
+	records, err := query.SortAsc("DocumentStable", "StableID").Limit(limit + 1).List()
 	if err != nil {
 		return nil, false, classify("list occurrences", err)
 	}
@@ -578,7 +921,11 @@ func (db *DB) Occurrences(ctx context.Context, symbolID string, roles []string, 
 	if truncated {
 		records = records[:limit]
 	}
-	return mapSlice(records, fromOccurrenceRecord), truncated, nil
+	values, err := db.hydrateOccurrences(ctx, records)
+	if err != nil {
+		return nil, false, classify("hydrate occurrences", err)
+	}
+	return values, truncated, nil
 }
 
 // EdgesFrom returns bounded forward adjacency in canonical edge order.
@@ -592,22 +939,35 @@ func (db *DB) EdgesTo(ctx context.Context, symbolID string, kinds []graph.EdgeKi
 }
 
 func (db *DB) edges(ctx context.Context, direction, symbolID string, kinds []graph.EdgeKind, limit int) ([]graph.Edge, bool, error) {
+	db.stateMu.RLock()
+	defer db.stateMu.RUnlock()
 	if err := validLimit(limit); err != nil {
 		return nil, false, err
 	}
-	query := bstore.QueryDB[edgeRecord](ctx, db.db).FilterEqual(direction, symbolID)
+	entity, err := bstore.QueryDB[entityRecord](ctx, db.db).FilterEqual("StableID", symbolID).Get()
+	if err == bstore.ErrAbsent {
+		return []graph.Edge{}, false, nil
+	}
+	if err != nil {
+		return nil, false, classify("resolve adjacency symbol", err)
+	}
+	query := bstore.QueryDB[edgeRecord](ctx, db.db).FilterEqual(direction, entity.ID)
 	if len(kinds) > 0 {
 		values := make([]any, len(kinds))
 		for i := range kinds {
-			values[i] = string(kinds[i])
+			code, ok := edgeKindCode(kinds[i])
+			if !ok {
+				return nil, false, fmt.Errorf("%w: invalid edge kind %q", ErrInvalid, kinds[i])
+			}
+			values[i] = code
 		}
 		query.FilterEqual("Kind", values...)
 	}
-	other := "To"
+	other := "ToStable"
 	if direction == "To" {
-		other = "From"
+		other = "FromStable"
 	}
-	records, err := query.SortAsc("Kind", other, "ID").Limit(limit + 1).List()
+	records, err := query.SortAsc("Kind", other, "StableID").Limit(limit + 1).List()
 	if err != nil {
 		return nil, false, classify("read adjacency", err)
 	}
@@ -615,13 +975,22 @@ func (db *DB) edges(ctx context.Context, direction, symbolID string, kinds []gra
 	if truncated {
 		records = records[:limit]
 	}
-	edges := mapSlice(records, fromEdgeRecord)
+	edges, err := db.hydrateEdges(ctx, records)
+	if err != nil {
+		return nil, false, classify("hydrate adjacency", err)
+	}
 	slices.SortFunc(edges, graph.CompareEdges)
 	return edges, truncated, nil
 }
 
 // Export returns every logical fact in deterministic order.
 func (db *DB) Export(ctx context.Context) (graph.Snapshot, error) {
+	db.stateMu.RLock()
+	defer db.stateMu.RUnlock()
+	return db.exportUnlocked(ctx)
+}
+
+func (db *DB) exportUnlocked(ctx context.Context) (graph.Snapshot, error) {
 	units, err := bstore.QueryDB[unitRecord](ctx, db.db).List()
 	if err != nil {
 		return graph.Snapshot{}, classify("export units", err)
@@ -642,11 +1011,30 @@ func (db *DB) Export(ctx context.Context) (graph.Snapshot, error) {
 	if err != nil {
 		return graph.Snapshot{}, classify("export edges", err)
 	}
+	unitValues, err := db.hydrateUnits(ctx, units)
+	if err != nil {
+		return graph.Snapshot{}, classify("hydrate export units", err)
+	}
+	documentValues, err := db.hydrateDocuments(ctx, documents)
+	if err != nil {
+		return graph.Snapshot{}, classify("hydrate export documents", err)
+	}
+	symbolValues, err := db.hydrateSymbols(ctx, symbols)
+	if err != nil {
+		return graph.Snapshot{}, classify("hydrate export symbols", err)
+	}
+	occurrenceValues, err := db.hydrateOccurrences(ctx, occurrences)
+	if err != nil {
+		return graph.Snapshot{}, classify("hydrate export occurrences", err)
+	}
+	edgeValues, err := db.hydrateEdges(ctx, edges)
+	if err != nil {
+		return graph.Snapshot{}, classify("hydrate export edges", err)
+	}
 	snapshot := graph.Snapshot{
 		Schema: graph.SchemaVersion,
-		Units:  mapSlice(units, fromUnitRecord), Documents: mapSlice(documents, fromDocumentRecord),
-		Symbols: mapSlice(symbols, fromSymbolRecord), Occurrences: mapSlice(occurrences, fromOccurrenceRecord),
-		Edges: mapSlice(edges, fromEdgeRecord),
+		Units:  unitValues, Documents: documentValues, Symbols: symbolValues,
+		Occurrences: occurrenceValues, Edges: edgeValues,
 	}
 	graph.SortSnapshot(&snapshot)
 	return snapshot, nil
@@ -673,7 +1061,13 @@ func (issue Issue) Fatal() bool { return issue.Severity != IssueWarning }
 
 // Verify checks normalized cross-record invariants.
 func (db *DB) Verify(ctx context.Context) ([]Issue, error) {
-	snapshot, err := db.Export(ctx)
+	db.stateMu.RLock()
+	defer db.stateMu.RUnlock()
+	storageIssues, err := db.verifyStorage(ctx)
+	if err != nil || len(storageIssues) != 0 {
+		return storageIssues, err
+	}
+	snapshot, err := db.exportUnlocked(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -806,8 +1200,7 @@ func validLimit(limit int) error {
 	return nil
 }
 
-func prefixEnd(prefix string) string      { return prefix + string(rune(0x10ffff)) }
-func tokenID(token, symbol string) string { return token + "\x1f" + symbol }
+func prefixEnd(prefix string) string { return prefix + string(rune(0x10ffff)) }
 
 func classify(operation string, err error) error {
 	if err == nil {
@@ -820,35 +1213,4 @@ func classify(operation string, err error) error {
 		return fmt.Errorf("%s: %w", operation, err)
 	}
 	return fmt.Errorf("%s: %w", operation, err)
-}
-
-func mapSlice[A, B any](values []A, convert func(A) B) []B {
-	result := make([]B, len(values))
-	for i := range values {
-		result[i] = convert(values[i])
-	}
-	return result
-}
-
-func toUnitRecord(v graph.Unit) unitRecord               { return unitRecord(v) }
-func fromUnitRecord(v unitRecord) graph.Unit             { return graph.Unit(v) }
-func toDocumentRecord(v graph.Document) documentRecord   { return documentRecord(v) }
-func fromDocumentRecord(v documentRecord) graph.Document { return graph.Document(v) }
-func toSymbolRecord(v graph.Symbol) symbolRecord {
-	return symbolRecord{v.ID, v.UnitID, v.StableName, v.DisplayName, v.NormalizedName, v.Kind, v.DocumentID, v.Definition, v.Provider, string(v.Evidence)}
-}
-func fromSymbolRecord(v symbolRecord) graph.Symbol {
-	return graph.Symbol{ID: v.ID, UnitID: v.UnitID, StableName: v.StableName, DisplayName: v.DisplayName, NormalizedName: v.NormalizedName, Kind: v.Kind, DocumentID: v.DocumentID, Definition: v.Definition, Provider: v.Provider, Evidence: graph.Evidence(v.Evidence)}
-}
-func toOccurrenceRecord(v graph.Occurrence) occurrenceRecord {
-	return occurrenceRecord{v.ID, v.UnitID, v.SymbolID, v.DocumentID, v.Role, v.Range, v.Provider, string(v.Evidence)}
-}
-func fromOccurrenceRecord(v occurrenceRecord) graph.Occurrence {
-	return graph.Occurrence{ID: v.ID, UnitID: v.UnitID, SymbolID: v.SymbolID, DocumentID: v.DocumentID, Role: v.Role, Range: v.Range, Provider: v.Provider, Evidence: graph.Evidence(v.Evidence)}
-}
-func toEdgeRecord(v graph.Edge) edgeRecord {
-	return edgeRecord{v.ID, v.UnitID, v.From, v.To, string(v.Kind), string(v.Evidence), v.DocumentID, v.Range, v.Provider}
-}
-func fromEdgeRecord(v edgeRecord) graph.Edge {
-	return graph.Edge{ID: v.ID, UnitID: v.UnitID, From: v.From, To: v.To, Kind: graph.EdgeKind(v.Kind), Evidence: graph.Evidence(v.Evidence), DocumentID: v.DocumentID, Range: v.Range, Provider: v.Provider}
 }

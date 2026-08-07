@@ -416,6 +416,21 @@ rebuildable derived-state errors. Back up source, not the index. The
 [release installation and recovery guide](docs/release-installation.md) also
 documents catalog recovery, upgrades, and rollback.
 
+Per-worktree storage format 2 keeps normalized graph and CLI/JSON/DOT
+identities unchanged while using compact numeric join keys internally. Repeated
+provider, provider-version, language, symbol-kind, and occurrence-role values
+are interned; symbol/occurrence/edge ranges and evidence live in separately
+retrievable detail records. Both adjacency directions remain indexed. Intern
+and external-entity references are released transactionally when a semantic
+unit is replaced, and `weave verify` recomputes those invariants.
+
+There is intentionally no v1-to-v2 migration: an old marker is inspected
+read-only and rejected with remove-and-reindex guidance before bstore can alter
+it. A clean rebuild is the upgrade. Authored intent is not lost because
+`.weave/bridges.json` is source configuration, not part of the disposable
+database; its provider recreates contextual edges during indexing. A second
+“durable links” database would duplicate that canonical declaration.
+
 ## CI and architecture policy
 
 `weave ci index` refreshes a cache-restored index; `weave ci check` verifies

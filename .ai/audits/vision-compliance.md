@@ -47,9 +47,9 @@ the useful-first-release definition has been achieved.
 | Snapshot and dirty overlay identity | **Partial** | freshness manifest records commit/tree/branch/overlay digest/provider | No immutable snapshot database or multiple build variants active at once. |
 | Fact vocabulary and validation | **Implemented** | `internal/graph/model.go`, model property/table tests | Project and external-symbol entities are represented through units/stable IDs rather than first-class persisted records. |
 | bstore storage, bidirectional adjacency, atomic unit replacement | **Implemented** | `internal/storage`; rollback, replacement, query, export and integrity tests; prevalidated bounded unit transactions for large refreshes | One database per worktree rather than shared snapshot databases. A crash between large-refresh chunks is replayed because the manifest is not published, but the database may be temporarily mixed until replay. |
-| Schema versioning and safe migration | **Partial** | Schema v1 marker and explicit `ErrSchema` rebuild guidance; unsupported-schema regression test | There is no migration framework or old-schema fixture because no schema transition exists yet. Add one with schema v2, not speculative code now. |
+| Schema versioning and safe migration | **Implemented rebuild contract** | Independent storage format v2 marker; read-only preflight rejects a retained v1 fixture without modifying its bytes; actionable remove-and-`weave index` guidance; graph/public identities remain v1; deterministic logical export tests | Derived per-worktree databases deliberately rebuild instead of converting. bbolt page layout/auto sequences are not a cross-platform byte contract. |
 | Corruption/recovery | **Implemented** | bbolt/bstore corruption classification, derived-index rebuild guidance, README delete/reindex procedure | No `weave doctor --repair`; recovery is deliberate discard/rebuild. |
-| Compaction/GC | **Implemented** | `storage.Compact`, `weave gc`, closed-database command test | Snapshot/content garbage collection is inapplicable until those stores exist. |
+| Compaction/GC | **Implemented** | `storage.Compact`, `weave gc`, closed-database command test; v2 intern/entity counts are released transactionally and recomputed by verify; unit deletion covers hot, detail, posting, and reference rows | Snapshot/content garbage collection is inapplicable until those stores exist. |
 | Resource limits | **Implemented** | graph string limits; adapter byte/frame/fact/diagnostic/stderr/depth/time limits; SCIP byte/depth/document/fact/string/source limits; query and federation bounds | OS-level child memory limits are not implemented. |
 | Git-native freshness and locking | **Implemented** for automatic providers | `internal/freshness` composite ownership; built-in and registered adapter input fingerprints; project activation; fail-closed missing adapters; manifest atomic publication | Stale-lock PID recovery is timeout/manual; explicit one-shot imports remain unmanaged. |
 | Native Go provider | **Implemented** core semantic slice | genuine compiled fixture covers declarations/references/imports/dependencies/implementations/calls/build constraints/fingerprints; test source is loaded; deterministic rebuild test | Explicit `tests` edges and whole-program dynamic call-graph precision are absent. |
@@ -74,7 +74,7 @@ the useful-first-release definition has been achieved.
 | Cross-platform release packaging | **Implemented** configuration, not yet published | Commit-reproducible `.goreleaser.yaml`; exact archive/content/target validator; SHA-256 coverage; per-archive SPDX SBOMs; draft-first tagged workflow with keyless GitHub provenance; byte-identical double-snapshot evidence; C++/TypeScript/JVM/Ctags Go-wrapper archives; .NET tool package/six RID archives; pure Python wheel | No tag/release has exercised GitHub publication or draft promotion; Universal Ctags and other semantic producers remain separate; no Apple/Windows platform signing, companion-specific SBOMs, Homebrew/WinGet/Scoop/PyPI package, or NuGet.org push. |
 | Repository/adapter trust boundary | **Partial** | Literal argv, explicit build/restore/network/generator permissions, no shell interpolation, path containment, strict/bounded input | The Go compiler may include an ignored `.go` file that participates in a package; explicit ignored-source exclusion and OS-level child memory limits are absent. |
 | Security fuzzing | **Implemented** initial boundary set | adapter-frame and SCIP-import fuzz targets; bounded 5-second campaigns passed | Long-running scheduled/OSS-Fuzz integration and database-file fuzzing remain future work. |
-| Performance baselines | **Partial** | storage microbenchmarks plus bounded reproducible harness and all four named attempts in `.ai/benchmarks/2026-08-06-repositories.md`; machine-aggregate size/search/traversal/open measurements in `.ai/benchmarks/2026-08-07-machine-aggregate.md`; two material Go correctness/performance classes fixed; .NET 10 `fkyeah` follow-up succeeds | Cedar exceeds the .NET bound; dirty one-file incremental samples remain unrecorded; 1.11 GB Go database remains large; warm aggregate symbol search is currently modestly slower than eight already-open stores while traversal is materially faster. |
+| Performance baselines | **Partial** | retained v1/v2 fixture and storage benchmark in `.ai/benchmarks/2026-08-07-compact-storage-v2.md`; representative v2 file is 34.3% smaller and exact bounded prefix search allocates 22% fewer objects at similar latency; machine-aggregate and four named repository attempts retained; .NET 10 `fkyeah` follow-up succeeds | Existing large v1 indexes were measured but not destructively rebuilt; full-evidence adjacency/export retain documented cold-record costs; Cedar exceeds the .NET bound and dirty one-file samples remain unrecorded. |
 
 ## CLI command audit
 
@@ -134,11 +134,13 @@ shipping one executable for all three languages.
    participate in automatic freshness only for otherwise unclaimed inputs.
 6. Extend test evidence beyond Go declarations/explicit `tests` edges and model
    build targets only through compiler/build-system providers, never heuristics.
-7. Resolve the measured Cedar adapter limit, add dirty-file samples, and
-   reduce the measured 1.11 GB Go index without sacrificing bounded adjacency.
+7. Resolve the measured Cedar adapter limit, add dirty-file samples, and safely
+   remeasure rebuilt v2 indexes on the four named repositories; the synthetic
+   rich fixture is 34.3% smaller, while old real v1 files were left untouched.
 8. Add installation/recovery guidance to doctor, promote a stable
    language-neutral adapter wire specification and executable conformance suite
-   when third-party compatibility is ready, and add an actual schema migration
-   when schema 2 exists. Do not require protobuf without a measured need.
+   when third-party compatibility is ready. Storage v2 intentionally rebuilds
+   disposable indexes rather than migrating them. Do not require protobuf
+   without a measured need.
 9. Exclude ignored/untrusted source explicitly where compiler project systems
    would otherwise include it, and add OS-level adapter memory/process limits.

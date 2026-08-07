@@ -41,7 +41,7 @@ func TestOpenRejectsUnsupportedSchema(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "index.db")
 	db := openTestDB(t, path)
-	if err := db.db.Update(ctx, &metadataRecord{ID: 1, Version: graph.SchemaVersion + 1}); err != nil {
+	if err := db.db.Update(ctx, &metadataRecord{ID: 1, Version: StorageSchemaVersion + 1}); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Close(); err != nil {
@@ -201,8 +201,9 @@ func TestVerifyFindsLogicalDamage(t *testing.T) {
 	if err := db.ReplaceUnit(ctx, fixtureFacts("unit-a")); err != nil {
 		t.Fatal(err)
 	}
-	bad := occurrenceRecord{ID: "bad", UnitID: "unit-a", SymbolID: "missing", DocumentID: "unit-a:main.go", Role: "reference", Evidence: string(graph.EvidenceExact)}
-	if err := db.db.Insert(ctx, &bad); err != nil {
+	facts := fixtureFacts("unit-a")
+	facts.Occurrences[0].SymbolID = "missing"
+	if err := db.ReplaceUnit(ctx, facts); err != nil {
 		t.Fatal(err)
 	}
 	issues, err := db.Verify(ctx)
@@ -222,8 +223,12 @@ func TestVerifyClassifiesOwnershipDamageAsFatal(t *testing.T) {
 	if err := db.ReplaceUnit(ctx, fixtureFacts("unit-a")); err != nil {
 		t.Fatal(err)
 	}
-	bad := documentRecord{ID: "orphan.go", UnitID: "missing-unit", Path: "orphan.go", Language: "go", Provider: "fixture", ProviderVersion: "1"}
-	if err := db.db.Insert(ctx, &bad); err != nil {
+	bad, err := bstore.QueryDB[documentRecord](ctx, db.db).FilterEqual("StableID", "unit-a:main.go").Get()
+	if err != nil {
+		t.Fatal(err)
+	}
+	bad.Unit = ^uint64(0)
+	if err := db.db.Update(ctx, &bad); err != nil {
 		t.Fatal(err)
 	}
 	issues, err := db.Verify(ctx)
@@ -300,7 +305,7 @@ func TestValidationRejectsMalformedFactsBeforeWrite(t *testing.T) {
 	}
 }
 
-func openTestDB(t *testing.T, path string) *DB {
+func openTestDB(t testing.TB, path string) *DB {
 	t.Helper()
 	db, err := Open(context.Background(), path, Options{})
 	if err != nil {

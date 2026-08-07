@@ -71,6 +71,12 @@ version`. A newer executable may require rebuilding disposable indexes. To roll
 back, restore the previous executable and rebuild rather than attempting to
 downgrade a database schema.
 
+Storage-format changes use deterministic discard-and-rebuild rather than
+in-place migration. Storage v2 inspects the frozen schema marker through a
+read-only bbolt handle before registering current bstore types; v1, future, and
+mixed schemas therefore fail clearly without a partial conversion. Remove only
+the exact Git-resolved `weave` directory shown below, then run `weave index`.
+
 ## Derived-state recovery
 
 Preserve source and checked-in Weave configuration; databases can be removed.
@@ -103,6 +109,12 @@ explicit registrations and defaults to:
 location. Prefer `weave repos remove` for one stale registration. If the catalog
 itself is corrupt, move that one file aside, then re-register worktrees with
 `weave repos add`; per-worktree indexes remain independently rebuildable.
+
+Removing derived state does not remove `.weave/bridges.json`. That source
+declaration is the durable record for manually authored contextual links, and
+the bridge provider restores its graph edges on the next index. Back up source
+and declarations, not bstore files. There is no separate stable relationship
+database to recover.
 
 Catalog symbol-search and graph-traversal commands maintain a disposable hot
 aggregate in immutable `graph-<generation>.db` files under:
