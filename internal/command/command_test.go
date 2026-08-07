@@ -168,6 +168,25 @@ func TestExplicitExternalIndexFlagsReachApplication(t *testing.T) {
 	}
 }
 
+func TestAdapterDoctorReportsMissingToolsWithoutExecutingThem(t *testing.T) {
+	t.Setenv("PATH", "")
+	t.Setenv("WEAVE_DOTNET_ADAPTER", "")
+	t.Setenv("WEAVE_SCIP_DOTNET", "")
+	var stdout, stderr bytes.Buffer
+	root := command.New(application.Local{}, command.Streams{Stdin: strings.NewReader(""), Stdout: &stdout, Stderr: &stderr})
+	if err := root.Run(context.Background(), []string{"weave", "adapters", "doctor"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"weave-dotnet\tnative\tmissing", "scip-dotnet\tscip-producer\tmissing", "dotnet\truntime\tmissing"} {
+		if !strings.Contains(stdout.String(), name) {
+			t.Errorf("stdout = %q, want %q", stdout.String(), name)
+		}
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+}
+
 type recordingApplication struct {
 	invocations []application.Invocation
 	err         error

@@ -53,6 +53,17 @@ type Response struct {
 	Issues      []storage.Issue    `json:"issues,omitempty"`
 	Freshness   *freshness.Status  `json:"freshness,omitempty"`
 	Diagnostics []string           `json:"diagnostics,omitempty"`
+	Adapters    []AdapterStatus    `json:"adapters,omitempty"`
+}
+
+// AdapterStatus is a side-effect-free executable discovery result. Discovery
+// never installs, restores, builds, or invokes the reported tool.
+type AdapterStatus struct {
+	Name      string `json:"name"`
+	Kind      string `json:"kind"`
+	Available bool   `json:"available"`
+	Path      string `json:"path,omitempty"`
+	Detail    string `json:"detail,omitempty"`
 }
 
 // Service executes Weave use cases.
@@ -80,6 +91,10 @@ type Local struct {
 // Execute runs one local use case.
 func (app Local) Execute(ctx context.Context, invocation Invocation) (Response, error) {
 	response := Response{Schema: QuerySchema, Command: invocation.Command, Query: append([]string(nil), invocation.Arguments...)}
+	if invocation.Command == "adapters list" || invocation.Command == "adapters doctor" {
+		response.Adapters = inspectAdapters(invocation.Command == "adapters doctor")
+		return response, nil
+	}
 	if invocation.Command == "index" && invocation.SCIPPath != "" {
 		return app.importSCIP(ctx, response, invocation)
 	}
@@ -186,6 +201,38 @@ func (app Local) Execute(ctx context.Context, invocation Invocation) (Response, 
 		return Response{}, fmt.Errorf("%s: %w", invocation.Command, err)
 	}
 	return response, nil
+}
+
+func inspectAdapters(includeRuntime bool) []AdapterStatus {
+	type candidate struct{ name, kind, configured string }
+	candidates := []candidate{
+		{"weave-dotnet", "native", os.Getenv("WEAVE_DOTNET_ADAPTER")},
+		{"scip-dotnet", "scip-producer", os.Getenv("WEAVE_SCIP_DOTNET")},
+	}
+	if includeRuntime {
+		candidates = append(candidates, candidate{"dotnet", "runtime", ""})
+	}
+	statuses := make([]AdapterStatus, 0, len(candidates))
+	for _, candidate := range candidates {
+		value := candidate.name
+		detail := "not found on PATH"
+		if candidate.configured != "" {
+			value = candidate.configured
+			detail = "configured by environment"
+		}
+		path, err := resolveExecutable(value)
+		status := AdapterStatus{Name: candidate.name, Kind: candidate.kind, Detail: detail}
+		if err == nil {
+			status.Available, status.Path = true, path
+			if candidate.configured == "" {
+				status.Detail = "discovered on PATH"
+			}
+		} else if candidate.configured != "" {
+			status.Detail = "configured path unavailable: " + err.Error()
+		}
+		statuses = append(statuses, status)
+	}
+	return statuses
 }
 
 func (app Local) importSCIP(ctx context.Context, response Response, invocation Invocation) (Response, error) {

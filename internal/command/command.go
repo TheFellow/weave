@@ -41,13 +41,17 @@ func New(app application.Service, streams Streams) *cli.Command {
 		noop(app, streams, "dependencies", "find semantic dependencies"),
 		group("architecture", "evaluate architecture rules", noop(app, streams, "architecture check", "check architecture rules")),
 		group("repos", "manage the cross-repository catalog", noop(app, streams, "repos add", "add a repository to the catalog"), noop(app, streams, "repos remove", "remove a repository from the catalog"), noop(app, streams, "repos list", "list cataloged repositories")),
-		group("adapters", "inspect semantic adapters", noop(app, streams, "adapters list", "list available adapters"), noop(app, streams, "adapters doctor", "diagnose adapter availability")),
+		group("adapters", "inspect semantic adapters", adapterInspection(app, streams, "list", "list available adapters"), adapterInspection(app, streams, "doctor", "diagnose adapter availability")),
 		maintenance(app, streams, "export", "export normalized semantic facts", true),
 		maintenance(app, streams, "verify", "verify index integrity", true),
 		maintenance(app, streams, "gc", "compact derived data", false),
 		noop(app, streams, "version", "show the Weave version"),
 	}
 	return root
+}
+
+func adapterInspection(app application.Service, streams Streams, name, usage string) *cli.Command {
+	return &cli.Command{Name: name, Usage: usage, Flags: []cli.Flag{jsonFlag()}, Action: invoke(app, streams, "adapters "+name, 0, 0)}
 }
 
 func group(name, usage string, children ...*cli.Command) *cli.Command {
@@ -259,6 +263,15 @@ func render(writer io.Writer, response application.Response, jsonOutput bool) er
 	}
 	for _, issue := range response.Issues {
 		if _, err := fmt.Fprintf(writer, "%s\t%s\t%s\n", issue.Kind, issue.Record, issue.Detail); err != nil {
+			return err
+		}
+	}
+	for _, adapter := range response.Adapters {
+		status := "missing"
+		if adapter.Available {
+			status = "available"
+		}
+		if _, err := fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%s\n", adapter.Name, adapter.Kind, status, adapter.Path, adapter.Detail); err != nil {
 			return err
 		}
 	}
