@@ -78,7 +78,7 @@ tool and host archives for every supported core platform. For a source build:
 ```sh
 dotnet restore adapters/dotnet/Weave.Adapter.sln
 dotnet build adapters/dotnet/Weave.Adapter.sln --no-restore
-export WEAVE_DOTNET_ADAPTER="$PWD/adapters/dotnet/src/Weave.Adapter/bin/Debug/net9.0/Weave.Adapter"
+export WEAVE_DOTNET_ADAPTER="$PWD/adapters/dotnet/src/Weave.Adapter/bin/Debug/net10.0/Weave.Adapter"
 weave symbols MyType
 ```
 

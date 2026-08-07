@@ -27,8 +27,9 @@ side effect.
    the first adapter never initiates restore.
    Buildalyzer 9 supplies F# design-time compiler arguments only; its permissive
    Roslyn dependency floor is explicitly converged with the adapter's Roslyn
-   Workspaces version. The adapter targets .NET 9 because the selected MSBuild
-   17.14 package has no .NET 8 asset; compatibility warnings are never suppressed.
+   Workspaces version. The adapter targets .NET 10 so its host can load tasks
+   from repositories selecting the .NET 10 SDK; compatibility warnings are
+   never suppressed.
 4. Each evaluated project/build variant is one complete atomic unit. C# units
    preserve distinct workspace project variants. F# units preserve ordered
    source files. Project references are explicit `depends-on` edges.

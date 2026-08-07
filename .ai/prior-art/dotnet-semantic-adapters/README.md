@@ -43,9 +43,13 @@ adds another project-model abstraction, so C# uses Locator plus
 Because its permissive Roslyn floors can otherwise select an incompatible
 Visual Basic/Common pair beside Workspaces 4.14, the adapter explicitly aligns
 that compiler package family rather than suppressing NuGet constraint warnings.
-Buildalyzer 9's MSBuild 17.14.28 dependency publishes `net9.0` and `net472`
-assets, so the adapter targets .NET 9; consuming its framework fallback from a
-.NET 8 application would produce NU1701 and is not treated as compatible.
+Buildalyzer 9 publishes `net8.0`/`net6.0` library assets and carries MSBuild
+17.14.28 dependencies. Weave hosts it in `net10.0`: the newer host can consume
+those assets while loading tasks selected by a repository using the .NET 10
+SDK. Hosting it in .NET 9 was insufficient because .NET 10 SDK tasks reference
+`System.Runtime, Version=10.0`. NuGet audit remains fatal; Weave directly pins
+the patched [`System.Security.Cryptography.Xml` 10 servicing package][crypto-xml] required
+over Buildalyzer's older MSBuild dependency graph.
 
 Project evaluation may run imported targets and expose generated documents.
 Consequently it is a build-tool operation even when no assembly is emitted.
@@ -139,3 +143,4 @@ framework selection remain follow-on work unless tests demonstrate them.
 [fcs-caches]: https://fsharp.github.io/fsharp-compiler-docs/fcs/caches.html
 [scip-dotnet]: https://github.com/sourcegraph/scip-dotnet
 [dotnet-tools]: https://learn.microsoft.com/dotnet/core/tools/global-tools
+[crypto-xml]: https://www.nuget.org/packages/System.Security.Cryptography.Xml/10.0.10
