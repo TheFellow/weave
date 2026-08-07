@@ -236,7 +236,7 @@ func runIndex(ctx context.Context, executable Executable, request IndexRequest, 
 	if stderrErr != nil {
 		return Result{}, stderrText, fmt.Errorf("read stderr: %w", stderrErr)
 	}
-	if waitErr != nil && parseErr != nil && strings.Contains(parseErr.Error(), "before run.end") {
+	if waitErr != nil && parseErr != nil && strings.Contains(parseErr.Error(), "before run.end") && !errors.Is(waitErr, context.Canceled) {
 		return Result{}, stderrText, waitErr
 	}
 	if parseErr != nil {
