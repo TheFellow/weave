@@ -34,10 +34,15 @@ base types and implemented interfaces come directly from named-type symbols.
 and MSBuild. [Microsoft.Build.Locator][locator] is the official mechanism for
 registering that toolset before any Microsoft.Build types are loaded. It keeps
 the adapter aligned with the user's SDK and avoids shipping a partial MSBuild.
-[Buildalyzer][buildalyzer] is useful prior art for extracting design-time build
-results, but adds another project-model abstraction and still executes MSBuild.
-The first adapter should use Locator plus `MSBuildWorkspace` directly because
-Roslyn already consumes that model.
+[Buildalyzer 9.0][buildalyzer] is useful prior art for extracting design-time
+build results and, unlike Roslyn Workspaces, captures the F# compiler arguments
+needed by FCS. The maintained fork targets .NET 6/8, supports SLNX, and depends
+on MSBuild 17.14.28 and Roslyn C#/VB 4.0 or newer. It still executes MSBuild and
+adds another project-model abstraction, so C# uses Locator plus
+`MSBuildWorkspace` directly while only the focused F# loader uses Buildalyzer.
+Because its permissive Roslyn floors can otherwise select an incompatible
+Visual Basic/Common pair beside Workspaces 4.14, the adapter explicitly aligns
+that compiler package family rather than suppressing NuGet constraint warnings.
 
 Project evaluation may run imported targets and expose generated documents.
 Consequently it is a build-tool operation even when no assembly is emitted.
@@ -123,7 +128,7 @@ framework selection remain follow-on work unless tests demonstrate them.
 
 [roslyn-overview]: https://github.com/dotnet/roslyn/blob/main/docs/wiki/Roslyn-Overview.md
 [locator]: https://github.com/microsoft/MSBuildLocator
-[buildalyzer]: https://github.com/daveaglick/Buildalyzer
+[buildalyzer]: https://github.com/phmonte/Buildalyzer
 [fcs-project]: https://fsharp.github.io/fsharp-compiler-docs/fcs/project.html
 [fcs-options]: https://fsharp.github.io/fsharp-compiler-docs/reference/fsharp-compiler-codeanalysis-fsharpprojectoptions.html
 [fcs-caches]: https://fsharp.github.io/fsharp-compiler-docs/fcs/caches.html
