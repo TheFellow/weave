@@ -3,20 +3,26 @@ package command_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/TheFellow/weave/internal/adapter"
 	"github.com/TheFellow/weave/internal/application"
 	"github.com/TheFellow/weave/internal/command"
 	"github.com/TheFellow/weave/internal/freshness"
 	"github.com/TheFellow/weave/internal/goindex"
 	"github.com/TheFellow/weave/internal/graph"
 	"github.com/TheFellow/weave/internal/storage"
+	"github.com/scip-code/scip/bindings/go/scip"
+	"google.golang.org/protobuf/proto"
 )
 
 func TestPlaceholderCommandsSucceedSilently(t *testing.T) {
@@ -105,6 +111,9 @@ func TestInvalidInvocationsReturnErrors(t *testing.T) {
 		{name: "invalid limit", args: []string{"symbols", "x", "--limit", "0"}},
 		{name: "invalid edge kind", args: []string{"impact", "x", "--kind", "magic"}},
 		{name: "invalid max depth", args: []string{"path", "x", "y", "--max-depth", "0"}},
+		{name: "conflicting external index", args: []string{"index", "--scip", "index.scip", "--adapter", "tool"}},
+		{name: "orphan adapter argument", args: []string{"index", "--adapter-arg", "--flag"}},
+		{name: "invalid adapter timeout", args: []string{"index", "--adapter", "tool", "--timeout", "0s"}},
 	}
 
 	for _, test := range tests {
@@ -126,6 +135,34 @@ func TestInvalidInvocationsReturnErrors(t *testing.T) {
 			}
 			if len(app.invocations) != 0 {
 				t.Errorf("application invoked on invalid input: %#v", app.invocations)
+			}
+		})
+	}
+}
+
+func TestExplicitExternalIndexFlagsReachApplication(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		args []string
+		want application.Invocation
+	}{
+		{"scip", []string{"index", "--scip", "index.scip"}, application.Invocation{Command: "index", SCIPPath: "index.scip"}},
+		{"adapter", []string{"index", "--adapter", "fixture-adapter", "--adapter-arg=--project=x", "--timeout", "3s", "--allow-build-tool"}, application.Invocation{
+			Command: "index", AdapterPath: "fixture-adapter", AdapterArgs: []string{"--project=x"}, Timeout: 3 * time.Second,
+			Permissions: adapter.Permissions{BuildTool: true},
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			app := &recordingApplication{}
+			root := command.New(app, command.Streams{Stdin: strings.NewReader(""), Stdout: &stdout, Stderr: &stderr})
+			if err := root.Run(context.Background(), append([]string{"weave"}, test.args...)); err != nil {
+				t.Fatal(err)
+			}
+			if stdout.Len() != 0 || stderr.Len() != 0 || !reflect.DeepEqual(app.invocations, []application.Invocation{test.want}) {
+				t.Fatalf("stdout=%q stderr=%q invocations=%#v", stdout.String(), stderr.String(), app.invocations)
 			}
 		})
 	}
@@ -293,6 +330,135 @@ func TestNativeGoProviderRefreshesBeforeEndToEndQuery(t *testing.T) {
 	if !strings.Contains(stdout, "AddedLater") || !strings.Contains(stderr, "index: refreshed 2 changed paths") {
 		t.Fatalf("query after edit stdout=%q stderr=%q", stdout, stderr)
 	}
+}
+
+func TestSCIPImportIsQueryableAndMalformedReplacementIsAtomic(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	root := commandRepository(t)
+	database := filepath.Join(t.TempDir(), "index.db")
+	indexPath := filepath.Join(t.TempDir(), "fixture.scip")
+	index := &scip.Index{
+		Metadata: &scip.Metadata{ToolInfo: &scip.ToolInfo{Name: "fixture-indexer", Version: "1.0.0"}},
+		Documents: []*scip.Document{{
+			RelativePath: "main.cs", Language: "csharp", Text: "Name\n",
+			PositionEncoding: scip.PositionEncoding_UTF8CodeUnitOffsetFromLineStart,
+			Occurrences: []*scip.Occurrence{{
+				TypedRange: &scip.Occurrence_SingleLineRange{SingleLineRange: &scip.SingleLineRange{Line: 0, EndCharacter: 4}},
+				Symbol:     "local 0", SymbolRoles: int32(scip.SymbolRole_Definition),
+			}},
+			Symbols: []*scip.SymbolInformation{{Symbol: "local 0", DisplayName: "Name", Kind: scip.SymbolInformation_Class}},
+		}},
+	}
+	encoded, err := proto.Marshal(index)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(indexPath, encoded, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	app := application.Local{DatabasePath: database, Directory: root}
+	run := func(args ...string) (string, string, error) {
+		var stdout, stderr bytes.Buffer
+		rootCommand := command.New(app, command.Streams{Stdin: strings.NewReader(""), Stdout: &stdout, Stderr: &stderr})
+		err := rootCommand.Run(ctx, append([]string{"weave"}, args...))
+		return stdout.String(), stderr.String(), err
+	}
+	stdout, stderr, err := run("index", "--scip", indexPath)
+	if err != nil || stdout != "" || stderr != "" {
+		t.Fatalf("index stdout=%q stderr=%q err=%v", stdout, stderr, err)
+	}
+	stdout, stderr, err = run("symbols", "Name")
+	if err != nil || !strings.Contains(stdout, "\tclass\tName\t") || stderr != "" {
+		t.Fatalf("query stdout=%q stderr=%q err=%v", stdout, stderr, err)
+	}
+	if err := os.WriteFile(indexPath, encoded[:len(encoded)-1], 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = run("index", "--scip", indexPath); err == nil {
+		t.Fatal("truncated replacement succeeded")
+	}
+	stdout, _, err = run("symbols", "Name")
+	if err != nil || !strings.Contains(stdout, "\tclass\tName\t") {
+		t.Fatalf("prior facts not preserved after failed replacement: stdout=%q err=%v", stdout, err)
+	}
+}
+
+func TestExplicitAdapterIndexPublishesFactsAndDiagnostics(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	root := commandRepository(t)
+	app := application.Local{DatabasePath: filepath.Join(t.TempDir(), "index.db"), Directory: root}
+	var stdout, stderr bytes.Buffer
+	rootCommand := command.New(app, command.Streams{Stdin: strings.NewReader(""), Stdout: &stdout, Stderr: &stderr})
+	err := rootCommand.Run(ctx, []string{
+		"weave", "index", "--adapter", os.Args[0],
+		"--adapter-arg=-test.run=TestExternalAdapterHelperProcess", "--adapter-arg=--",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stdout.Len() != 0 || !strings.Contains(stderr.String(), "warning: fixture warning") || !strings.Contains(stderr.String(), "adapter operator note") {
+		t.Fatalf("stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	rootCommand = command.New(app, command.Streams{Stdin: strings.NewReader(""), Stdout: &stdout, Stderr: &stderr})
+	if err := rootCommand.Run(ctx, []string{"weave", "symbols", "AdapterSymbol"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stdout.String(), "AdapterSymbol") {
+		t.Fatalf("query stdout=%q", stdout.String())
+	}
+}
+
+func TestExternalAdapterHelperProcess(t *testing.T) {
+	separator := -1
+	for i, argument := range os.Args {
+		if argument == "--" {
+			separator = i
+			break
+		}
+	}
+	if separator < 0 || separator+1 >= len(os.Args) {
+		return
+	}
+	operation := os.Args[separator+1]
+	provider := map[string]any{"name": "fixture-native", "version": "1.0.0"}
+	if operation == "describe" {
+		_ = json.NewEncoder(os.Stdout).Encode(map[string]any{
+			"protocols": []string{adapter.Protocol}, "provider": provider, "languages": []string{"fixture"},
+			"operations": []string{"index"}, "refresh_modes": []string{"full"},
+			"fact_encoding": adapter.FactEncoding, "position_encodings": []string{"utf8-byte"},
+		})
+		os.Exit(0)
+	}
+	if operation != "index" {
+		os.Exit(90)
+	}
+	var request map[string]any
+	if err := json.NewDecoder(os.Stdin).Decode(&request); err != nil {
+		os.Exit(91)
+	}
+	requestID, _ := request["request_id"].(string)
+	unit := graph.Unit{ID: "adapter:unit", Provider: "fixture-native", ProviderVersion: "1.0.0", Language: "fixture"}
+	document := graph.Document{ID: "adapter:document", UnitID: unit.ID, Path: "adapter.fixture", Language: "fixture", Provider: unit.Provider, ProviderVersion: unit.ProviderVersion}
+	symbol := graph.Symbol{ID: "adapter:symbol", UnitID: unit.ID, StableName: "fixture AdapterSymbol", DisplayName: "AdapterSymbol", Kind: "function", DocumentID: document.ID, Provider: unit.Provider, Evidence: graph.EvidenceExact}
+	writeExternalFrame(requestID, "run.begin", map[string]any{"provider": provider, "fact_encoding": adapter.FactEncoding})
+	writeExternalFrame(requestID, "unit.begin", map[string]any{"unit": unit})
+	writeExternalFrame(requestID, "facts", map[string]any{"documents": []graph.Document{document}})
+	writeExternalFrame(requestID, "facts", map[string]any{"symbols": []graph.Symbol{symbol}})
+	writeExternalFrame(requestID, "diagnostic", map[string]any{"severity": "warning", "message": "fixture warning", "unit_id": unit.ID})
+	writeExternalFrame(requestID, "unit.end", map[string]any{"status": "complete", "counts": map[string]int{"documents": 1, "symbols": 1, "occurrences": 0, "edges": 0}})
+	writeExternalFrame(requestID, "run.end", map[string]any{"status": "complete", "units": []string{unit.ID}})
+	_, _ = fmt.Fprintln(os.Stderr, "adapter operator note")
+	os.Exit(0)
+}
+
+func writeExternalFrame(requestID, kind string, payload any) {
+	_ = json.NewEncoder(os.Stdout).Encode(map[string]any{
+		"protocol": adapter.Protocol, "request_id": requestID, "kind": kind, "payload": payload,
+	})
 }
 
 type commandProvider struct{ calls int }

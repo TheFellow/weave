@@ -76,13 +76,20 @@ type Provider struct {
 
 // Capabilities is the bounded describe response.
 type Capabilities struct {
-	Protocols        []string `json:"protocols"`
-	Provider         Provider `json:"provider"`
-	Languages        []string `json:"languages"`
-	Operations       []string `json:"operations"`
-	RefreshModes     []string `json:"refresh_modes"`
-	FactEncoding     string   `json:"fact_encoding"`
-	PositionEncoding []string `json:"position_encodings"`
+	Protocols        []string     `json:"protocols"`
+	Provider         Provider     `json:"provider"`
+	Languages        []string     `json:"languages"`
+	Operations       []string     `json:"operations"`
+	RefreshModes     []string     `json:"refresh_modes"`
+	FactEncoding     string       `json:"fact_encoding"`
+	PositionEncoding []string     `json:"position_encodings"`
+	Requires         Requirements `json:"requires"`
+}
+
+// Requirements disclose external runtime behavior during capability discovery.
+type Requirements struct {
+	Executables     []string `json:"executables"`
+	MayRunBuildTool bool     `json:"may_run_build_tool"`
 }
 
 // Permissions are denied unless explicitly enabled by the caller.

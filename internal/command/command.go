@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
+	"github.com/TheFellow/weave/internal/adapter"
 	"github.com/TheFellow/weave/internal/application"
 	"github.com/TheFellow/weave/internal/graph"
 	cli "github.com/urfave/cli/v3"
@@ -27,7 +29,7 @@ func New(app application.Service, streams Streams) *cli.Command {
 	}
 	root.Commands = []*cli.Command{
 		lifecycle(app, streams, "init", "initialize Weave for a repository"),
-		lifecycle(app, streams, "index", "build or refresh the semantic index"),
+		indexCommand(app, streams),
 		lifecycle(app, streams, "status", "show index and freshness status"),
 		lookup(app, streams, "symbols", "find symbols"),
 		lookup(app, streams, "definition", "find symbol definitions"),
@@ -80,6 +82,67 @@ func lifecycle(app application.Service, streams Streams, name, usage string) *cl
 	return &cli.Command{Name: name, Usage: usage, Flags: []cli.Flag{jsonFlag()}, Action: invoke(app, streams, name, 0, 0)}
 }
 
+func indexCommand(app application.Service, streams Streams) *cli.Command {
+	return &cli.Command{
+		Name: "index", Usage: "build or refresh the semantic index",
+		Flags: []cli.Flag{
+			jsonFlag(),
+			&cli.StringFlag{Name: "scip", Usage: "explicitly import a SCIP protobuf index"},
+			&cli.StringFlag{Name: "adapter", Usage: "explicitly run a native adapter executable"},
+			&cli.StringSliceFlag{Name: "adapter-arg", Usage: "literal adapter argument before its operation (repeatable)"},
+			&cli.DurationFlag{Name: "timeout", Value: 2 * time.Minute, Usage: "external adapter deadline", Validator: func(value time.Duration) error {
+				if value <= 0 || value > time.Hour {
+					return fmt.Errorf("must be greater than zero and at most one hour")
+				}
+				return nil
+			}},
+			&cli.BoolFlag{Name: "allow-network", Usage: "permit the adapter to use the network"},
+			&cli.BoolFlag{Name: "allow-restore", Usage: "permit dependency restore"},
+			&cli.BoolFlag{Name: "allow-build-tool", Usage: "permit build-tool invocation"},
+			&cli.BoolFlag{Name: "allow-generators", Usage: "permit generator execution"},
+		},
+		Action: func(ctx context.Context, cmd *cli.Command) error {
+			if cmd.Args().Len() != 0 {
+				return cli.Exit("index expects no arguments", 2)
+			}
+			scipPath, adapterPath := cmd.String("scip"), cmd.String("adapter")
+			if scipPath != "" && adapterPath != "" {
+				return cli.Exit("--scip and --adapter are mutually exclusive", 2)
+			}
+			adapterArgs := cmd.StringSlice("adapter-arg")
+			if len(adapterArgs) == 0 {
+				adapterArgs = nil
+			}
+			permissions := adapter.Permissions{
+				Network: cmd.Bool("allow-network"), Restore: cmd.Bool("allow-restore"),
+				BuildTool: cmd.Bool("allow-build-tool"), RunGenerators: cmd.Bool("allow-generators"),
+			}
+			if adapterPath == "" && (len(adapterArgs) != 0 || permissions != (adapter.Permissions{})) {
+				return cli.Exit("adapter arguments and permissions require --adapter", 2)
+			}
+			if scipPath == "" && adapterPath == "" {
+				response, err := app.Execute(ctx, application.Invocation{Command: "index", JSON: cmd.Bool("json")})
+				if err != nil {
+					return err
+				}
+				return renderInvocation(streams, response, cmd.Bool("json"))
+			}
+			timeout := time.Duration(0)
+			if adapterPath != "" {
+				timeout = cmd.Duration("timeout")
+			}
+			response, err := app.Execute(ctx, application.Invocation{
+				Command: "index", JSON: cmd.Bool("json"), SCIPPath: scipPath, AdapterPath: adapterPath,
+				AdapterArgs: adapterArgs, Timeout: timeout, Permissions: permissions,
+			})
+			if err != nil {
+				return err
+			}
+			return renderInvocation(streams, response, cmd.Bool("json"))
+		},
+	}
+}
+
 func noop(app application.Service, streams Streams, path, usage string) *cli.Command {
 	name := path
 	if index := strings.LastIndexByte(path, ' '); index >= 0 {
@@ -118,13 +181,22 @@ func invoke(app application.Service, streams Streams, path string, minArgs, maxA
 		if err != nil {
 			return err
 		}
-		if response.Freshness != nil && response.Freshness.Refreshed {
-			if _, err := fmt.Fprintf(streams.Stderr, "index: refreshed %d changed paths\n", response.Freshness.ChangeCount); err != nil {
-				return err
-			}
-		}
-		return render(streams.Stdout, response, cmd.Bool("json"))
+		return renderInvocation(streams, response, cmd.Bool("json"))
 	}
+}
+
+func renderInvocation(streams Streams, response application.Response, jsonOutput bool) error {
+	if response.Freshness != nil && response.Freshness.Refreshed {
+		if _, err := fmt.Fprintf(streams.Stderr, "index: refreshed %d changed paths\n", response.Freshness.ChangeCount); err != nil {
+			return err
+		}
+	}
+	for _, diagnostic := range response.Diagnostics {
+		if _, err := fmt.Fprintln(streams.Stderr, diagnostic); err != nil {
+			return err
+		}
+	}
+	return render(streams.Stdout, response, jsonOutput)
 }
 
 func arity(minimum, maximum int) string {
