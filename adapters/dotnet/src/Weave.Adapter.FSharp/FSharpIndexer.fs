@@ -59,7 +59,7 @@ type FSharpIndexer private () =
                 match Path.GetDirectoryName(Path.GetFullPath projectPath) with
                 | null -> invalidArg "projectPath" ("project path has no directory: " + projectPath)
                 | directory -> directory
-            let absoluteProjectPath path =
+            let absoluteProjectPath (path: string) =
                 if Path.IsPathFullyQualified path then Path.GetFullPath path
                 else Path.GetFullPath(path, projectDirectory)
 
