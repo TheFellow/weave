@@ -2,6 +2,7 @@ using System.Text.Json;
 using Microsoft.Build.Locator;
 using Weave.Adapter.FSharp;
 using Weave.Adapter.Model;
+using Xunit;
 
 namespace Weave.Adapter.Tests;
 
