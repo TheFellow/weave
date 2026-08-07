@@ -223,6 +223,42 @@ file or asset can surface the READMEs and articles that explain or display it.
 See [ADR 0010](.ai/decisions/0010-workspace-and-structured-content-index.md)
 for the safe source-profile boundary and current renderer limitations.
 
+## Schemas, infrastructure, migrations, and build graphs
+
+The built-in `weave-schema-build` provider automatically adds source-only facts
+for Protobuf, OpenAPI 3, GraphQL, PostgreSQL migration files, Terraform HCL, and
+a declarative build-manifest set: `go.mod`, `Cargo.toml`, `package.json`, Maven
+`pom.xml`, and MSBuild C#/F#/VB project files. These facts flow through the same
+commands as code and content:
+
+```sh
+weave context listPets
+weave dependencies example.test/service
+weave graph listPets --kind references --kind depends-on
+weave symbols aws_instance --json
+weave export --json
+```
+
+The provider uses maintained format/ecosystem parsers and reads only bounded
+Git-visible regular files. It never runs `protoc`, a generator, a package
+manager, a build, Terraform, a database, a template, or a network loader.
+Remote and unproven references remain open graph endpoints. Explicit local
+manifest/project paths may resolve locally; names and version constraints do
+not. A category source fingerprint caches unchanged parser results, and a
+changed cross-file schema category republishes atomically so malformed OpenAPI
+cannot remove valid Protobuf or Terraform facts. Independently parseable build
+manifests degrade per file, preventing a malformed fixture from hiding valid
+projects.
+
+Evidence is deliberately conservative: declarations are `declared`,
+executable GraphQL navigation is `syntactic`, per-directory migration filename
+order is `inferred`, and `generated` currently requires an explicit MSBuild
+`AutoGen` plus `DependentUpon` mapping. This provider never claims compiler
+`exact` evidence. SQL semantics are PostgreSQL only; OpenAPI roots are version
+3; `.tf.json`, Gradle, and CMake evaluation are not included. See [ADR
+0017](.ai/decisions/0017-source-only-schema-build-provider.md) and the [parser
+research](.ai/prior-art/schema-build-providers/README.md).
+
 ## Contextual relationship authoring
 
 Relationships that a compiler or content parser cannot establish can be
@@ -592,7 +628,10 @@ Kotlin consume compiler-native SCIP, and explicitly registered third-party
 adapters can add another language without a Go-core change. Exact cross-language
 relationships use checked-in
 declared/generated bridges. The workspace provider covers Git-visible topology
-and the initial CommonMark/GFM plus static Jekyll-shaped content slice.
+and the initial CommonMark/GFM plus static Jekyll-shaped content slice. The
+source-only schema/build provider covers linked Protobuf, OpenAPI 3, GraphQL,
+PostgreSQL migration, Terraform, and the documented declarative project
+manifest subset without evaluating builds.
 Finer-grained compiler refresh, build variants, fuzzy search, optional hooks,
 MCP, renderer-complete content profiles, and signed package-manager distribution
 remain future work.

@@ -21,6 +21,7 @@ import (
 	"github.com/TheFellow/weave/internal/freshness"
 	"github.com/TheFellow/weave/internal/goindex"
 	"github.com/TheFellow/weave/internal/repository"
+	"github.com/TheFellow/weave/internal/schemabuild"
 	"github.com/TheFellow/weave/internal/workspaceindex"
 )
 
@@ -32,7 +33,7 @@ const maxGitInventoryBytes = 16 << 20
 // registrations have already crossed the explicit registry trust boundary;
 // Weave never infers them by scanning PATH.
 func Default(directory string, registrations ...adapter.Registration) freshness.Provider {
-	providers := []freshness.Provider{workspaceindex.Provider{}, goindex.Provider{}, bridge.Provider{}}
+	providers := []freshness.Provider{workspaceindex.Provider{}, schemabuild.Provider{}, goindex.Provider{}, bridge.Provider{}}
 	var candidates []Provider
 	configured := append([]adapter.Registration(nil), registrations...)
 	slices.SortFunc(configured, func(a, b adapter.Registration) int { return strings.Compare(a.Name, b.Name) })

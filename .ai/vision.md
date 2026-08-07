@@ -204,6 +204,23 @@ code during safe automatic indexing. Compiler providers remain authoritative
 for compilable source; content providers connect prose and topology to those
 facts through stable repository/path identities.
 
+Schemas, infrastructure, migrations, and declarative build manifests are also
+source knowledge rather than permission to execute a tool. Automatic providers
+must feed maintained parsers only bounded Git-visible regular-file bytes. They
+must not restore packages, run generators or builds, evaluate executable build
+DSLs/templates, initialize Terraform, connect to a database, or resolve a
+network reference. Local references resolve only through exact contained
+source identities; other targets remain open. Gradle, CMake, and similar
+executable DSLs require a safe maintained representation or an explicitly
+permissioned adapter, never a convenient regex grammar.
+
+When cross-file semantics require a complete corpus, a category-atomic unit is
+a legitimate conservative boundary. Its normalized source fingerprint is a
+parser cache key: unchanged categories do no parse work, while a changed
+category relinks completely and publishes atomically. Malformed input in one
+category must not remove unrelated categories. Finer invalidation follows
+measurement; avoiding stale partially linked answers comes first.
+
 The long-term product is an index of selected local worktrees that lets a user,
 CLI, or agent navigate the semantics of files on disk faster than rediscovering
 them through raw filesystem traversal. Cross-repository catalog queries are a
@@ -462,7 +479,7 @@ Evidence classes:
 ```text
 Exact       resolved by a compiler or authoritative semantic index
 Declared    stated by a build file, manifest, or Weave configuration
-Generated   connected through a shared schema or generated artifact
+Generated   proven by an explicit generator/source/output mapping
 Inferred    deterministically inferred from weaker evidence
 Syntactic   extracted from syntax without semantic resolution
 Ambiguous   multiple valid targets remain
