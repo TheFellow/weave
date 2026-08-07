@@ -77,7 +77,7 @@ func (provider Provider) Refresh(ctx context.Context, request freshness.Request)
 	}
 	timeout := provider.Timeout
 	if timeout <= 0 {
-		timeout = 2 * time.Minute
+		timeout = 4 * time.Minute
 	}
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()

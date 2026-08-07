@@ -57,16 +57,25 @@ for repository in "${repositories[@]}"; do
   git -C "$clone" rev-parse HEAD >"$output/$repository/commit.txt"
 
   if [[ -f "$clone/go.mod" ]]; then
-    (cd "$clone" && GOFLAGS=-mod=readonly go mod download) >"$output/$repository/go-mod-download.log" 2>&1
+    if ! (cd "$clone" && GOFLAGS=-mod=readonly go mod download) >"$output/$repository/go-mod-download.log" 2>&1; then
+      echo "dependency preparation failed" >"$output/$repository/result.txt"
+      continue
+    fi
   fi
   if find "$clone" \( -name '*.csproj' -o -name '*.fsproj' \) -print -quit | grep -q .; then
-    (cd "$clone" && dotnet restore) >"$output/$repository/restore.log" 2>&1
+    if ! (cd "$clone" && dotnet restore) >"$output/$repository/restore.log" 2>&1; then
+      echo "dependency preparation failed" >"$output/$repository/result.txt"
+      continue
+    fi
   fi
 
   (
     cd "$clone"
     export WEAVE_DOTNET_ADAPTER="$adapter"
-    measure "$repository" cold-index "$weave" index --json
+    if ! measure "$repository" cold-index "$weave" index --json; then
+      echo "cold index failed" >"$output/$repository/result.txt"
+      continue
+    fi
     for run in 1 2 3 4 5; do
       measure "$repository" "warm-query-$run" "$weave" symbols __weave_benchmark_no_match__ --json
     done
