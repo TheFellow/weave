@@ -1,0 +1,3 @@
+# Vendored browser runtime bytes are checksum-pinned and embedded verbatim.
+# Do not let platform checkout settings rewrite their line endings.
+internal/explorer/assets/vendor/** -text
