@@ -15,6 +15,26 @@ import (
 	"github.com/TheFellow/weave/internal/repository"
 )
 
+func TestGoEnvironmentPreservesToolchainAndDisablesDependencyDownloads(t *testing.T) {
+	t.Setenv("GOTOOLCHAIN", "go1.25.0+auto")
+	t.Setenv("GOPROXY", "https://proxy.example.invalid")
+	t.Setenv("GONOSUMDB", "example.invalid")
+	environment := goEnvironment(false)
+	values := map[string]string{}
+	counts := map[string]int{}
+	for _, value := range environment {
+		name, setting, _ := strings.Cut(value, "=")
+		values[name] = setting
+		counts[name]++
+	}
+	if values["GOTOOLCHAIN"] != "go1.25.0+auto" || values["GOPROXY"] != "off" || values["GONOSUMDB"] != "*" {
+		t.Fatalf("environment = %#v", values)
+	}
+	if counts["GOPROXY"] != 1 || counts["GONOSUMDB"] != 1 {
+		t.Fatalf("duplicate policy settings: %#v", counts)
+	}
+}
+
 func TestProviderEmitsCompilerResolvedGoFacts(t *testing.T) {
 	root := fixtureModule(t)
 	provider := Provider{}

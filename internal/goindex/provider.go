@@ -21,7 +21,9 @@ import (
 const providerVersion = "1"
 
 // Provider indexes the active Go build without permitting dependency download
-// or go.mod/go.sum mutation. Empty non-Go repositories produce an empty index.
+// or go.mod/go.sum mutation. It preserves the user's Go toolchain selection so
+// an auto-selected, already installed toolchain is not replaced by an older
+// base executable. Empty non-Go repositories produce an empty index.
 type Provider struct {
 	// AllowNetwork permits the Go command to use the configured module proxy.
 	// The default is false; dependencies already present in the module cache work.
@@ -135,11 +137,26 @@ func hasGoWorkspace(root string) bool {
 
 func goEnvironment(allowNetwork bool) []string {
 	environment := append([]string(nil), os.Environ()...)
-	environment = append(environment, "GOTOOLCHAIN=local")
 	if !allowNetwork {
-		environment = append(environment, "GOPROXY=off", "GOSUMDB=off")
+		// GOPROXY=off prevents both module and missing toolchain downloads. Keep
+		// GOSUMDB intact because Go requires checksum verification even for an
+		// auto-selected toolchain already present in the local module cache.
+		environment = withoutEnvironment(environment, "GOPROXY", "GONOSUMDB")
+		environment = append(environment, "GOPROXY=off", "GONOSUMDB=*")
 	}
 	return environment
+}
+
+func withoutEnvironment(environment []string, names ...string) []string {
+	result := environment[:0]
+	for _, value := range environment {
+		name, _, _ := strings.Cut(value, "=")
+		if slices.Contains(names, name) {
+			continue
+		}
+		result = append(result, value)
+	}
+	return result
 }
 
 func emptyResult(previous *freshness.Manifest) freshness.Result {
