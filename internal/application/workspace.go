@@ -23,7 +23,7 @@ var workspaceKinds = map[string]bool{
 }
 
 var contentEdgeKinds = []graph.EdgeKind{
-	graph.EdgeLinksTo, graph.EdgeEmbeds, graph.EdgeGenerates, graph.EdgeExposes, graph.EdgeMemberOf, graph.EdgeResolvesTo,
+	graph.EdgeLinksTo, graph.EdgeEmbeds, graph.EdgeDocuments, graph.EdgeGenerates, graph.EdgeExposes, graph.EdgeMemberOf, graph.EdgeResolvesTo,
 }
 
 func executeWorkspace(ctx context.Context, store workspaceStore, response *Response, invocation Invocation) error {

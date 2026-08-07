@@ -302,6 +302,11 @@ func validEvidence(value Evidence) bool {
 	return slices.Contains([]Evidence{EvidenceExact, EvidenceDeclared, EvidenceGenerated, EvidenceInferred, EvidenceSyntactic, EvidenceAmbiguous}, value)
 }
 
+// IsEvidence reports whether value is part of the normalized evidence
+// vocabulary. Relationship producers use this to reject unsupported claims
+// before facts reach atomic unit validation.
+func IsEvidence(value Evidence) bool { return validEvidence(value) }
+
 func validEdgeKind(value EdgeKind) bool {
 	return slices.Contains([]EdgeKind{EdgeDefines, EdgeReferences, EdgeCalls, EdgeImports, EdgeContains, EdgeExtends, EdgeImplements, EdgeInstantiates, EdgeDependsOn, EdgeTests, EdgeGenerates, EdgeDocuments, EdgeExposes, EdgeHandles, EdgeReads, EdgeWrites, EdgeLinksTo, EdgeEmbeds, EdgeMemberOf, EdgeResolvesTo}, value)
 }

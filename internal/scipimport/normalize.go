@@ -12,6 +12,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/TheFellow/weave/internal/graph"
+	"github.com/TheFellow/weave/internal/relationship"
 	"github.com/scip-code/scip/bindings/go/scip"
 )
 
@@ -187,10 +188,9 @@ func symbolID(identity, provider, path, symbol string) string {
 }
 
 func semanticEdge(unitID, from, to string, kind graph.EdgeKind, provider string) graph.Edge {
-	return graph.Edge{
-		ID: stableID("scip-edge:", unitID, from, string(kind), to), UnitID: unitID,
-		From: from, To: to, Kind: kind, Evidence: graph.EvidenceExact, Provider: provider,
-	}
+	return (relationship.Builder{UnitID: unitID, Provider: provider, Evidence: graph.EvidenceExact}).MustBuild(relationship.Spec{
+		ID: stableID("scip-edge:", unitID, from, string(kind), to), From: from, To: to, Kind: kind,
+	})
 }
 
 func convertRange(source []byte, encoding scip.PositionEncoding, value scip.Range) (graph.Range, error) {

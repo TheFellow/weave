@@ -647,7 +647,10 @@ edges require explicit evidence from:
 - Explicit user-maintained bridge declarations.
 
 Cross-language inference is not part of the initial core. Exact, declared, and
-generated bridges come first.
+generated relationships come first. The contextual linking CLI resolves
+human-facing local or catalog queries once, then stores exact graph entity IDs;
+it must support heterogeneous code and content resources without weakening the
+evidence carried by compiler-produced edges.
 
 ## Cross-repository operation
 
@@ -694,6 +697,11 @@ weave
   path
   impact
   dependencies
+  links
+    add
+    update
+    remove
+    list
   workspace
     find
     outline
@@ -713,6 +721,15 @@ weave
   gc
   version
 ```
+
+Authored relationships are an SDK-like delivery surface over the same
+normalized relationship contract used by built-in providers. Human-facing
+endpoint queries resolve once and persist exact graph entity IDs. Endpoints may
+be compiler symbols, packages, files, documents, sections, routes, assets,
+URLs, or intentional open resources; their heterogeneous shape must not create
+a parallel edge store or a document-only predicate vocabulary. Catalog-scoped
+authoring may connect registered worktrees, while evidence remains declared or
+generated rather than pretending to be compiler-exact.
 
 The first CLI commit should establish this tree with concrete behavioral tests.
 Commands whose application capability is not yet implemented return success and

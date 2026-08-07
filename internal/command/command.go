@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -44,6 +45,7 @@ func New(app application.Service, streams Streams) *cli.Command {
 		impactCommand(app, streams),
 		lookup(app, streams, "dependencies", "find direct semantic dependencies"),
 		graphCommand(app, streams),
+		linkCommands(app, streams),
 		workspaceCommands(app, streams),
 		architectureCommand(app, streams),
 		repositoryCommands(app, streams),
@@ -55,6 +57,54 @@ func New(app application.Service, streams Streams) *cli.Command {
 		versionCommand(app, streams),
 	}
 	return root
+}
+
+func linkCommands(app application.Service, streams Streams) *cli.Command {
+	write := func(name, usage string, adding bool) *cli.Command {
+		flags := []cli.Flag{
+			jsonFlag(),
+			&cli.StringFlag{Name: "from", Usage: "source query, exact entity:<id>, or intentional open id:<id>"},
+			&cli.StringFlag{Name: "to", Usage: "target query, exact entity:<id>, or intentional open id:<id>"},
+			&cli.StringFlag{Name: "kind", Usage: "normalized relationship kind"},
+			&cli.StringFlag{Name: "note", Usage: "reviewable human context retained in the declaration"},
+		}
+		flags = append(flags, federationFlags()...)
+		return &cli.Command{Name: name, Usage: usage, UsageText: "weave links " + name + " LINK_ID [options]", Flags: flags, Action: func(ctx context.Context, cmd *cli.Command) error {
+			if cmd.Args().Len() != 1 {
+				return cli.Exit("links "+name+" expects one link ID", 2)
+			}
+			fromSet, toSet := cmd.IsSet("from"), cmd.IsSet("to")
+			kindSet, noteSet := cmd.IsSet("kind"), cmd.IsSet("note")
+			if adding && (!fromSet || !toSet || !kindSet) {
+				return cli.Exit("links add requires --from, --to, and --kind", 2)
+			}
+			if !adding && !fromSet && !toSet && !kindSet && !noteSet {
+				return cli.Exit("links update requires at least one of --from, --to, --kind, or --note", 2)
+			}
+			kind := graph.EdgeKind(cmd.String("kind"))
+			if kindSet && !graph.IsEdgeKind(kind) {
+				return cli.Exit(fmt.Sprintf("unknown edge kind %q", kind), 2)
+			}
+			response, err := app.Execute(ctx, application.Invocation{
+				Command: "links " + name, Arguments: append([]string(nil), cmd.Args().Slice()...), JSON: cmd.Bool("json"),
+				LinkFrom: cmd.String("from"), LinkTo: cmd.String("to"), LinkKind: kind, LinkNote: cmd.String("note"),
+				LinkFromSet: fromSet, LinkToSet: toSet, LinkKindSet: kindSet, LinkNoteSet: noteSet,
+				Scope: queryScope(cmd), Repositories: cmd.StringSlice("repo"), CatalogPath: cmd.String("catalog"), MaxRepos: cmd.Int("max-repos"),
+			})
+			if err != nil {
+				return err
+			}
+			return renderInvocation(streams, response, cmd.Bool("json"))
+		}}
+	}
+	list := &cli.Command{Name: "list", Usage: "list authored contextual relationships", UsageText: "weave links list [--json]", Flags: []cli.Flag{jsonFlag()}, Action: invoke(app, streams, "links list", 0, 0)}
+	remove := &cli.Command{Name: "remove", Aliases: []string{"rm"}, Usage: "remove an authored contextual relationship", UsageText: "weave links remove LINK_ID [--json]", Flags: []cli.Flag{jsonFlag()}, Action: invoke(app, streams, "links remove", 1, 1)}
+	return &cli.Command{Name: "links", Aliases: []string{"link"}, Usage: "author contextual relationships between indexed resources", Commands: []*cli.Command{
+		write("add", "add an exact contextual relationship", true),
+		write("update", "update an authored contextual relationship", false),
+		remove,
+		list,
+	}}
 }
 
 func graphCommand(app application.Service, streams Streams) *cli.Command {
@@ -584,6 +634,14 @@ func render(writer io.Writer, response application.Response, jsonOutput bool) er
 	}
 	if strings.HasPrefix(response.Command, "workspace ") {
 		return renderWorkspace(writer, response)
+	}
+	if strings.HasPrefix(response.Command, "links ") {
+		for _, link := range response.Links {
+			if _, err := fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%s\n", link.ID, link.Kind, link.From, link.To, strconv.Quote(link.Note)); err != nil {
+				return err
+			}
+		}
+		return nil
 	}
 	for _, symbol := range response.Symbols {
 		if _, err := fmt.Fprintf(writer, "%s\t%s\t%s\t%s:%d:%d\n", symbol.ID, symbol.Kind, symbol.DisplayName, symbol.DocumentID, symbol.Definition.Start.Line+1, symbol.Definition.Start.Column+1); err != nil {

@@ -10,7 +10,10 @@ import (
 	"github.com/TheFellow/weave/internal/graph"
 )
 
-var ErrNotFound = errors.New("symbol not found")
+var (
+	ErrNotFound  = errors.New("symbol not found")
+	ErrAmbiguous = errors.New("symbol query is ambiguous")
+)
 
 // Store is the narrow graph persistence boundary needed by query services.
 type Store interface {
@@ -57,6 +60,37 @@ func Resolve(ctx context.Context, store Store, value string) (graph.Symbol, erro
 	}
 	if len(symbols) == 0 {
 		return graph.Symbol{}, fmt.Errorf("%w: %s", ErrNotFound, value)
+	}
+	return symbols[0], nil
+}
+
+// ResolveUnique resolves an exact ID or requires a human-facing query to have
+// exactly one result. Authoring operations use this instead of silently
+// selecting the highest-ranked fuzzy match.
+func ResolveUnique(ctx context.Context, store Store, value string) (graph.Symbol, error) {
+	if symbol, ok, err := store.Symbol(ctx, value); err != nil {
+		return graph.Symbol{}, err
+	} else if ok {
+		return symbol, nil
+	}
+	symbols, _, err := store.FindSymbols(ctx, value, 2)
+	if err != nil {
+		return graph.Symbol{}, err
+	}
+	if len(symbols) == 0 {
+		return graph.Symbol{}, fmt.Errorf("%w: %s", ErrNotFound, value)
+	}
+	var exact []graph.Symbol
+	for _, symbol := range symbols {
+		if symbol.StableName == value {
+			exact = append(exact, symbol)
+		}
+	}
+	if len(exact) == 1 {
+		return exact[0], nil
+	}
+	if len(symbols) > 1 {
+		return graph.Symbol{}, fmt.Errorf("%w: %q matches %q and %q; pass an exact graph ID", ErrAmbiguous, value, symbols[0].ID, symbols[1].ID)
 	}
 	return symbols[0], nil
 }

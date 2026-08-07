@@ -17,6 +17,7 @@ import (
 
 	"github.com/TheFellow/weave/internal/adapter"
 	"github.com/TheFellow/weave/internal/application"
+	"github.com/TheFellow/weave/internal/bridge"
 	"github.com/TheFellow/weave/internal/command"
 	"github.com/TheFellow/weave/internal/freshness"
 	"github.com/TheFellow/weave/internal/goindex"
@@ -40,6 +41,7 @@ func TestPlaceholderCommandsSucceedSilently(t *testing.T) {
 		{name: "index", args: []string{"index"}, want: "index"},
 		{name: "status", args: []string{"status"}, want: "status"},
 		{name: "architecture check", args: []string{"architecture", "check"}, want: "architecture check"},
+		{name: "links list", args: []string{"links", "list"}, want: "links list"},
 		{name: "repos add", args: []string{"repos", "add"}, want: "repos add"},
 		{name: "repos list", args: []string{"repos", "list"}, want: "repos list"},
 		{name: "adapters list", args: []string{"adapters", "list"}, want: "adapters list"},
@@ -314,6 +316,10 @@ func TestInvalidInvocationsReturnErrors(t *testing.T) {
 		{name: "invalid graph direction", args: []string{"graph", "x", "--direction", "sideways"}},
 		{name: "invalid graph edge bound", args: []string{"graph", "x", "--max-edges", "0"}},
 		{name: "JSON graph file", args: []string{"graph", "x", "--json", "--output", "graph.dot"}},
+		{name: "link add missing endpoints", args: []string{"links", "add", "docs-code", "--kind", "documents"}},
+		{name: "link add invalid kind", args: []string{"links", "add", "docs-code", "--from", "README", "--to", "Serve", "--kind", "magic"}},
+		{name: "link update empty patch", args: []string{"links", "update", "docs-code"}},
+		{name: "link remove missing ID", args: []string{"links", "remove"}},
 	}
 
 	for _, test := range tests {
@@ -381,6 +387,44 @@ func TestFederationFlagsReachApplication(t *testing.T) {
 	got := app.invocations[0]
 	if got.Scope != "catalog" || !reflect.DeepEqual(got.Repositories, []string{"github.com/acme/a"}) || got.CatalogPath != "/tmp/weave-catalog.db" || got.MaxRepos != 4 {
 		t.Fatalf("invocation = %#v", got)
+	}
+}
+
+func TestContextualLinkFlagsReachApplicationAndRenderExactDeclaration(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	app := &recordingApplication{response: application.Response{Command: "links add", Links: []bridge.Link{{
+		ID: "guide-code", From: "entity:workspace:guide", To: "entity:scip:Serve", Kind: graph.EdgeDocuments, Note: "Keeps docs and code together.\nReviewed.",
+	}}}}
+	root := command.New(app, command.Streams{Stdin: strings.NewReader(""), Stdout: &stdout, Stderr: &stderr})
+	if err := root.Run(context.Background(), []string{
+		"weave", "links", "add", "guide-code", "--from", "docs/guide.md", "--to", "Serve",
+		"--kind", "documents", "--note", "Keeps docs and code together.\nReviewed.",
+		"--scope", "catalog", "--repo", "github.com/acme/docs", "--max-repos", "4",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(app.invocations) != 1 {
+		t.Fatalf("invocations = %#v", app.invocations)
+	}
+	got := app.invocations[0]
+	if got.Command != "links add" || got.LinkFrom != "docs/guide.md" || got.LinkTo != "Serve" || got.LinkKind != graph.EdgeDocuments || got.LinkNote == "" ||
+		!got.LinkFromSet || !got.LinkToSet || !got.LinkKindSet || !got.LinkNoteSet || got.Scope != "catalog" || got.MaxRepos != 4 {
+		t.Fatalf("invocation = %#v", got)
+	}
+	if want := "guide-code\tdocuments\tentity:workspace:guide\tentity:scip:Serve\t\"Keeps docs and code together.\\nReviewed.\"\n"; stdout.String() != want || stderr.Len() != 0 {
+		t.Fatalf("stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+}
+
+func TestContextualLinkUpdateCanClearNote(t *testing.T) {
+	var stdout bytes.Buffer
+	app := &recordingApplication{}
+	root := command.New(app, command.Streams{Stdin: strings.NewReader(""), Stdout: &stdout, Stderr: &bytes.Buffer{}})
+	if err := root.Run(context.Background(), []string{"weave", "link", "update", "guide-code", "--note", ""}); err != nil {
+		t.Fatal(err)
+	}
+	if len(app.invocations) != 1 || !app.invocations[0].LinkNoteSet || app.invocations[0].LinkNote != "" {
+		t.Fatalf("invocations = %#v", app.invocations)
 	}
 }
 

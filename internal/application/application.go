@@ -16,6 +16,7 @@ import (
 
 	"github.com/TheFellow/weave/internal/adapter"
 	"github.com/TheFellow/weave/internal/architecture"
+	"github.com/TheFellow/weave/internal/bridge"
 	"github.com/TheFellow/weave/internal/buildinfo"
 	"github.com/TheFellow/weave/internal/catalog"
 	"github.com/TheFellow/weave/internal/ci"
@@ -59,6 +60,14 @@ type Invocation struct {
 	ImpactFiles    []string
 	ImpactPackages []string
 	DiffRevision   string
+	LinkFrom       string
+	LinkTo         string
+	LinkNote       string
+	LinkKind       graph.EdgeKind
+	LinkFromSet    bool
+	LinkToSet      bool
+	LinkNoteSet    bool
+	LinkKindSet    bool
 }
 
 // Response is the stable application result consumed by text and JSON renderers.
@@ -84,6 +93,7 @@ type Response struct {
 	SARIF        *architecture.SARIFLog `json:"-"`
 	CI           *ci.Status             `json:"ci,omitempty"`
 	Version      *buildinfo.Info        `json:"version,omitempty"`
+	Links        []bridge.Link          `json:"links,omitempty"`
 }
 
 // AdapterStatus is an executable discovery result. List is side-effect free;
@@ -138,6 +148,9 @@ func (app Local) Execute(ctx context.Context, invocation Invocation) (Response, 
 	}
 	if strings.HasPrefix(invocation.Command, "repos ") {
 		return app.repositories(ctx, response, invocation)
+	}
+	if strings.HasPrefix(invocation.Command, "links ") {
+		return app.links(ctx, response, invocation)
 	}
 	if strings.HasPrefix(invocation.Command, "ci ") {
 		return app.ci(ctx, response, invocation)

@@ -2,6 +2,7 @@ package query_test
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -55,6 +56,21 @@ func TestImpactManySortsAndSharesTraversalBounds(t *testing.T) {
 	}
 }
 
+func TestResolveUniqueAcceptsExactIDsAndRejectsAmbiguousQueries(t *testing.T) {
+	t.Parallel()
+	store := fakeStore{
+		symbols: map[string]graph.Symbol{"exact": {ID: "exact", DisplayName: "Guide"}},
+		matches: []graph.Symbol{{ID: "guide-one", DisplayName: "Guide"}, {ID: "guide-two", DisplayName: "Guide"}},
+	}
+	resolved, err := query.ResolveUnique(context.Background(), store, "exact")
+	if err != nil || resolved.ID != "exact" {
+		t.Fatalf("exact ResolveUnique = %#v, %v", resolved, err)
+	}
+	if _, err := query.ResolveUnique(context.Background(), store, "Guide"); !errors.Is(err, query.ErrAmbiguous) || !strings.Contains(err.Error(), "guide-one") {
+		t.Fatalf("ambiguous ResolveUnique error = %v", err)
+	}
+}
+
 func TestNeighborhoodInterleavesIncomingAndOutgoingWalks(t *testing.T) {
 	t.Parallel()
 	store := fakeStore{
@@ -96,13 +112,21 @@ func TestNeighborhoodSharesBoundsAndRejectsInvalidDirection(t *testing.T) {
 	}
 }
 
-type fakeStore struct{ forward, reverse map[string][]graph.Edge }
-
-func (fakeStore) FindSymbols(context.Context, string, int) ([]graph.Symbol, bool, error) {
-	return nil, false, nil
+type fakeStore struct {
+	forward, reverse map[string][]graph.Edge
+	symbols          map[string]graph.Symbol
+	matches          []graph.Symbol
 }
-func (fakeStore) Symbol(context.Context, string) (graph.Symbol, bool, error) {
-	return graph.Symbol{}, false, nil
+
+func (s fakeStore) FindSymbols(_ context.Context, _ string, limit int) ([]graph.Symbol, bool, error) {
+	if len(s.matches) > limit {
+		return s.matches[:limit], true, nil
+	}
+	return s.matches, false, nil
+}
+func (s fakeStore) Symbol(_ context.Context, id string) (graph.Symbol, bool, error) {
+	symbol, ok := s.symbols[id]
+	return symbol, ok, nil
 }
 func (s fakeStore) EdgesFrom(_ context.Context, id string, _ []graph.EdgeKind, limit int) ([]graph.Edge, bool, error) {
 	return bounded(s.forward[id], limit)

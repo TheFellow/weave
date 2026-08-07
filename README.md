@@ -45,6 +45,7 @@ weave impact --file internal/service.go --limit 100
 weave impact --package github.com/example/project/internal/service
 weave impact --git-diff origin/main --json
 weave graph Handle --kind calls --kind implements --output handle.dot
+weave links add guide-documents-handler --from 'docs/guide.md#flow' --to Handle --kind documents
 ```
 
 Every database-backed query performs a cheap Git freshness check first. A
@@ -122,10 +123,38 @@ file or asset can surface the READMEs and articles that explain or display it.
 See [ADR 0010](.ai/decisions/0010-workspace-and-structured-content-index.md)
 for the safe source-profile boundary and current renderer limitations.
 
-Exact relationships that compilers cannot establish can be checked into
-`.weave/bridges.json`. These declared/generated `depends-on`, `documents`, and
-`generates` edges participate in the same local and federated queries and
-architecture rules. See [declared semantic bridges](docs/declared-bridges.md).
+## Contextual relationship authoring
+
+Relationships that a compiler or content parser cannot establish can be
+authored without editing graph IDs by hand:
+
+```sh
+weave links add guide-documents-handler \
+  --from 'docs/guide.md#request-flow' \
+  --to HandleRequest \
+  --kind documents \
+  --note 'The guide explains this entry point.'
+weave links update guide-documents-handler --to 'id:git-commit:0123456789abcdef'
+weave links list --json
+weave links remove guide-documents-handler
+```
+
+`link` aliases `links`. Add/update resolve each human-facing query uniquely,
+then persist exact endpoints in `.weave/bridges.json` and immediately refresh
+them into ordinary graph edges. Every normalized edge kind is supported.
+Authored facts are `declared`, except `generates`, which is `generated`; the CLI
+cannot claim compiler-exact evidence.
+
+Endpoints may be code, packages, files, documents, headings, routes, assets,
+URLs, or any other indexed resource. Use `--scope catalog` and repeat `--repo`
+to resolve a relationship across registered worktrees. `id:<exact-id>` creates
+an intentional open endpoint for an immutable commit or resource that is not
+materialized yet. Path, impact, DOT, export, architecture, and federated queries
+consume these as the same edges emitted by built-in providers. See
+[authored contextual relationships](docs/declared-bridges.md) and
+[ADR 0012](.ai/decisions/0012-contextual-relationship-authoring.md).
+
+## Impact analysis
 
 Impact roots may be a symbol, repeated repository-relative `--file` and
 `--package` values, or `--git-diff REVISION` (which compares that revision to

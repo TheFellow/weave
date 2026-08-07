@@ -20,6 +20,7 @@ import (
 
 	"github.com/TheFellow/weave/internal/freshness"
 	"github.com/TheFellow/weave/internal/graph"
+	"github.com/TheFellow/weave/internal/relationship"
 )
 
 const (
@@ -401,10 +402,9 @@ func directoryNodeID(identity, directory string) string {
 }
 
 func plainEdge(unitID, from, to string, kind graph.EdgeKind, evidence graph.Evidence) graph.Edge {
-	return graph.Edge{
-		ID: stableID("edge", unitID, from, string(kind), to), UnitID: unitID, From: from, To: to,
-		Kind: kind, Evidence: evidence, Provider: providerName,
-	}
+	return (relationship.Builder{UnitID: unitID, Provider: providerName, Evidence: evidence}).MustBuild(relationship.Spec{
+		ID: stableID("edge", unitID, from, string(kind), to), From: from, To: to, Kind: kind,
+	})
 }
 
 func workspaceSymbolID(identity string) string { return stableID("workspace", identity) }

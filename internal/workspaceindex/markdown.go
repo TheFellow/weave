@@ -15,6 +15,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/TheFellow/weave/internal/graph"
+	"github.com/TheFellow/weave/internal/relationship"
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/ast"
 	"github.com/yuin/goldmark/extension"
@@ -1019,8 +1020,8 @@ func (model *documentModel) facts(resolver *resolver) graph.UnitFacts {
 }
 
 func sourceEdge(unitID, from, to string, kind graph.EdgeKind, evidence graph.Evidence, documentID string, sourceRange graph.Range) graph.Edge {
-	return graph.Edge{
-		ID: stableID("edge", unitID, from, string(kind), to, fmt.Sprintf("%d", sourceRange.Start.Byte)), UnitID: unitID,
-		From: from, To: to, Kind: kind, Evidence: evidence, DocumentID: documentID, Range: sourceRange, Provider: providerName,
-	}
+	return (relationship.Builder{UnitID: unitID, Provider: providerName, Evidence: evidence}).MustBuild(relationship.Spec{
+		ID:   stableID("edge", unitID, from, string(kind), to, fmt.Sprintf("%d", sourceRange.Start.Byte)),
+		From: from, To: to, Kind: kind, DocumentID: documentID, Range: sourceRange,
+	})
 }

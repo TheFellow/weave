@@ -2,9 +2,12 @@ package bridge_test
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/TheFellow/weave/internal/bridge"
@@ -16,19 +19,84 @@ import (
 func TestLoadStrictExactLinks(t *testing.T) {
 	path := writeConfig(t, `{"schema":"weave.bridges/v1","links":[
 {"id":"schema-generates-client","from":"symbol:scip proto api 1 User#","to":"symbol:scip go example client 1 User#","kind":"generates"},
-{"id":"guide-documents-api","from":"symbol:scip markdown docs 1 Guide#","to":"symbol:scip go example api 1 Serve().","kind":"documents"}]}`)
+	{"id":"guide-calls-api","from":"entity:workspace-section:guide","to":"symbol:scip go example api 1 Serve().","kind":"calls","note":"The guide's executable example invokes this API."}]}`)
 	config, err := bridge.Load(path)
 	if err != nil || len(config.Links) != 2 {
 		t.Fatalf("Load() = %#v, %v", config, err)
 	}
+	if endpoint, err := bridge.Endpoint(config.Links[1].From); err != nil || endpoint != "workspace-section:guide" || config.Links[1].Note == "" {
+		t.Fatalf("heterogeneous endpoint = %q, %v; link = %#v", endpoint, err, config.Links[1])
+	}
 	for _, input := range []string{
 		`{"schema":"weave.bridges/v1","unknown":true,"links":[]}`,
 		`{"schema":"weave.bridges/v1","links":[{"id":"x","from":"Serve","to":"symbol:y","kind":"depends-on"}]}`,
-		`{"schema":"weave.bridges/v1","links":[{"id":"x","from":"symbol:x","to":"symbol:y","kind":"calls"}]}`,
+		`{"schema":"weave.bridges/v1","links":[{"id":"x","from":"entity:x","to":"entity:y","kind":"magic"}]}`,
+		`{"schema":"weave.bridges/v1","links":[{"id":"x","from":"entity:x","to":"entity:y","kind":"links-to","note":"\u0000"}]}`,
 	} {
 		if _, err := bridge.Load(writeConfig(t, input)); err == nil {
 			t.Fatalf("Load(%s) succeeded", input)
 		}
+	}
+}
+
+func TestSaveWritesCanonicalConfigurationAndRejectsSymlink(t *testing.T) {
+	directory := t.TempDir()
+	path := filepath.Join(directory, ".weave", "bridges.json")
+	config := bridge.Config{Schema: bridge.Schema, Links: []bridge.Link{
+		{ID: "z", From: bridge.Entity("url:https://example.test"), To: bridge.Entity("section:guide"), Kind: graph.EdgeLinksTo},
+		{ID: "a", From: bridge.Entity("file:README.md"), To: bridge.Entity("section:guide"), Kind: graph.EdgeDocuments, Note: "why"},
+	}}
+	if err := bridge.Save(path, config); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := bridge.Load(path)
+	if err != nil || len(loaded.Links) != 2 || loaded.Links[0].ID != "a" || loaded.Links[1].ID != "z" {
+		t.Fatalf("Load after Save = %#v, %v", loaded, err)
+	}
+	content, err := os.ReadFile(path)
+	if err != nil || !strings.HasSuffix(string(content), "\n") || !strings.Contains(string(content), `"note": "why"`) {
+		t.Fatalf("encoded configuration = %q, %v", content, err)
+	}
+
+	symlink := filepath.Join(directory, "bridges-link.json")
+	if err := os.Symlink(path, symlink); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	if err := bridge.Save(symlink, loaded); err == nil {
+		t.Fatal("Save through symlink succeeded")
+	}
+}
+
+func TestEditSerializesConcurrentSourceUpdates(t *testing.T) {
+	directory := t.TempDir()
+	path := filepath.Join(directory, ".weave", "bridges.json")
+	lockPath := filepath.Join(directory, ".git", "weave", "links.lock")
+	const count = 8
+	errors := make(chan error, count)
+	var wait sync.WaitGroup
+	for i := range count {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			errors <- bridge.Edit(context.Background(), path, lockPath, func(config *bridge.Config) error {
+				config.Links = append(config.Links, bridge.Link{
+					ID: fmt.Sprintf("link-%02d", i), From: bridge.Entity(fmt.Sprintf("from-%02d", i)),
+					To: bridge.Entity(fmt.Sprintf("to-%02d", i)), Kind: graph.EdgeLinksTo,
+				})
+				return nil
+			})
+		}()
+	}
+	wait.Wait()
+	close(errors)
+	for err := range errors {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	config, err := bridge.Load(path)
+	if err != nil || len(config.Links) != count {
+		t.Fatalf("serialized config = %#v, %v", config, err)
 	}
 }
 

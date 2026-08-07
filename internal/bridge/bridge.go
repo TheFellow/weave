@@ -15,18 +15,25 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
+	"unicode/utf8"
 
 	"github.com/TheFellow/weave/internal/freshness"
 	"github.com/TheFellow/weave/internal/graph"
+	"github.com/TheFellow/weave/internal/relationship"
+	bolt "go.etcd.io/bbolt"
 )
 
 const (
-	Schema       = "weave.bridges/v1"
-	ProviderName = "weave-bridges"
-	configPath   = ".weave/bridges.json"
-	maxBytes     = 1 << 20
-	maxLinks     = 4096
-	endpointTag  = "symbol:"
+	Schema          = "weave.bridges/v1"
+	ProviderName    = "weave-bridges"
+	providerVersion = "2"
+	configPath      = ".weave/bridges.json"
+	maxBytes        = 1 << 20
+	maxLinks        = 4096
+	endpointTag     = "entity:"
+	legacyTag       = "symbol:"
+	maxNoteBytes    = 8 << 10
 )
 
 // Config is the checked-in declaration document.
@@ -41,7 +48,21 @@ type Link struct {
 	From string         `json:"from"`
 	To   string         `json:"to"`
 	Kind graph.EdgeKind `json:"kind"`
+	Note string         `json:"note,omitempty"`
 }
+
+// Path returns the repository-relative declaration path rooted at root.
+func Path(root string) string {
+	return filepath.Join(root, filepath.FromSlash(configPath))
+}
+
+// Entity stores an exact normalized graph endpoint in a declaration.
+func Entity(id string) string { return endpointTag + id }
+
+// Endpoint returns the exact normalized graph ID from a declaration endpoint.
+// The symbol tag remains accepted for v1 files written before heterogeneous
+// workspace resources were authorable.
+func Endpoint(value string) (string, error) { return endpoint(value) }
 
 // Load parses and validates a bridge file. Missing files describe no links.
 func Load(path string) (Config, error) {
@@ -75,6 +96,98 @@ func Load(path string) (Config, error) {
 	return config, nil
 }
 
+// Edit serializes one read-modify-write operation with a lock database kept in
+// Git-private derived storage. The callback runs only after the latest source
+// declaration has been loaded under the lock.
+func Edit(ctx context.Context, path, lockPath string, edit func(*Config) error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if lockPath == "" {
+		return errors.New("bridge edit lock path is empty")
+	}
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0o700); err != nil {
+		return fmt.Errorf("create bridge edit lock directory: %w", err)
+	}
+	timeout := 2 * time.Second
+	if deadline, ok := ctx.Deadline(); ok {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return ctx.Err()
+		}
+		if remaining < timeout {
+			timeout = remaining
+		}
+	}
+	lock, err := bolt.Open(lockPath, 0o600, &bolt.Options{Timeout: timeout})
+	if err != nil {
+		return fmt.Errorf("acquire bridge edit lock: %w", err)
+	}
+	defer lock.Close()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	config, err := Load(path)
+	if err != nil {
+		return err
+	}
+	if err := edit(&config); err != nil {
+		return err
+	}
+	return Save(path, config)
+}
+
+// Save validates and atomically writes a canonical declaration file.
+func Save(path string, config Config) error {
+	config.Links = append([]Link(nil), config.Links...)
+	slices.SortFunc(config.Links, func(a, b Link) int { return strings.Compare(a.ID, b.ID) })
+	if err := config.Validate(); err != nil {
+		return err
+	}
+	if info, err := os.Lstat(path); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return errors.New("refusing to replace symlinked bridge configuration")
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("inspect bridge configuration: %w", err)
+	}
+	directory := filepath.Dir(path)
+	if err := os.MkdirAll(directory, 0o755); err != nil {
+		return fmt.Errorf("create bridge configuration directory: %w", err)
+	}
+	temporary, err := os.CreateTemp(directory, ".bridges-*.json")
+	if err != nil {
+		return fmt.Errorf("create temporary bridge configuration: %w", err)
+	}
+	temporaryPath := temporary.Name()
+	defer os.Remove(temporaryPath)
+	if err := temporary.Chmod(0o644); err != nil {
+		_ = temporary.Close()
+		return fmt.Errorf("set bridge configuration permissions: %w", err)
+	}
+	encoder := json.NewEncoder(temporary)
+	encoder.SetEscapeHTML(false)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(config); err != nil {
+		_ = temporary.Close()
+		return fmt.Errorf("encode bridge configuration: %w", err)
+	}
+	if err := temporary.Sync(); err != nil {
+		_ = temporary.Close()
+		return fmt.Errorf("sync bridge configuration: %w", err)
+	}
+	if err := temporary.Close(); err != nil {
+		return fmt.Errorf("close bridge configuration: %w", err)
+	}
+	if info, err := os.Stat(temporaryPath); err != nil {
+		return fmt.Errorf("inspect encoded bridge configuration: %w", err)
+	} else if info.Size() > maxBytes {
+		return fmt.Errorf("bridge configuration exceeds %d bytes", maxBytes)
+	}
+	if err := os.Rename(temporaryPath, path); err != nil {
+		return fmt.Errorf("publish bridge configuration: %w", err)
+	}
+	return nil
+}
+
 // Validate enforces the v1 exact endpoint and edge contract.
 func (config Config) Validate() error {
 	if config.Schema != Schema {
@@ -85,7 +198,7 @@ func (config Config) Validate() error {
 	}
 	seen := make(map[string]bool, len(config.Links))
 	for _, link := range config.Links {
-		if link.ID == "" || strings.ContainsRune(link.ID, 0) || seen[link.ID] {
+		if link.ID == "" || len(link.ID) > 256 || !utf8.ValidString(link.ID) || strings.ContainsRune(link.ID, 0) || seen[link.ID] {
 			return fmt.Errorf("bridge link ID %q is empty, invalid, or duplicated", link.ID)
 		}
 		seen[link.ID] = true
@@ -95,20 +208,27 @@ func (config Config) Validate() error {
 		if _, err := endpoint(link.To); err != nil {
 			return fmt.Errorf("bridge %q to: %w", link.ID, err)
 		}
-		if !slices.Contains([]graph.EdgeKind{graph.EdgeDependsOn, graph.EdgeDocuments, graph.EdgeGenerates}, link.Kind) {
-			return fmt.Errorf("bridge %q kind %q is not one of depends-on, documents, generates", link.ID, link.Kind)
+		if !graph.IsEdgeKind(link.Kind) {
+			return fmt.Errorf("bridge %q has unknown relationship kind %q", link.ID, link.Kind)
+		}
+		if len(link.Note) > maxNoteBytes || !utf8.ValidString(link.Note) || strings.ContainsRune(link.Note, 0) {
+			return fmt.Errorf("bridge %q note is invalid or exceeds %d bytes", link.ID, maxNoteBytes)
 		}
 	}
 	return nil
 }
 
 func endpoint(value string) (string, error) {
-	if !strings.HasPrefix(value, endpointTag) || len(value) == len(endpointTag) {
-		return "", fmt.Errorf("endpoint %q must use symbol:<exact-symbol-id>", value)
+	tag := endpointTag
+	if strings.HasPrefix(value, legacyTag) {
+		tag = legacyTag
 	}
-	value = strings.TrimPrefix(value, endpointTag)
-	if strings.ContainsRune(value, 0) || len(value) > 1<<20 {
-		return "", fmt.Errorf("symbol endpoint is invalid or exceeds 1 MiB")
+	if !strings.HasPrefix(value, tag) || len(value) == len(tag) {
+		return "", fmt.Errorf("endpoint %q must use entity:<exact-graph-id>", value)
+	}
+	value = strings.TrimPrefix(value, tag)
+	if strings.ContainsRune(value, 0) || !utf8.ValidString(value) || len(value) > 1<<20 {
+		return "", fmt.Errorf("entity endpoint is invalid or exceeds 1 MiB")
 	}
 	return value, nil
 }
@@ -117,11 +237,11 @@ func endpoint(value string) (string, error) {
 type Provider struct{}
 
 func (Provider) ID() freshness.ProviderID {
-	return freshness.ProviderID{Name: ProviderName, Version: "1"}
+	return freshness.ProviderID{Name: ProviderName, Version: providerVersion}
 }
 
 func (Provider) Refresh(_ context.Context, request freshness.Request) (freshness.Result, error) {
-	path := filepath.Join(request.Repository.Root, filepath.FromSlash(configPath))
+	path := Path(request.Repository.Root)
 	config, err := Load(path)
 	if err != nil {
 		return freshness.Result{}, err
@@ -143,6 +263,7 @@ func (Provider) Refresh(_ context.Context, request freshness.Request) (freshness
 		}
 	}
 	edges := make([]graph.Edge, 0, len(config.Links))
+	builder := relationship.Builder{UnitID: unitID, Provider: ProviderName, Evidence: graph.EvidenceDeclared}
 	for _, link := range config.Links {
 		from, _ := endpoint(link.From)
 		to, _ := endpoint(link.To)
@@ -150,14 +271,18 @@ func (Provider) Refresh(_ context.Context, request freshness.Request) (freshness
 		if link.Kind == graph.EdgeGenerates {
 			evidence = graph.EvidenceGenerated
 		}
-		edges = append(edges, graph.Edge{
-			ID: "bridge:" + shortHash(request.Repository.Identity+"\x00"+link.ID), UnitID: unitID,
-			From: from, To: to, Kind: link.Kind, Evidence: evidence, Provider: ProviderName,
+		edge, err := builder.Build(relationship.Spec{
+			ID:   "bridge:" + shortHash(request.Repository.Identity+"\x00"+link.ID),
+			From: from, To: to, Kind: link.Kind, Evidence: evidence,
 		})
+		if err != nil {
+			return freshness.Result{}, fmt.Errorf("build bridge %q: %w", link.ID, err)
+		}
+		edges = append(edges, edge)
 	}
 	slices.SortFunc(edges, graph.CompareEdges)
 	facts := graph.UnitFacts{Unit: graph.Unit{
-		ID: unitID, Provider: ProviderName, ProviderVersion: "1", InputFingerprint: fingerprint,
+		ID: unitID, Provider: ProviderName, ProviderVersion: providerVersion, InputFingerprint: fingerprint,
 		InventoryDigest: fingerprint,
 	}, Edges: edges}
 	return freshness.Result{

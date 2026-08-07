@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/TheFellow/weave/internal/graph"
+	"github.com/TheFellow/weave/internal/relationship"
 	"golang.org/x/tools/go/packages"
 )
 
@@ -631,7 +632,9 @@ func (analysis *packageAnalysis) occurrence(role, symbol, document string, sourc
 
 func (analysis *packageAnalysis) edge(from, to string, kind graph.EdgeKind, document string, sourceRange graph.Range) graph.Edge {
 	id := semanticID("edge", string(kind), from, to, document, rangeKey(sourceRange))
-	return graph.Edge{ID: id, UnitID: analysis.facts.Unit.ID, From: from, To: to, Kind: kind, Evidence: graph.EvidenceExact, DocumentID: document, Range: sourceRange, Provider: "weave-go"}
+	return (relationship.Builder{UnitID: analysis.facts.Unit.ID, Provider: "weave-go", Evidence: graph.EvidenceExact}).MustBuild(relationship.Spec{
+		ID: id, From: from, To: to, Kind: kind, DocumentID: document, Range: sourceRange,
+	})
 }
 
 func rangeKey(value graph.Range) string {
