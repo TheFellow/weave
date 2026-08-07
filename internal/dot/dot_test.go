@@ -2,6 +2,8 @@ package dot_test
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"os/exec"
 	"strings"
 	"testing"
@@ -79,4 +81,45 @@ func TestWriteRejectsMissingFocus(t *testing.T) {
 	if err := dot.Write(&bytes.Buffer{}, dot.View{}); err == nil {
 		t.Fatal("empty focus succeeded")
 	}
+}
+
+func TestWriteUsesStableSemanticNodeAndCollapsedEdgeIDs(t *testing.T) {
+	t.Parallel()
+	edge := graph.Edge{ID: "volatile-source-edge", From: "focus", To: "dependency", Kind: graph.EdgeCalls, Evidence: graph.EvidenceExact, Provider: "scip:fixture"}
+	view := dot.View{
+		Focus: "focus", Nodes: []string{"focus", "dependency"},
+		Symbols: []graph.Symbol{
+			{ID: "focus", StableName: "example.Focus", DisplayName: "Focus", Provider: "scip:fixture"},
+			{ID: "dependency", StableName: "example.Dependency", DisplayName: "Dependency", Provider: "scip:fixture"},
+		},
+		Edges: []graph.Edge{edge},
+	}
+	var before bytes.Buffer
+	if err := dot.Write(&before, view); err != nil {
+		t.Fatal(err)
+	}
+	view.Nodes = append(view.Nodes, "a-new-sorted-node")
+	view.Symbols = append(view.Symbols, graph.Symbol{ID: "a-new-sorted-node", DisplayName: "A", Provider: "another-provider"})
+	var after bytes.Buffer
+	if err := dot.Write(&after, view); err != nil {
+		t.Fatal(err)
+	}
+	nodeDigest := shortDigest("focus")
+	edgeDigest := shortDigest(strings.Join([]string{edge.From, edge.To, string(edge.Kind), string(edge.Evidence), edge.Provider}, "\x00"))
+	for _, output := range []string{before.String(), after.String()} {
+		for _, want := range []string{
+			"n_" + nodeDigest + " [",
+			`id="weave-node-` + nodeDigest + `"`,
+			`id="weave-edge-` + edgeDigest + `"`,
+		} {
+			if !strings.Contains(output, want) {
+				t.Fatalf("DOT output omitted stable identity %q:\n%s", want, output)
+			}
+		}
+	}
+}
+
+func shortDigest(value string) string {
+	digest := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(digest[:16])
 }

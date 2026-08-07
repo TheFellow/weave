@@ -15,6 +15,7 @@ import (
 	"github.com/TheFellow/weave/internal/adapter"
 	"github.com/TheFellow/weave/internal/application"
 	"github.com/TheFellow/weave/internal/dot"
+	"github.com/TheFellow/weave/internal/explorer"
 	"github.com/TheFellow/weave/internal/graph"
 	"github.com/TheFellow/weave/internal/query"
 	cli "github.com/urfave/cli/v3"
@@ -111,6 +112,8 @@ func graphCommand(app application.Service, streams Streams) *cli.Command {
 	flags := []cli.Flag{
 		jsonFlag(),
 		&cli.StringFlag{Name: "output", Aliases: []string{"o"}, Usage: "write DOT to this file instead of stdout"},
+		&cli.BoolFlag{Name: "interactive", Aliases: []string{"i"}, Usage: "open an animated local graph explorer"},
+		&cli.BoolFlag{Name: "no-open", Usage: "serve the interactive explorer without opening a browser"},
 		&cli.StringFlag{Name: "direction", Value: string(query.DirectionBoth), Usage: "traversal direction: incoming, outgoing, or both", Validator: func(value string) error {
 			switch query.Direction(value) {
 			case query.DirectionIncoming, query.DirectionOutgoing, query.DirectionBoth:
@@ -148,19 +151,39 @@ func graphCommand(app application.Service, streams Streams) *cli.Command {
 				return cli.Exit("graph expects one argument", 2)
 			}
 			output := cmd.String("output")
+			interactive := cmd.Bool("interactive")
 			if cmd.Bool("json") && output != "" && output != "-" {
 				return cli.Exit("--output writes DOT and cannot be combined with --json", 2)
+			}
+			if interactive && cmd.Bool("json") {
+				return cli.Exit("--interactive cannot be combined with --json", 2)
+			}
+			if interactive && cmd.IsSet("output") {
+				return cli.Exit("--interactive cannot be combined with --output", 2)
+			}
+			if cmd.Bool("no-open") && !interactive {
+				return cli.Exit("--no-open requires --interactive", 2)
 			}
 			kinds, err := parseEdgeKinds(cmd.StringSlice("kind"))
 			if err != nil {
 				return cli.Exit(err.Error(), 2)
 			}
-			response, err := app.Execute(ctx, application.Invocation{
+			invocation := application.Invocation{
 				Command: "graph", Arguments: append([]string(nil), cmd.Args().Slice()...), JSON: cmd.Bool("json"),
 				Limit: cmd.Int("limit"), MaxDepth: cmd.Int("max-depth"), MaxEdges: cmd.Int("max-edges"), Kinds: kinds,
 				Direction: query.Direction(cmd.String("direction")), Scope: queryScope(cmd), Repositories: cmd.StringSlice("repo"),
 				CatalogPath: cmd.String("catalog"), MaxRepos: cmd.Int("max-repos"),
-			})
+			}
+			if interactive {
+				engine, err := explorer.New(app, invocation)
+				if err != nil {
+					return err
+				}
+				return explorer.Run(ctx, explorer.Config{
+					Engine: engine, Output: streams.Stderr, OpenBrowser: !cmd.Bool("no-open"),
+				})
+			}
+			response, err := app.Execute(ctx, invocation)
 			if err != nil {
 				return err
 			}

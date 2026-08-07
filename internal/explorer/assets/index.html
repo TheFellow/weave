@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Weave graph explorer</title>
+  <link rel="stylesheet" href="assets/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand" aria-label="Weave graph explorer">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <span>weave</span>
+      <span class="brand-section">graph explorer</span>
+    </div>
+    <form id="search-form" class="search" role="search">
+      <label class="sr-only" for="target">Symbol or stable graph ID</label>
+      <input id="target" name="target" type="search" maxlength="4096" autocomplete="off" spellcheck="false" placeholder="Refocus by symbol, file, or stable ID" required>
+      <button class="primary" type="submit">Explore</button>
+    </form>
+    <div class="history-controls" aria-label="View history">
+      <button id="back" type="button" title="Previous focus" disabled>←</button>
+      <button id="forward" type="button" title="Next focus" disabled>→</button>
+    </div>
+  </header>
+
+  <div class="workspace">
+    <aside class="controls" aria-label="Graph controls">
+      <section>
+        <h2>Traversal</h2>
+        <label for="direction">Direction</label>
+        <select id="direction">
+          <option value="both">Both</option>
+          <option value="incoming">Incoming</option>
+          <option value="outgoing">Outgoing</option>
+        </select>
+        <div class="split-fields">
+          <div>
+            <label for="max-depth">Depth</label>
+            <input id="max-depth" type="number" min="1" max="100" inputmode="numeric">
+          </div>
+          <div>
+            <label for="limit">Nodes</label>
+            <input id="limit" type="number" min="1" max="5000" inputmode="numeric">
+          </div>
+        </div>
+        <label for="max-edges">Edge budget</label>
+        <input id="max-edges" type="number" min="1" max="20000" inputmode="numeric">
+      </section>
+
+      <section>
+        <div class="section-heading">
+          <h2>Edge filters</h2>
+          <button id="clear-filters" class="text-button" type="button">Clear</button>
+        </div>
+        <label for="kinds">Kinds <span>multi-select</span></label>
+        <select id="kinds" multiple size="6"></select>
+        <label for="providers">Providers <span>current view</span></label>
+        <select id="providers" multiple size="4"></select>
+        <label for="evidence">Evidence</label>
+        <select id="evidence" multiple size="6"></select>
+        <p class="hint">No selection includes every available value.</p>
+        <button id="apply" class="primary wide" type="button">Apply view</button>
+      </section>
+
+      <section class="legend">
+        <h2>Reading the graph</h2>
+        <p><i class="swatch focus"></i> current focus</p>
+        <p><i class="swatch incoming"></i> incoming</p>
+        <p><i class="swatch outgoing"></i> outgoing</p>
+        <p><i class="swatch both"></i> both directions</p>
+        <p class="hint">Drag to pan, scroll to zoom, and click a node to refocus.</p>
+        <button id="reset-zoom" type="button" class="secondary wide">Reset viewport</button>
+      </section>
+    </aside>
+
+    <main class="canvas-shell">
+      <div class="canvas-header">
+        <div>
+          <p class="eyebrow">FOCUS</p>
+          <h1 id="focus-label">Loading graph…</h1>
+        </div>
+        <div id="graph-meta" class="graph-meta" aria-live="polite"></div>
+      </div>
+      <div id="notice" class="notice" hidden></div>
+      <div id="graph" class="graph" aria-label="Interactive semantic graph"></div>
+      <div id="loading" class="loading" role="status">
+        <span class="spinner" aria-hidden="true"></span>
+        <span>Indexing the view…</span>
+      </div>
+      <div id="error" class="error" role="alert" hidden></div>
+    </main>
+  </div>
+
+  <footer>
+    <span>Local session · no remote assets</span>
+    <span id="status">Starting Graphviz…</span>
+  </footer>
+
+  <script src="assets/vendor/d3.min.js"></script>
+  <script type="javascript/worker" src="assets/vendor/graphviz.umd.js"></script>
+  <script src="assets/vendor/d3-graphviz.min.js"></script>
+  <script src="assets/app.js"></script>
+</body>
+</html>
