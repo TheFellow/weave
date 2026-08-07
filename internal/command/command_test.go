@@ -167,6 +167,46 @@ func TestArchitectureCheckTextJSONAndSARIF(t *testing.T) {
 	}
 }
 
+func TestCIKeyIndexAndCheckWorkflow(t *testing.T) {
+	ctx := context.Background()
+	repositoryRoot := commandRepository(t)
+	provider := &commandProvider{}
+	manager := &freshness.Manager{Directory: repositoryRoot, Provider: provider, Command: "test"}
+	app := application.Local{Freshness: manager}
+
+	var stdout, stderr bytes.Buffer
+	root := command.New(app, command.Streams{Stdin: strings.NewReader(""), Stdout: &stdout, Stderr: &stderr})
+	if err := root.Run(ctx, []string{"weave", "ci", "key"}); err != nil {
+		t.Fatal(err)
+	}
+	key := strings.TrimSpace(stdout.String())
+	if !strings.HasPrefix(key, "weave-v1-") || stderr.Len() != 0 {
+		t.Fatalf("key stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	root = command.New(app, command.Streams{Stdin: strings.NewReader(""), Stdout: &stdout, Stderr: &stderr})
+	if err := root.Run(ctx, []string{"weave", "ci", "index"}); err != nil {
+		t.Fatal(err)
+	}
+	if stdout.Len() != 0 || stderr.Len() != 0 || provider.calls != 1 {
+		t.Fatalf("index stdout=%q stderr=%q calls=%d", stdout.String(), stderr.String(), provider.calls)
+	}
+
+	root = command.New(app, command.Streams{Stdin: strings.NewReader(""), Stdout: &stdout, Stderr: &stderr})
+	if err := root.Run(ctx, []string{"weave", "ci", "check", "--format", "sarif"}); err != nil {
+		t.Fatal(err)
+	}
+	var sarif map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &sarif); err != nil || sarif["version"] != "2.1.0" {
+		t.Fatalf("SARIF = %q, %v", stdout.String(), err)
+	}
+	if provider.calls != 1 {
+		t.Fatalf("current check unexpectedly reindexed: calls=%d", provider.calls)
+	}
+}
+
 func TestInvalidInvocationsReturnErrors(t *testing.T) {
 	t.Parallel()
 

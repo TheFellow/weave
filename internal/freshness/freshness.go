@@ -113,6 +113,9 @@ type Manager struct {
 	Command     string
 }
 
+// ProviderID returns the semantic provider identity used in freshness keys.
+func (m Manager) ProviderID() ProviderID { return m.provider().ID() }
+
 // Ensure returns a current index, refreshing under a bounded writer lock when
 // necessary. Force asks the provider to refresh even if the manifest matches.
 func (m Manager) Ensure(ctx context.Context, force bool) (Status, error) {

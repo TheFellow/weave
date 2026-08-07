@@ -41,6 +41,7 @@ func New(app application.Service, streams Streams) *cli.Command {
 		noop(app, streams, "dependencies", "find semantic dependencies"),
 		architectureCommand(app, streams),
 		repositoryCommands(app, streams),
+		ciCommands(app, streams),
 		group("adapters", "inspect semantic adapters", adapterInspection(app, streams, "list", "list available adapters"), adapterInspection(app, streams, "doctor", "diagnose adapter availability")),
 		maintenance(app, streams, "export", "export normalized semantic facts", true),
 		maintenance(app, streams, "verify", "verify index integrity", true),
@@ -48,6 +49,45 @@ func New(app application.Service, streams Streams) *cli.Command {
 		noop(app, streams, "version", "show the Weave version"),
 	}
 	return root
+}
+
+func ciCommands(app application.Service, streams Streams) *cli.Command {
+	key := &cli.Command{Name: "key", Usage: "print the deterministic disposable-index cache key", Flags: []cli.Flag{jsonFlag()}, Action: invoke(app, streams, "ci key", 0, 0)}
+	index := &cli.Command{Name: "index", Usage: "force a deterministic CI index refresh", Flags: []cli.Flag{jsonFlag()}, Action: invoke(app, streams, "ci index", 0, 0)}
+	check := &cli.Command{
+		Name: "check", Usage: "verify the index and check architecture policy",
+		Flags: []cli.Flag{
+			&cli.StringFlag{Name: "config", Usage: "repository-relative or absolute rule configuration"},
+			&cli.StringFlag{Name: "format", Value: "text", Usage: "output format: text, json, or sarif", Validator: func(value string) error {
+				if value != "text" && value != "json" && value != "sarif" {
+					return fmt.Errorf("must be text, json, or sarif")
+				}
+				return nil
+			}},
+		},
+		Action: func(ctx context.Context, cmd *cli.Command) error {
+			if cmd.Args().Len() != 0 {
+				return cli.Exit("ci check expects no arguments", 2)
+			}
+			format := cmd.String("format")
+			invocationFormat := format
+			if format == "text" {
+				invocationFormat = ""
+			}
+			response, err := app.Execute(ctx, application.Invocation{Command: "ci check", JSON: format == "json", Format: invocationFormat, ConfigPath: cmd.String("config")})
+			if err != nil {
+				return err
+			}
+			if err := renderInvocation(streams, response, format == "json"); err != nil {
+				return err
+			}
+			if response.Failed {
+				return cli.Exit("CI checks failed", 3)
+			}
+			return nil
+		},
+	}
+	return group("ci", "run deterministic CI workflows", key, index, check)
 }
 
 func architectureCommand(app application.Service, streams Streams) *cli.Command {
@@ -295,7 +335,7 @@ func queryScope(cmd *cli.Command) string {
 }
 
 func renderInvocation(streams Streams, response application.Response, jsonOutput bool) error {
-	if response.Freshness != nil && response.Freshness.Refreshed {
+	if response.Freshness != nil && response.Freshness.Refreshed && response.Command != "ci index" {
 		if _, err := fmt.Fprintf(streams.Stderr, "index: refreshed %d changed paths\n", response.Freshness.ChangeCount); err != nil {
 			return err
 		}
@@ -350,6 +390,10 @@ func render(writer io.Writer, response application.Response, jsonOutput bool) er
 		if status.Reason != "" {
 			_, err = fmt.Fprintf(writer, "reason\t%s\n", status.Reason)
 		}
+		return err
+	}
+	if response.Command == "ci key" && response.CI != nil {
+		_, err := fmt.Fprintln(writer, response.CI.CacheKey)
 		return err
 	}
 	for _, symbol := range response.Symbols {

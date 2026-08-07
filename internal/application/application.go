@@ -17,6 +17,7 @@ import (
 	"github.com/TheFellow/weave/internal/adapter"
 	"github.com/TheFellow/weave/internal/architecture"
 	"github.com/TheFellow/weave/internal/catalog"
+	"github.com/TheFellow/weave/internal/ci"
 	"github.com/TheFellow/weave/internal/federation"
 	"github.com/TheFellow/weave/internal/freshness"
 	"github.com/TheFellow/weave/internal/graph"
@@ -69,6 +70,7 @@ type Response struct {
 	Sources      []federation.Source    `json:"sources,omitempty"`
 	Architecture *architecture.Report   `json:"architecture,omitempty"`
 	SARIF        *architecture.SARIFLog `json:"-"`
+	CI           *ci.Status             `json:"ci,omitempty"`
 }
 
 // AdapterStatus is a side-effect-free executable discovery result. Discovery
@@ -109,6 +111,9 @@ func (app Local) Execute(ctx context.Context, invocation Invocation) (Response, 
 	response := Response{Schema: QuerySchema, Command: invocation.Command, Query: append([]string(nil), invocation.Arguments...)}
 	if strings.HasPrefix(invocation.Command, "repos ") {
 		return app.repositories(ctx, response, invocation)
+	}
+	if strings.HasPrefix(invocation.Command, "ci ") {
+		return app.ci(ctx, response, invocation)
 	}
 	if invocation.Command == "architecture check" {
 		return app.architectureCheck(ctx, response, invocation)
@@ -228,6 +233,66 @@ func (app Local) Execute(ctx context.Context, invocation Invocation) (Response, 
 	return response, nil
 }
 
+func (app Local) ci(ctx context.Context, response Response, invocation Invocation) (Response, error) {
+	if app.Freshness == nil {
+		return Response{}, fmt.Errorf("%s requires Git freshness management", invocation.Command)
+	}
+	if invocation.Command == "ci index" || invocation.Command == "ci check" {
+		status, err := app.Freshness.Ensure(ctx, false)
+		if err != nil {
+			return Response{}, err
+		}
+		response.Freshness = &status
+	}
+	repo, err := app.repository(ctx)
+	if err != nil {
+		return Response{}, err
+	}
+	state, err := repo.Inspect(ctx)
+	if err != nil {
+		return Response{}, err
+	}
+	configPath := invocation.ConfigPath
+	if configPath == "" {
+		configPath = filepath.Join(repo.Root, ".weave", "architecture.json")
+	} else if !filepath.IsAbs(configPath) {
+		configPath = filepath.Join(repo.Root, configPath)
+	}
+	status, err := ci.Key(repo, state, app.Freshness.ProviderID(), configPath)
+	if err != nil {
+		return Response{}, err
+	}
+	response.CI = &status
+	if invocation.Command == "ci key" || invocation.Command == "ci index" {
+		return response, nil
+	}
+	if invocation.Command != "ci check" {
+		return Response{}, fmt.Errorf("unsupported CI command %q", invocation.Command)
+	}
+	databasePath, err := app.databasePath(ctx)
+	if err != nil {
+		return Response{}, err
+	}
+	db, err := storage.Open(ctx, databasePath, storage.Options{MustExist: true})
+	if err != nil {
+		return Response{}, err
+	}
+	response.Issues, err = db.Verify(ctx)
+	closeErr := db.Close()
+	if err != nil {
+		return Response{}, err
+	}
+	if closeErr != nil {
+		return Response{}, closeErr
+	}
+	response, err = app.architectureCheck(ctx, response, invocation)
+	if err != nil {
+		return Response{}, err
+	}
+	response.Failed = response.Failed || len(response.Issues) != 0
+	return response, nil
+}
+
 func (app Local) architectureCheck(ctx context.Context, response Response, invocation Invocation) (Response, error) {
 	if app.Freshness != nil {
 		status, err := app.Freshness.Ensure(ctx, false)
@@ -250,6 +315,10 @@ func (app Local) architectureCheck(ctx context.Context, response Response, invoc
 	if errors.Is(err, architecture.ErrNotConfigured) {
 		report := architecture.Report{Schema: architecture.ReportSchema}
 		response.Architecture = &report
+		if invocation.Format == "sarif" {
+			value := architecture.SARIF(architecture.Config{Schema: architecture.Schema}, report)
+			response.SARIF = &value
+		}
 		return response, nil
 	}
 	if err != nil {
