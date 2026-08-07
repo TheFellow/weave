@@ -55,7 +55,10 @@ type FSharpIndexer private () =
                 |> Option.defaultWith (fun () -> failwith ("F# project not found: " + projectPath))
             let results = analyzer.Build() |> Seq.sortBy (fun r -> r.TargetFramework) |> Seq.toArray
             let units = List<UnitFacts>()
-            let projectDirectory = Path.GetDirectoryName(Path.GetFullPath projectPath)
+            let projectDirectory =
+                match Path.GetDirectoryName(Path.GetFullPath projectPath) with
+                | null -> invalidArg "projectPath" ("project path has no directory: " + projectPath)
+                | directory -> directory
 
             for result in results do
                 cancellationToken.ThrowIfCancellationRequested()
@@ -75,15 +78,19 @@ type FSharpIndexer private () =
                 let! checkedProject = Async.StartAsTask(checker.ParseAndCheckProject(options), cancellationToken = cancellationToken)
 
                 let projectRelative = relativePath projectPath
-                let actualVariant = String.Join(";", [| defaultArg (Option.ofObj result.TargetFramework) ""; variant |])
+                let actualVariant = String.Join(";", [| result.TargetFramework; variant |])
                 let unitId = "dotnet:fsharp:unit:" + Identity.Hash(repositoryIdentity, projectRelative, actualVariant)
-                let rootSymbolId = "dotnet:fsharp:project:" + Identity.Hash(repositoryIdentity, projectRelative, Path.GetFileNameWithoutExtension projectPath, actualVariant)
+                let projectName =
+                    match Path.GetFileNameWithoutExtension projectPath with
+                    | null -> invalidArg "projectPath" ("project path has no file name: " + projectPath)
+                    | name -> name
+                let rootSymbolId = "dotnet:fsharp:project:" + Identity.Hash(repositoryIdentity, projectRelative, projectName, actualVariant)
                 let unit = Unit(Id = unitId, Language = "fsharp", Variant = actualVariant)
                 let facts = UnitFacts(Unit = unit)
                 facts.Symbols.Add(Symbol(
                     Id = rootSymbolId, UnitId = unitId, StableName = projectRelative,
-                    DisplayName = Path.GetFileNameWithoutExtension projectPath,
-                    NormalizedName = Identity.NormalizeName(Path.GetFileNameWithoutExtension projectPath), Kind = "project"))
+                    DisplayName = projectName,
+                    NormalizedName = Identity.NormalizeName projectName, Kind = "project"))
 
                 let documents = Dictionary<string, Document * string>(if OperatingSystem.IsWindows() then StringComparer.OrdinalIgnoreCase else StringComparer.Ordinal)
                 for sourceFile in options.SourceFiles do
@@ -179,7 +186,7 @@ type FSharpIndexer private () =
 
                 for dependency in result.ProjectReferences |> Seq.sort do
                     let dependencyRelative = relativePath dependency
-                    let language = if Path.GetExtension(dependency).Equals(".fsproj", StringComparison.OrdinalIgnoreCase) then "fsharp" else "csharp"
+                    let language = if String.Equals(Path.GetExtension dependency, ".fsproj", StringComparison.OrdinalIgnoreCase) then "fsharp" else "csharp"
                     let dependencyId = "dotnet:" + language + ":project:" + Identity.Hash(repositoryIdentity, dependencyRelative, Path.GetFileNameWithoutExtension dependency)
                     let key = "depends-on\000" + rootSymbolId + "\000" + dependencyId
                     if seenEdges.Add key then
@@ -189,7 +196,7 @@ type FSharpIndexer private () =
 
                 for diagnostic in checkedProject.Diagnostics |> Seq.truncate 100 do
                     let severity = if diagnostic.Severity.ToString() = "Error" then "error" else "warning"
-                    diagnostics.Add(AdapterDiagnostic(severity, diagnostic.ToString(), unitId))
+                    diagnostics.Add(AdapterDiagnostic(severity, string diagnostic, unitId))
 
                 let sortById (values: List<'T>) (id: 'T -> string) = values.Sort(Comparison<'T>(fun a b -> StringComparer.Ordinal.Compare(id a, id b)))
                 facts.Documents.Sort(Comparison<Document>(fun a b -> StringComparer.Ordinal.Compare(a.Path, b.Path)))

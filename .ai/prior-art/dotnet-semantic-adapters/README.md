@@ -75,7 +75,9 @@ tutorial][fcs-project] uses one shared `FSharpChecker`,
 `GetAllUsesOfAllSymbols`. Those APIs supply project diagnostics, definitions,
 and compiler-resolved uses, including local symbols. The FCS documentation
 explicitly warns that the API can change, so the NuGet version belongs behind
-the adapter protocol and is pinned.
+the adapter protocol and is pinned. The initial adapter pins current stable FCS
+43.12.204 so it understands compiler flags emitted by maintained SDKs, including
+nullness checking, while the protocol contains future FCS API churn.
 
 `FSharpProjectOptions` carries ordered `SourceFiles`, compiler options, and
 `ReferencedProjects`. Source order is semantic in F#: an edit to an earlier file
