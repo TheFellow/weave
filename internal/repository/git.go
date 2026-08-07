@@ -352,7 +352,9 @@ func (r Repository) Inspect(ctx context.Context) (State, error) {
 	} else if !isExitCode(err, 1) {
 		return State{}, err
 	}
-	raw, err := runner.run(ctx, "status", "--porcelain=v2", "-z", "--untracked-files=all")
+	// A foreground Git operation must not fail because this read-only
+	// observation happened to refresh and lock the index in a warmer.
+	raw, err := runner.run(ctx, "--no-optional-locks", "status", "--porcelain=v2", "-z", "--untracked-files=all")
 	if err != nil {
 		return State{}, err
 	}

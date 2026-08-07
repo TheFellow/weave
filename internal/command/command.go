@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -20,6 +21,7 @@ import (
 	"github.com/TheFellow/weave/internal/graph"
 	"github.com/TheFellow/weave/internal/graphdiff"
 	"github.com/TheFellow/weave/internal/query"
+	"github.com/TheFellow/weave/internal/watch"
 	cli "github.com/urfave/cli/v3"
 )
 
@@ -38,6 +40,7 @@ func New(app application.Service, streams Streams) *cli.Command {
 	root.Commands = []*cli.Command{
 		lifecycle(app, streams, "init", "initialize Weave for a repository"),
 		indexCommand(app, streams),
+		watchCommand(app, streams),
 		lifecycle(app, streams, "status", "show index and freshness status"),
 		lookup(app, streams, "symbols", "find symbols"),
 		contextCommand(app, streams),
@@ -62,6 +65,77 @@ func New(app application.Service, streams Streams) *cli.Command {
 		versionCommand(app, streams),
 	}
 	return root
+}
+
+func watchCommand(app application.Service, streams Streams) *cli.Command {
+	return &cli.Command{
+		Name: "watch", Usage: "optionally warm the current worktree index after changes",
+		UsageText: "weave watch [--poll-interval DURATION] [--initial=false] [--json]",
+		Flags: []cli.Flag{
+			jsonFlag(),
+			&cli.DurationFlag{
+				Name: "poll-interval", Value: watch.DefaultPollInterval,
+				Usage: "exact Git observation interval and edit coalescing window",
+				Validator: func(value time.Duration) error {
+					if value < watch.MinimumPollInterval || value > watch.MaximumPollInterval {
+						return fmt.Errorf("must be between %s and %s", watch.MinimumPollInterval, watch.MaximumPollInterval)
+					}
+					return nil
+				},
+			},
+			&cli.BoolFlag{Name: "initial", Value: true, Usage: "perform a non-forced freshness refresh before polling"},
+		},
+		Action: func(ctx context.Context, cmd *cli.Command) error {
+			if cmd.Args().Len() != 0 {
+				return cli.Exit("watch expects no arguments", 2)
+			}
+			service, ok := app.(watch.Service)
+			if !ok {
+				return errors.New("application does not support watch warming")
+			}
+			jsonOutput := cmd.Bool("json")
+			return service.Watch(ctx, watch.Options{
+				PollInterval: cmd.Duration("poll-interval"), Initial: cmd.Bool("initial"),
+			}, func(event watch.Event) error {
+				return renderWatchEvent(streams, event, jsonOutput)
+			})
+		},
+	}
+}
+
+func renderWatchEvent(streams Streams, event watch.Event, jsonOutput bool) error {
+	if jsonOutput {
+		encoder := json.NewEncoder(streams.Stdout)
+		encoder.SetEscapeHTML(false)
+		return encoder.Encode(event)
+	}
+	if event.Type == watch.EventError {
+		_, err := fmt.Fprintf(streams.Stderr, "watch: %s\n", event.Error)
+		return err
+	}
+	if event.Status == nil {
+		return nil
+	}
+	verb := "ready"
+	state := "current"
+	if !event.Status.Current {
+		state = "stale"
+	}
+	if event.Status.Refreshed {
+		state = "refreshed"
+	}
+	if event.Type == watch.EventRefreshed {
+		verb = "refreshed"
+	}
+	if _, err := fmt.Fprintf(streams.Stdout, "%s\t%s\t%s\t%s\t%d\n", verb, event.Status.RepositoryIdentity, event.Status.WorktreeID, state, event.Status.ChangeCount); err != nil {
+		return err
+	}
+	for _, diagnostic := range event.Status.Diagnostics {
+		if _, err := fmt.Fprintln(streams.Stderr, diagnostic); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func diffCommands(app application.Service, streams Streams) *cli.Command {

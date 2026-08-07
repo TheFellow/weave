@@ -26,6 +26,7 @@ import (
 	"github.com/TheFellow/weave/internal/graphdiff"
 	"github.com/TheFellow/weave/internal/query"
 	"github.com/TheFellow/weave/internal/storage"
+	"github.com/TheFellow/weave/internal/watch"
 	"github.com/scip-code/scip/bindings/go/scip"
 	cli "github.com/urfave/cli/v3"
 	"google.golang.org/protobuf/proto"
@@ -96,6 +97,85 @@ func TestApplicationErrorIsReturned(t *testing.T) {
 	err := root.Run(context.Background(), []string{"weave", "index"})
 	if !errors.Is(err, want) {
 		t.Fatalf("Run() error = %v, want %v", err, want)
+	}
+}
+
+func TestWatchCommandForwardsOptionsAndRendersStableEvents(t *testing.T) {
+	t.Parallel()
+	status := freshness.Status{
+		Initialized: true, Current: true, Refreshed: true, RepositoryIdentity: "github.com/example/repo",
+		WorktreeID: "linked-a", ChangeCount: 2, Generation: "sha256:generation",
+		Diagnostics: []string{"fixture diagnostic"},
+	}
+	app := &recordingWatchApplication{events: []watch.Event{
+		{Schema: watch.Schema, Sequence: 1, Type: watch.EventReady, Trigger: watch.TriggerInitial, Observation: "sha256:one", Status: &status},
+		{Schema: watch.Schema, Sequence: 2, Type: watch.EventError, Trigger: watch.TriggerChange, Observation: "sha256:two", Error: "provider failed"},
+		{Schema: watch.Schema, Sequence: 3, Type: watch.EventRefreshed, Trigger: watch.TriggerRetry, Observation: "sha256:two", Status: &freshness.Status{Current: true, Refreshed: true, RepositoryIdentity: "github.com/example/repo", WorktreeID: "linked-a", ChangeCount: 2}},
+	}}
+	var stdout, stderr bytes.Buffer
+	root := command.New(app, command.Streams{Stdin: strings.NewReader(""), Stdout: &stdout, Stderr: &stderr})
+	if err := root.Run(context.Background(), []string{"weave", "watch", "--poll-interval", "125ms", "--initial=false"}); err != nil {
+		t.Fatal(err)
+	}
+	if app.options != (watch.Options{PollInterval: 125 * time.Millisecond, Initial: false}) {
+		t.Fatalf("watch options = %#v", app.options)
+	}
+	if got, want := stdout.String(), "ready\tgithub.com/example/repo\tlinked-a\trefreshed\t2\nrefreshed\tgithub.com/example/repo\tlinked-a\trefreshed\t2\n"; got != want {
+		t.Fatalf("stdout = %q, want %q", got, want)
+	}
+	if got, want := stderr.String(), "fixture diagnostic\nwatch: provider failed\n"; got != want {
+		t.Fatalf("stderr = %q, want %q", got, want)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	root = command.New(app, command.Streams{Stdin: strings.NewReader(""), Stdout: &stdout, Stderr: &stderr})
+	if err := root.Run(context.Background(), []string{"weave", "watch", "--json"}); err != nil {
+		t.Fatal(err)
+	}
+	firstJSON := stdout.String()
+	decoder := json.NewDecoder(strings.NewReader(firstJSON))
+	for index, eventType := range []watch.EventType{watch.EventReady, watch.EventError, watch.EventRefreshed} {
+		var event watch.Event
+		if err := decoder.Decode(&event); err != nil {
+			t.Fatalf("decode event %d: %v: %q", index, err, stdout.String())
+		}
+		if event.Schema != watch.Schema || event.Sequence != uint64(index+1) || event.Type != eventType {
+			t.Fatalf("JSON event %d = %#v", index, event)
+		}
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("JSON stderr = %q", stderr.String())
+	}
+	stdout.Reset()
+	root = command.New(app, command.Streams{Stdin: strings.NewReader(""), Stdout: &stdout, Stderr: &stderr})
+	if err := root.Run(context.Background(), []string{"weave", "watch", "--json"}); err != nil {
+		t.Fatal(err)
+	}
+	if stdout.String() != firstJSON {
+		t.Fatalf("watch JSON changed between identical runs:\nfirst %q\nsecond %q", firstJSON, stdout.String())
+	}
+}
+
+func TestWatchCommandRejectsArgumentsBoundsAndUnsupportedApplication(t *testing.T) {
+	t.Parallel()
+	for _, args := range [][]string{
+		{"weave", "watch", "unexpected"},
+		{"weave", "watch", "--poll-interval", "1ms"},
+		{"weave", "watch", "--poll-interval", "10m"},
+	} {
+		root := command.New(&recordingWatchApplication{}, command.Streams{Stdin: strings.NewReader(""), Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}})
+		if err := root.Run(context.Background(), args); err == nil {
+			t.Fatalf("watch accepted arguments %v", args)
+		}
+	}
+	root := command.New(&recordingApplication{}, command.Streams{Stdin: strings.NewReader(""), Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}})
+	if err := root.Run(context.Background(), []string{"weave", "watch"}); err == nil || !strings.Contains(err.Error(), "does not support watch warming") {
+		t.Fatalf("unsupported watch error = %v", err)
+	}
+	local := application.Local{}
+	if err := local.Watch(context.Background(), watch.Options{PollInterval: watch.DefaultPollInterval}, func(watch.Event) error { return nil }); err == nil || !strings.Contains(err.Error(), "repository-managed freshness") {
+		t.Fatalf("unmanaged local watch error = %v", err)
 	}
 }
 
@@ -617,6 +697,23 @@ type recordingApplication struct {
 	invocations []application.Invocation
 	err         error
 	response    application.Response
+}
+
+type recordingWatchApplication struct {
+	recordingApplication
+	options watch.Options
+	events  []watch.Event
+	err     error
+}
+
+func (application *recordingWatchApplication) Watch(_ context.Context, options watch.Options, sink watch.Sink) error {
+	application.options = options
+	for _, event := range application.events {
+		if err := sink(event); err != nil {
+			return err
+		}
+	}
+	return application.err
 }
 
 func (a *recordingApplication) Execute(_ context.Context, invocation application.Invocation) (application.Response, error) {

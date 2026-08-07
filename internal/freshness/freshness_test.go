@@ -91,6 +91,52 @@ func TestEnsureRefreshesOnlyReturnedUnitsAndPublishesCompleteState(t *testing.T)
 	}
 }
 
+func TestObserveIdentifiesExactRepositoryStateWithoutChangingIt(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	root := freshRepository(t)
+	manager := Manager{Directory: root, Provider: EmptyProvider{}, Command: "observe test"}
+	before, err := manager.Observe(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before.Token == "" || before.Status.Current {
+		t.Fatalf("initial observation = %#v", before)
+	}
+	if _, err := manager.Ensure(ctx, false); err != nil {
+		t.Fatal(err)
+	}
+	current, err := manager.Observe(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.Token != before.Token || !current.Status.Current {
+		t.Fatalf("current observation = %#v, before %#v", current, before)
+	}
+	freshGit(t, root, "switch", "-c", "other")
+	branch, err := manager.Observe(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if branch.Token == current.Token || branch.Status.Current {
+		t.Fatalf("branch observation = %#v, current %#v", branch, current)
+	}
+	freshGit(t, root, "switch", "main")
+	writeFreshFile(t, root, "main.go", "package changed\n")
+	changed, err := manager.Observe(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed.Token == "" || changed.Token == current.Token || changed.Status.Current {
+		t.Fatalf("changed observation = %#v, current %#v", changed, current)
+	}
+
+	missing, err := (Manager{Directory: filepath.Join(t.TempDir(), "not-a-repository")}).Observe(ctx)
+	if err == nil || missing.Token != "" {
+		t.Fatalf("failed repository observation = %#v, %v", missing, err)
+	}
+}
+
 func TestFailedRefreshNeverPublishesCurrentManifest(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -148,6 +194,13 @@ func TestGenerationMismatchForcesCompleteReplay(t *testing.T) {
 		t.Fatal(err)
 	}
 	db.Close()
+	observed, err := manager.Observe(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !observed.Status.Current || observed.Token == "" {
+		t.Fatalf("cheap source/manifest observation = %#v", observed)
+	}
 	inspected, err := manager.Inspect(ctx)
 	if err != nil {
 		t.Fatal(err)

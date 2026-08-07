@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/TheFellow/weave/internal/adapter"
 	"github.com/TheFellow/weave/internal/application"
@@ -14,6 +16,9 @@ import (
 )
 
 func main() {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	database := os.Getenv("WEAVE_DATABASE")
 	registrations, registryErr := adapter.LoadRegistry(os.Getenv(adapter.RegistryEnvironment))
 	local := application.Local{DatabasePath: database, Adapters: registrations, AdapterConfigError: registryErr}
@@ -36,7 +41,7 @@ func main() {
 		Stderr: os.Stderr,
 	})
 
-	if err := app.Run(context.Background(), os.Args); err != nil {
+	if err := app.Run(ctx, os.Args); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		if exitCoder, ok := err.(cli.ExitCoder); ok {
 			os.Exit(exitCoder.ExitCode())

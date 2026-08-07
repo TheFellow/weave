@@ -361,6 +361,30 @@ func TestReadOnlyGitCommandsDisableRepositoryFSMonitor(t *testing.T) {
 	}
 }
 
+func TestInspectDoesNotAcquireOptionalIndexLock(t *testing.T) {
+	t.Parallel()
+	root := newRepository(t)
+	writeFile(t, root, "main.go", "package main\n")
+	git(t, root, "add", ".")
+	git(t, root, "commit", "-m", "initial")
+	repo, err := Discover(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lockPath := filepath.Join(repo.GitDir, "index.lock")
+	lock, err := os.OpenFile(lockPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = lock.Close()
+		_ = os.Remove(lockPath)
+	})
+	if _, err := repo.Inspect(context.Background()); err != nil {
+		t.Fatalf("background-safe inspection contended on optional index lock: %v", err)
+	}
+}
+
 func TestInspectDoesNotFollowChangedSymlinks(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("symlink creation commonly requires elevated privileges")

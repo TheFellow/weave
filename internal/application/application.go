@@ -29,6 +29,7 @@ import (
 	"github.com/TheFellow/weave/internal/repository"
 	"github.com/TheFellow/weave/internal/scipimport"
 	"github.com/TheFellow/weave/internal/storage"
+	"github.com/TheFellow/weave/internal/watch"
 )
 
 const QuerySchema = "weave.query/v1"
@@ -144,6 +145,15 @@ type Local struct {
 	Adapters           []adapter.Registration
 	AdapterConfigError error
 	CatalogPath        string
+}
+
+// Watch warms the same query-authoritative per-worktree freshness coordinator.
+// It owns no database, provider pipeline, or filesystem inventory of its own.
+func (app Local) Watch(ctx context.Context, options watch.Options, sink watch.Sink) error {
+	if app.Freshness == nil {
+		return errors.New("watch requires repository-managed freshness; an explicit WEAVE_DATABASE is not watchable")
+	}
+	return watch.Run(ctx, app.Freshness, options, sink)
 }
 
 // Execute runs one local use case.

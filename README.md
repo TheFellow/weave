@@ -37,6 +37,7 @@ From a Git repository containing one or more Go modules:
 ```sh
 weave index
 weave status
+weave watch
 weave symbols Handle --limit 20
 weave definition Handle
 weave references Handle --json
@@ -62,6 +63,45 @@ runs. Refresh notices go to stderr; results go to stdout. Empty text results are
 silent. `--json` emits the `weave.query/v1` envelope and deterministic ordering.
 Locations are repository-relative, one-based in text, and zero-based UTF-8 byte
 coordinates in JSON facts.
+
+## Optional watch warming
+
+`weave watch` is an optional foreground latency warmer. It performs one
+non-forced freshness refresh by default, then polls the exact Git/worktree
+observation and invokes the same `Freshness.Ensure` and provider pipeline used
+by queries. It does not install hooks, start a daemon, maintain another file
+inventory, or write another database. Queries remain authoritative and perform
+their normal freshness check whether the watcher is running or not.
+
+```sh
+weave watch
+weave watch --poll-interval 2s
+weave watch --initial=false
+weave watch --json
+```
+
+The default 750 ms poll interval is also the edit coalescing window. Exact Git
+reconciliation makes editor atomic renames, burst saves, branch/index changes,
+and missed native filesystem events ordinary state observations. Ignored paths
+remain ignored and Git-visible untracked provider inputs retain their existing
+semantics. Polling does no refresh work while the observed source/manifest state
+is current and no refresh for that same observation has failed. The initial
+refresh and every query remain authoritative for graph-generation verification.
+
+Human ready/refreshed lifecycle lines go to stdout and recoverable provider
+errors or diagnostics go to stderr. `--json` writes newline-delimited
+`weave.watch-event/v1` records (`ready`, `refreshed`, and `error`) to stdout;
+unchanged polls emit nothing. Error text is UTF-8-safe and capped at 8 KiB.
+Unchanged failures retry with exponential backoff capped at 30 seconds, while a
+new exact observation bypasses that backoff. Interrupt and termination signals
+cancel in-flight Git/provider work and stop the foreground process cleanly.
+If another edit lands between a successful refresh and its follow-up
+observation, the completion retains the exact refreshed status but omits the
+observation token; the next poll then refreshes the new state.
+
+Each linked worktree warms only its own Git-resolved derived index and writer
+lock. `WEAVE_DATABASE` selects an unmanaged database snapshot, so watch mode is
+intentionally unavailable in that mode.
 
 `dependencies` returns direct `depends-on` and `imports` edges. Use `path` with
 `--kind depends-on` for a bounded transitive route. Every edge includes its
@@ -492,7 +532,7 @@ adapters can add another language without a Go-core change. Exact cross-language
 relationships use checked-in
 declared/generated bridges. The workspace provider covers Git-visible topology
 and the initial CommonMark/GFM plus static Jekyll-shaped content slice.
-Finer-grained compiler refresh, build variants, fuzzy search, hooks/watch mode,
+Finer-grained compiler refresh, build variants, fuzzy search, optional hooks,
 MCP, renderer-complete content profiles, and signed package-manager distribution
 remain future work.
 

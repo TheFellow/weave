@@ -121,6 +121,14 @@ type Status struct {
 	Diagnostics []string `json:"diagnostics,omitempty"`
 }
 
+// Observation couples a user-facing freshness status with an opaque token for
+// the exact repository, worktree, provider, and Git overlay that was inspected.
+// Consumers may compare tokens for equality but must not parse them.
+type Observation struct {
+	Token  string
+	Status Status
+}
+
 // Manager owns freshness for one directory/repository.
 type Manager struct {
 	Directory   string
@@ -271,6 +279,41 @@ func (m Manager) Inspect(ctx context.Context) (Status, error) {
 		status.Reason = generationMismatchReason
 	}
 	return status, nil
+}
+
+// Observe reports freshness plus an opaque identity for the exact source state.
+// It is intended for optional warmers that need to distinguish a new edit from
+// a retry without making filesystem notifications authoritative. It compares
+// Git, provider, and the published manifest but deliberately does not open the
+// graph database on every poll; Ensure and Inspect remain generation authorities.
+func (m Manager) Observe(ctx context.Context) (Observation, error) {
+	repo, state, _, status, err := m.inspect(ctx)
+	if err != nil {
+		return Observation{}, err
+	}
+	return Observation{Token: observationToken(repo, state, m.provider().ID()), Status: status}, nil
+}
+
+func observationToken(repo repository.Repository, state repository.State, provider ProviderID) string {
+	projection := struct {
+		Domain             string
+		RepositoryIdentity string
+		WorktreeID         string
+		Provider           ProviderID
+		Commit             string
+		Tree               string
+		Branch             string
+		Detached           bool
+		OverlayDigest      string
+	}{
+		Domain: "weave.freshness-observation/v1", RepositoryIdentity: repo.Identity,
+		WorktreeID: repo.WorktreeID, Provider: provider, Commit: state.Commit,
+		Tree: state.Tree, Branch: state.Branch, Detached: state.Detached,
+		OverlayDigest: overlayDigest(state),
+	}
+	encoded, _ := json.Marshal(projection)
+	digest := sha256.Sum256(encoded)
+	return "sha256:" + hex.EncodeToString(digest[:])
 }
 
 // DatabasePath resolves the worktree-specific derived graph path.
