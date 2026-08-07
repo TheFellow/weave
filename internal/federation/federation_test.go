@@ -36,7 +36,12 @@ func TestFederatedExactIdentityTraversalAndProvenance(t *testing.T) {
 		},
 		Edges: []graph.Edge{
 			{ID: "call-edge", UnitID: "app", From: caller, To: target, Kind: graph.EdgeCalls, Evidence: graph.EvidenceExact, Provider: "fixture"},
-			{ID: "declared-bridge", UnitID: "app", From: caller, To: target, Kind: graph.EdgeDependsOn, Evidence: graph.EvidenceDeclared, Provider: "weave-bridges"},
+		},
+	})
+	writeFacts(t, entries[0].DatabasePath, graph.UnitFacts{
+		Unit: graph.Unit{ID: "bridge", Provider: "weave-bridges", ProviderVersion: "1"},
+		Edges: []graph.Edge{
+			{ID: "declared-bridge", UnitID: "bridge", From: caller, To: target, Kind: graph.EdgeDependsOn, Evidence: graph.EvidenceDeclared, Provider: "weave-bridges"},
 		},
 	})
 	writeFacts(t, entries[1].DatabasePath, graph.UnitFacts{
