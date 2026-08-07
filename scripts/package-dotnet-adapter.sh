@@ -46,7 +46,17 @@ for rid in $rids; do
   cp "$root/LICENSE" "$publish/LICENSE"
   archive="$output/weave-dotnet_${version}_${rid}"
   if [[ "$rid" == win-* ]]; then
-    (cd "$publish" && zip -q -r "$archive.zip" .)
+    if command -v zip >/dev/null 2>&1; then
+      (cd "$publish" && zip -q -r "$archive.zip" .)
+    elif command -v powershell.exe >/dev/null 2>&1 && command -v cygpath >/dev/null 2>&1; then
+      WEAVE_PUBLISH=$(cygpath -w "$publish") \
+        WEAVE_ARCHIVE=$(cygpath -w "$archive.zip") \
+        powershell.exe -NoProfile -NonInteractive -Command \
+          'Compress-Archive -Path (Join-Path $env:WEAVE_PUBLISH "*") -DestinationPath $env:WEAVE_ARCHIVE'
+    else
+      echo "cannot create $archive.zip: install zip (or run from Windows with PowerShell)" >&2
+      exit 1
+    fi
   else
     tar -C "$publish" -czf "$archive.tar.gz" .
   fi
