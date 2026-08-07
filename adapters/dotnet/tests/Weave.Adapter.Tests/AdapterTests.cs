@@ -1,5 +1,4 @@
 using System.Text.Json;
-using Microsoft.Build.Locator;
 using Weave.Adapter.FSharp;
 using Weave.Adapter.Model;
 using Xunit;
@@ -53,7 +52,6 @@ public sealed class AdapterTests
     [Fact]
     public async Task MixedSolutionProducesCompilerResolvedFactsDeterministically()
     {
-        if (!MSBuildLocator.IsRegistered) MSBuildLocator.RegisterDefaults();
         var root = Path.Combine(Fixtures, "Mixed");
         var request = Request(root);
         var paths = new RepositoryPaths(root);
@@ -81,7 +79,6 @@ public sealed class AdapterTests
     [Fact]
     public async Task MalformedProjectFailsWithoutPublishingFacts()
     {
-        if (!MSBuildLocator.IsRegistered) MSBuildLocator.RegisterDefaults();
         var root = Path.Combine(Fixtures, "Malformed");
         await Assert.ThrowsAnyAsync<Exception>(() => new CSharpIndexer(new RepositoryPaths(root), Request(root)).IndexAsync(CancellationToken.None));
     }

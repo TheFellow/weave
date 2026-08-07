@@ -1,4 +1,3 @@
-using Microsoft.Build.Locator;
 using Weave.Adapter;
 using Xunit;
 
@@ -9,7 +8,6 @@ public sealed class FSharpProjectOrderTests
     [Fact]
     public void DependentsPrecedeDependenciesUsingEvaluatedProjectReferences()
     {
-        if (!MSBuildLocator.IsRegistered) MSBuildLocator.RegisterDefaults();
         var root = Path.Combine(Path.GetTempPath(), "weave-project-order-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
         try
