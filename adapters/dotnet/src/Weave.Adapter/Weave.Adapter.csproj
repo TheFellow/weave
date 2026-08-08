@@ -10,6 +10,7 @@
     <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>
   <ItemGroup>
+    <InternalsVisibleTo Include="Weave.Adapter.Tests" />
     <None Include="../../DISTRIBUTION.md" Pack="true" PackagePath="README.md" />
     <ProjectReference Include="../Weave.Adapter.Model/Weave.Adapter.Model.csproj" />
     <ProjectReference Include="../Weave.Adapter.FSharp/Weave.Adapter.FSharp.fsproj" />

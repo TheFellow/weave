@@ -1301,7 +1301,7 @@ func inspectAdaptersWithErrorAt(ctx context.Context, doctor bool, runner adapter
 		}
 		if doctor && status.Available && candidate.kind == "native" && !managedIntegrityFailure {
 			probeCtx, cancel := context.WithTimeout(ctx, adapterDoctorTimeout)
-			capabilities, stderr, probeErr := runner.Describe(probeCtx, adapter.Executable{Path: path, Args: append([]string(nil), args...), Env: adapterEnvironment()})
+			capabilities, stderr, probeErr := runner.Describe(probeCtx, adapter.Executable{Path: path, Args: append([]string(nil), args...), Env: adapter.ChildEnvironment()})
 			cancel()
 			status.Checked = true
 			if probeErr != nil {
@@ -1473,7 +1473,7 @@ func (app Local) indexAdapter(ctx context.Context, response Response, invocation
 		return Response{}, err
 	}
 	result, err := app.AdapterRunner.Index(runCtx, adapter.Executable{
-		Path: executable, Args: invocation.AdapterArgs, Dir: repo.Root, Env: adapterEnvironment(),
+		Path: executable, Args: invocation.AdapterArgs, Dir: repo.Root, Env: adapter.ChildEnvironment(),
 	}, adapter.IndexRequest{
 		RequestID: requestID, RepositoryRoot: repo.Root, RepositoryIdentity: repo.Identity,
 		Permissions: invocation.Permissions,
@@ -1552,21 +1552,6 @@ func resolveExecutable(value string) (string, error) {
 		return "", fmt.Errorf("find adapter executable %q: %w", value, err)
 	}
 	return path, nil
-}
-
-func adapterEnvironment() []string {
-	allowed := []string{
-		"PATH", "HOME", "USERPROFILE", "JAVA_HOME", "CARGO_HOME", "RUSTUP_HOME", "RUSTUP_TOOLCHAIN",
-		"WEAVE_RUST_ANALYZER", "WEAVE_SCIP_CLANG", "WEAVE_SCIP_TYPESCRIPT", "WEAVE_SCIP_JAVA", "WEAVE_SCIP_JAVA_VERSION", "WEAVE_SCIP_JAVA_METADATA_VERSION",
-		"TMPDIR", "TMP", "TEMP", "SystemRoot", "WINDIR",
-	}
-	var environment []string
-	for _, name := range allowed {
-		if value, ok := os.LookupEnv(name); ok {
-			environment = append(environment, name+"="+value)
-		}
-	}
-	return environment
 }
 
 func randomID() (string, error) {

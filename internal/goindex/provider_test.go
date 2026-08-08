@@ -14,6 +14,7 @@ import (
 	"github.com/TheFellow/weave/internal/freshness"
 	"github.com/TheFellow/weave/internal/graph"
 	"github.com/TheFellow/weave/internal/repository"
+	"golang.org/x/tools/go/packages"
 )
 
 func TestGoEnvironmentPreservesToolchainAndDisablesDependencyDownloads(t *testing.T) {
@@ -33,6 +34,19 @@ func TestGoEnvironmentPreservesToolchainAndDisablesDependencyDownloads(t *testin
 	}
 	if counts["GOPROXY"] != 1 || counts["GONOSUMDB"] != 1 {
 		t.Fatalf("duplicate policy settings: %#v", counts)
+	}
+}
+
+func TestPackageLoadModeDoesNotRetainDependencySyntax(t *testing.T) {
+	if packageLoadMode&packages.NeedDeps != 0 {
+		t.Fatal("Go indexing recursively loads dependency syntax and type information")
+	}
+	for _, required := range []packages.LoadMode{
+		packages.NeedImports, packages.NeedTypes, packages.NeedSyntax, packages.NeedTypesInfo,
+	} {
+		if packageLoadMode&required == 0 {
+			t.Fatalf("Go indexing load mode is missing %s", required)
+		}
 	}
 }
 

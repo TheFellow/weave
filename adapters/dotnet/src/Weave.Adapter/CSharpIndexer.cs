@@ -75,18 +75,46 @@ public sealed class CSharpIndexer(RepositoryPaths paths, IndexRequest request)
 
     private async Task<IReadOnlyList<Project>> LoadProjectsAsync(MSBuildWorkspace workspace, CancellationToken cancellationToken)
     {
-        var solutions = Directory.EnumerateFiles(paths.Root, "*.sln", SearchOption.TopDirectoryOnly)
-            .Concat(Directory.EnumerateFiles(paths.Root, "*.slnx", SearchOption.TopDirectoryOnly))
-            .Order(StringComparer.Ordinal).ToArray();
-        if (solutions.Length > 1) throw new InvalidOperationException("multiple solution files found; select a solution with --adapter-arg support when added");
+        var solutions = FindSolutions(paths.Root);
+        if (solutions.Length > 1) throw new InvalidOperationException("multiple nearest solution files found; select a solution with --adapter-arg support when added");
         if (solutions.Length == 1)
             return (await workspace.OpenSolutionAsync(solutions[0], cancellationToken: cancellationToken)).Projects.ToArray();
 
         var projectFiles = Directory.EnumerateFiles(paths.Root, "*.csproj", SearchOption.AllDirectories)
             .Where(path => !IsBuildOutput(path)).Order(StringComparer.Ordinal).ToArray();
-        var projects = new List<Project>();
-        foreach (var file in projectFiles) projects.Add(await workspace.OpenProjectAsync(file, cancellationToken: cancellationToken));
-        return projects;
+        var comparer = OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
+        foreach (var file in projectFiles)
+        {
+            var fullPath = Path.GetFullPath(file);
+            if (workspace.CurrentSolution.Projects.Any(project => project.FilePath is not null && comparer.Equals(Path.GetFullPath(project.FilePath), fullPath)))
+                continue;
+            await workspace.OpenProjectAsync(file, cancellationToken: cancellationToken);
+        }
+        return workspace.CurrentSolution.Projects.ToArray();
+    }
+
+    internal static string[] FindSolutions(string root)
+    {
+        var solutions = Directory.EnumerateFiles(root, "*.sln", SearchOption.AllDirectories)
+            .Concat(Directory.EnumerateFiles(root, "*.slnx", SearchOption.AllDirectories))
+            .Where(path => !IsBuildOutput(path))
+            .Select(path => new
+            {
+                Path = path,
+                Depth = DirectoryDepth(root, Path.GetDirectoryName(path)!),
+            })
+            .OrderBy(candidate => candidate.Depth)
+            .ThenBy(candidate => candidate.Path, StringComparer.Ordinal)
+            .ToArray();
+        if (solutions.Length == 0) return [];
+        var nearestDepth = solutions[0].Depth;
+        return solutions.TakeWhile(candidate => candidate.Depth == nearestDepth).Select(candidate => candidate.Path).ToArray();
+    }
+
+    private static int DirectoryDepth(string root, string directory)
+    {
+        var relative = Path.GetRelativePath(root, directory);
+        return relative == "." ? 0 : relative.Split([Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar], StringSplitOptions.RemoveEmptyEntries).Length;
     }
 
     private static bool IsBuildOutput(string path) => path.Split(Path.DirectorySeparatorChar)
@@ -122,7 +150,11 @@ public sealed class CSharpIndexer(RepositoryPaths paths, IndexRequest request)
                 diagnostics.Add(new("info", "generated/build-output document omitted: " + document.FilePath, unitId));
                 continue;
             }
-            var relative = paths.RelativeFile(document.FilePath);
+            if (!paths.TryRelativeFile(document.FilePath, out var relative))
+            {
+                diagnostics.Add(new("info", "external generated document omitted: " + document.FilePath, unitId));
+                continue;
+            }
             var text = await document.GetTextAsync(cancellationToken);
             var tree = await document.GetSyntaxTreeAsync(cancellationToken);
             if (tree is null) continue;
@@ -138,6 +170,7 @@ public sealed class CSharpIndexer(RepositoryPaths paths, IndexRequest request)
 
         var symbolIds = new Dictionary<ISymbol, string>(SymbolEqualityComparer.Default);
         var declarationKeys = new HashSet<string>(StringComparer.Ordinal);
+        var edgeIds = new HashSet<string>(StringComparer.Ordinal);
         foreach (var symbol in SourceSymbols(compilation.Assembly.GlobalNamespace))
         {
             var location = symbol.Locations.FirstOrDefault(l => l.IsInSource && l.SourceTree is not null && documents.ContainsKey(l.SourceTree));
@@ -153,7 +186,7 @@ public sealed class CSharpIndexer(RepositoryPaths paths, IndexRequest request)
                 DocumentId = document.Fact.Id, Definition = range,
             });
             AddOccurrence(facts, id, document.Fact.Id, "definition", range, declarationKeys);
-            AddEdge(facts, rootSymbolId, id, "defines", document.Fact.Id, range);
+            AddEdge(facts, edgeIds, rootSymbolId, id, "defines", document.Fact.Id, range);
         }
 
         foreach (var (tree, document) in documents.OrderBy(pair => pair.Value.Fact.Path, StringComparer.Ordinal))
@@ -171,7 +204,7 @@ public sealed class CSharpIndexer(RepositoryPaths paths, IndexRequest request)
                         var range = ToRange(document.Text, node.Span);
                         AddOccurrence(facts, targetId, document.Fact.Id, "reference", range, declarationKeys);
                         var owner = model.GetEnclosingSymbol(node.SpanStart, cancellationToken);
-                        AddEdge(facts, owner is null ? rootSymbolId : SymbolId(owner, symbolScope), targetId, "references", document.Fact.Id, range);
+                        AddEdge(facts, edgeIds, owner is null ? rootSymbolId : SymbolId(owner, symbolScope), targetId, "references", document.Fact.Id, range);
                     }
                 }
 
@@ -186,14 +219,14 @@ public sealed class CSharpIndexer(RepositoryPaths paths, IndexRequest request)
                     };
                     var owner = model.GetEnclosingSymbol(node.SpanStart, cancellationToken);
                     if (target is not null && owner is not null)
-                        AddEdge(facts, SymbolId(owner, symbolScope), SymbolId(target, symbolScope), "calls", document.Fact.Id, ToRange(document.Text, node.Span));
+                        AddEdge(facts, edgeIds, SymbolId(owner, symbolScope), SymbolId(target, symbolScope), "calls", document.Fact.Id, ToRange(document.Text, node.Span));
                 }
 
                 if (node is UsingDirectiveSyntax usingDirective && usingDirective.Name is not null)
                 {
                     var target = model.GetSymbolInfo(usingDirective.Name, cancellationToken).Symbol;
                     if (target is not null)
-                        AddEdge(facts, rootSymbolId, SymbolId(target, symbolScope), "imports", document.Fact.Id, ToRange(document.Text, usingDirective.Name.Span));
+                        AddEdge(facts, edgeIds, rootSymbolId, SymbolId(target, symbolScope), "imports", document.Fact.Id, ToRange(document.Text, usingDirective.Name.Span));
                 }
             }
         }
@@ -201,9 +234,9 @@ public sealed class CSharpIndexer(RepositoryPaths paths, IndexRequest request)
         foreach (var type in SourceSymbols(compilation.Assembly.GlobalNamespace).OfType<INamedTypeSymbol>())
         {
             if (type.BaseType is { SpecialType: not SpecialType.System_Object } baseType)
-                AddEdge(facts, SymbolId(type, symbolScope), SymbolId(baseType, symbolScope), "extends");
+                AddEdge(facts, edgeIds, SymbolId(type, symbolScope), SymbolId(baseType, symbolScope), "extends");
             foreach (var iface in type.Interfaces)
-                AddEdge(facts, SymbolId(type, symbolScope), SymbolId(iface, symbolScope), "implements");
+                AddEdge(facts, edgeIds, SymbolId(type, symbolScope), SymbolId(iface, symbolScope), "implements");
         }
 
         foreach (var reference in project.ProjectReferences.OrderBy(r => r.ProjectId.Id))
@@ -216,7 +249,7 @@ public sealed class CSharpIndexer(RepositoryPaths paths, IndexRequest request)
             if (dependency.Language == LanguageNames.CSharp && await dependency.GetCompilationAsync(cancellationToken) is CSharpCompilation dependencyCompilation)
                 dependencyVariant = Variant(dependency, dependencyCompilation);
             var dependencyId = $"dotnet:{language}:project:" + Identity.Hash(request.RepositoryIdentity, dependencyPath, dependency.AssemblyName, dependencyVariant);
-            AddEdge(facts, rootSymbolId, dependencyId, "depends-on");
+            AddEdge(facts, edgeIds, rootSymbolId, dependencyId, "depends-on");
         }
 
         foreach (var diagnostic in compilation.GetDiagnostics(cancellationToken).Where(d => d.Severity >= DiagnosticSeverity.Warning).Take(100))
@@ -304,14 +337,15 @@ public sealed class CSharpIndexer(RepositoryPaths paths, IndexRequest request)
         });
     }
 
-    private static void AddEdge(UnitFacts facts, string from, string to, string kind, string document = "", SourceRange? range = null)
+    private static void AddEdge(UnitFacts facts, HashSet<string> seen, string from, string to, string kind, string document = "", SourceRange? range = null)
     {
         var actualRange = range ?? SourceRange.Empty;
         var key = $"{kind}\0{from}\0{to}\0{document}\0{actualRange.Start.Byte}\0{actualRange.End.Byte}";
-        if (facts.Edges.Any(edge => edge.Id == "dotnet:edge:" + Identity.Hash(facts.Unit.Id, key))) return;
+        var id = "dotnet:edge:" + Identity.Hash(facts.Unit.Id, key);
+        if (!seen.Add(id)) return;
         facts.Edges.Add(new Edge
         {
-            Id = "dotnet:edge:" + Identity.Hash(facts.Unit.Id, key), UnitId = facts.Unit.Id,
+            Id = id, UnitId = facts.Unit.Id,
             From = from, To = to, Kind = kind, DocumentId = document, Range = actualRange,
         });
     }

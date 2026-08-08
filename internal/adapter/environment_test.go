@@ -2,8 +2,23 @@ package adapter
 
 import (
 	"slices"
+	"strings"
 	"testing"
 )
+
+func TestChildEnvironmentIsBoundedAndSharedAcrossToolchains(t *testing.T) {
+	t.Setenv("DOTNET_ROOT", "/toolchains/dotnet")
+	t.Setenv("WEAVE_SCIP_TYPESCRIPT", "/toolchains/scip-typescript")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "not-for-adapters")
+	environment := ChildEnvironment()
+	if !slices.Contains(environment, "DOTNET_ROOT=/toolchains/dotnet") ||
+		!slices.Contains(environment, "WEAVE_SCIP_TYPESCRIPT=/toolchains/scip-typescript") {
+		t.Fatalf("toolchain environment = %#v", environment)
+	}
+	if slices.ContainsFunc(environment, func(value string) bool { return strings.HasPrefix(value, "AWS_SECRET_ACCESS_KEY=") }) {
+		t.Fatalf("unbounded ambient environment = %#v", environment)
+	}
+}
 
 func TestEnvironmentRegistrationsAreExplicitAndBounded(t *testing.T) {
 	values := map[string]string{

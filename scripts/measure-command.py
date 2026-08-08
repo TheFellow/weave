@@ -4,7 +4,13 @@
 import argparse
 import json
 import subprocess
+import sys
 import time
+
+try:
+    import resource
+except ImportError:  # pragma: no cover - unavailable on native Windows Python
+    resource = None
 
 
 parser = argparse.ArgumentParser()
@@ -35,19 +41,23 @@ with open(args.stdout, "wb") as stdout, open(args.stderr, "wb") as stderr:
         timed_out = True
         exit_code = 124
 elapsed = time.perf_counter() - started
+peak_rss_bytes = None
+if resource is not None:
+    peak_rss = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
+    # Darwin reports bytes; Linux and the BSDs report KiB.
+    peak_rss_bytes = peak_rss if sys.platform == "darwin" else peak_rss * 1024
 
 with open(args.result, "w", encoding="utf-8") as result:
-    json.dump(
-        {
-            "schema": "weave.benchmark-sample/v1",
-            "command": args.command,
-            "elapsed_seconds": round(elapsed, 6),
-            "exit_code": exit_code,
-            "timed_out": timed_out,
-        },
-        result,
-        sort_keys=True,
-    )
+    sample = {
+        "schema": "weave.benchmark-sample/v1",
+        "command": args.command,
+        "elapsed_seconds": round(elapsed, 6),
+        "exit_code": exit_code,
+        "timed_out": timed_out,
+    }
+    if peak_rss_bytes is not None:
+        sample["peak_rss_bytes"] = peak_rss_bytes
+    json.dump(sample, result, sort_keys=True)
     result.write("\n")
 
 raise SystemExit(exit_code)
