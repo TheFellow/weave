@@ -152,7 +152,7 @@ text. Use `--limit`, `--context-lines`, and `--max-source-bytes` to lower or
 raise those bounded ceilings. JSON retains the normal `weave.query/v1`
 envelope and carries a `weave.context/v1` result under `context`.
 
-Explore returns at most six ranked entities by default, caps each dossier at
+Explore returns at most eight ranked entities by default, caps each dossier at
 six occurrences/relationships and one surrounding source line, and shares a
 64 KiB source ceiling across the complete response. Tune those independently
 with `--limit`, `--relationship-limit`, `--context-lines`, and
@@ -168,6 +168,39 @@ Ambiguous exact-context names fail with stable-name candidates and graph IDs
 rather than silently choosing a target. Catalog context uses the existing
 bounded refresh-before-open federation and reports partial members through
 diagnostics and freshness metadata.
+
+### Persistent agent query session
+
+One-shot CLI commands are convenient, but repeatedly starting a process,
+checking Git, opening a large index, and rebuilding its hot dictionaries is not
+an IDE-shaped access path. `weave session` keeps one local database open and
+accepts bounded NDJSON requests on stdin, returning one structured response per
+line on stdout:
+
+```console
+printf '%s\n' \
+  '{"protocol":"weave.query-session/v1","id":"research","command":"explore","arguments":["where is publish authorization enforced"],"limit":6}' \
+  '{"protocol":"weave.query-session/v1","id":"callers","command":"callers","arguments":["Module.Publish"],"limit":25}' \
+  | weave session
+```
+
+The first request performs the authoritative freshness check and opens the
+index. Later requests reuse that handle and its in-memory dictionaries. A
+background exact Git observation detects edits; the next request closes the
+database, refreshes through the normal provider pipeline, and opens the new
+generation before querying. Source-rich results independently re-read and
+hash-check source, so they never serve a changed file against stale locations.
+
+This command is a foreground subprocess contract, not an installed daemon.
+EOF, cancellation, or process termination releases the database. The local
+bstore file is opened read/write and permits only one owning process: while a
+session is running, ordinary Weave commands against that worktree will wait and
+then fail their bounded open rather than bypassing the owner. Clients should
+send all supported local research queries through the session and close it
+before running index, GC, verification, catalog, or authored-link operations.
+The session deliberately excludes those maintenance and mutation commands.
+The complete wire fields, bounds, lifecycle, and language-neutral golden
+requests live in the [`weave.query-session/v1` contract](protocol/query-session/v1/README.md).
 
 ## Controlled agent research benchmark
 
@@ -187,7 +220,9 @@ scripts/benchmark-agent-research.sh \
 
 Set `WEAVE_AGENT_BENCHMARK_MODEL` to pin a model and increase the final argument
 for repeated samples. The harness requires an authenticated `codex` executable,
-uses read-only agent sandboxes, builds the candidate once, indexes only the
+uses audited workspace-write sandboxes because bstore requires a writable open,
+grants only the disposable clone and its exact `.git/weave` directory, verifies
+the source worktree stayed clean, builds the candidate once, indexes only the
 with-Weave clones, shadows `weave` with a logging rejection in control clones,
 and rejects dirty source repositories. Benchmark output stays outside the
 worktree by design.
@@ -276,6 +311,28 @@ default impact traversal includes incoming links and embeds: changing a source
 file or asset can surface the READMEs and articles that explain or display it.
 See [ADR 0010](.ai/decisions/0010-workspace-and-structured-content-index.md)
 for the safe source-profile boundary and current renderer limitations.
+
+Markdown documents and sections also contribute bounded normalized lexical
+terms from their own prose. `symbols` and `explore` therefore find a section by
+concepts in its body, not only by its heading or filename. These postings live
+in the same bstore index, retain the section's exact identity and source range,
+and carry no semantic confidence beyond the provider's syntactic entity. The
+graph stores no source-text copy; `context` still re-reads and verifies the
+current file before returning evidence. Explore favors uncommon terms, smaller
+focused sections, and related sections in the strongest matching document;
+explicit generated copies and known `llms*.txt` aggregations remain searchable
+but rank behind authored evidence. Markdown document results expand to their
+pre-heading prelude instead of returning only a front-matter anchor.
+
+The same lexical fallback attaches body terms to any Git-visible regular UTF-8
+non-asset file up to 2 MiB, regardless of extension or programming language.
+That makes comments, configuration, scripts, and unsupported language files
+discoverable while compiler, SCIP, and Ctags entities still win semantic
+ranking. When a file-level lexical match wins, its dossier reopens current
+source and anchors the excerpt at the line with the strongest query overlap.
+Binary, asset, oversized, and corpus-budgeted files retain topology without
+guessed text. Unchanged generic files carry their prior unit forward; only
+Git-changed/new paths are reread after the initial index.
 
 ## Schemas, infrastructure, migrations, and build graphs
 
@@ -613,6 +670,15 @@ catalog. It contains only symbols, token postings, edges, and worktree
 provenance; per-worktree indexes remain the freshness authorities. None of
 these files belongs in source control.
 
+The current bstore-backed index is not a multi-process database. Weave opens it
+read/write even for queries, and only one process may own a worktree database at
+a time. Ordinary CLI commands hold that ownership for one invocation;
+`weave session` holds it deliberately across many agent queries and serializes
+them. This is a known storage constraint, not a concurrency claim. Close the
+session before maintenance or another client. A future broker may multiplex
+clients through the same owner, but changing bstore or bbolt is not required to
+provide fast persistent agent access.
+
 ```sh
 weave verify          # logical graph checks; warnings are non-fatal
 weave export --json   # deterministic diagnostic export
@@ -626,7 +692,7 @@ rebuildable derived-state errors. Back up source, not the index. The
 [release installation and recovery guide](docs/release-installation.md) also
 documents catalog recovery, upgrades, and rollback.
 
-Per-worktree storage format 2 keeps normalized graph and CLI/JSON/DOT
+Per-worktree storage format 3 keeps normalized graph and CLI/JSON/DOT
 identities unchanged while using compact numeric join keys internally. Repeated
 provider, provider-version, language, symbol-kind, and occurrence-role values
 are interned; symbol/occurrence/edge ranges and evidence live in separately
@@ -634,7 +700,7 @@ retrievable detail records. Both adjacency directions remain indexed. Intern
 and external-entity references are released transactionally when a semantic
 unit is replaced, and `weave verify` recomputes those invariants.
 
-There is intentionally no v1-to-v2 migration: an old marker is inspected
+There is intentionally no migration from an older format: its marker is inspected
 read-only and rejected with remove-and-reindex guidance before bstore can alter
 it. A clean rebuild is the upgrade. Authored intent is not lost because
 `.weave/bridges.json` is source configuration, not part of the disposable

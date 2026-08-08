@@ -503,6 +503,43 @@ Use `bstore` over bbolt for the first implementation. It is a compact embedded
 Go-native store with transactional behavior and indexed records. The database is
 derived, so periodic rewrite/compaction is acceptable.
 
+bstore's single owning-process constraint is explicit. One-shot CLI commands
+open a worktree database for one invocation. Agent integrations should normally
+use a foreground resident query session that owns one handle, serializes
+requests, observes source changes in the background, closes before an
+authoritative refresh, and reopens the new generation. Other processes must not
+open the same database while that session is alive. This is an application
+lifecycle constraint to model honestly, not a reason to fork bstore or bypass
+it with direct bbolt records.
+
+The resident boundary is a small versioned stdin/stdout protocol inspired by
+compiler plugins and persistent workers. It returns compact bounded graph and
+source projections from the same normalized facts regardless of which language
+adapter produced them. It is a foreground child owned by its client, not a
+mandatory daemon, hidden hook, or second indexing authority. A later MCP or
+socket surface may translate to this service, but must preserve one database
+owner and identical application semantics.
+
+Discovery must cover structured-content body concepts as well as declaration
+names. Providers may attach a bounded, normalized, sorted lexical term set to an
+exact entity such as a Markdown section. The core stores those terms in the
+same inverted bstore projection used by symbol search. They are discovery hints
+with provider provenance, never upgraded into semantic edges or evidence, and
+never replace compiler, SCIP, or LSP facts. Source text remains on disk and is
+re-read under the normal safety and hash checks when an agent asks for context.
+The safe broad fallback also indexes bounded Git-visible regular UTF-8 file
+bodies without caring about extension; binary, asset, oversized, and
+corpus-budgeted files remain topology-only. Incremental refresh must carry
+unchanged file units rather than rereading the machine.
+
+Agent ranking should prefer discriminating terms, focused authored entities,
+and coherent evidence within a matching document over giant generated
+aggregations that happen to contain every token. Generated representations stay
+queryable and visibly generated. Because lexical positions are not persisted,
+a winning generic file match reopens current source and selects a bounded
+matching excerpt; it never invents a semantic range or caches another source
+copy.
+
 Application records and queries use bstore. Direct bbolt access is limited to
 capabilities bstore does not expose—physical compaction, read-only format
 preflight/error classification, and a shared cross-process lock primitive that
