@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/TheFellow/weave/internal/graph"
 	"github.com/mjl-/bstore"
@@ -359,7 +360,11 @@ func hydrateSymbols(tx *bstore.Tx, records []symbolRecord, interns map[uint32]st
 		if !ok {
 			return nil, logicalCorrupt("invalid symbol evidence code")
 		}
-		result[i] = graph.Symbol{ID: record.StableID, UnitID: record.UnitStable, StableName: record.StableName, DisplayName: record.DisplayName, NormalizedName: record.NormalizedName, Kind: interns[record.Kind], DocumentID: record.DocumentStable, Definition: detail.Definition, Provider: interns[detail.Provider], Evidence: evidence}
+		var searchTerms []string
+		if record.SearchTerms != "" {
+			searchTerms = strings.Split(record.SearchTerms, "\x00")
+		}
+		result[i] = graph.Symbol{ID: record.StableID, UnitID: record.UnitStable, StableName: record.StableName, DisplayName: record.DisplayName, NormalizedName: record.NormalizedName, SearchTerms: searchTerms, Kind: interns[record.Kind], DocumentID: record.DocumentStable, Definition: detail.Definition, Provider: interns[detail.Provider], Evidence: evidence}
 	}
 	return result, nil
 }

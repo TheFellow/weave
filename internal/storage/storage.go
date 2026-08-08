@@ -124,7 +124,7 @@ func (db *DB) internDictionary() map[uint32]string {
 	return values
 }
 
-// storageVersion reads the unchanged v1/v2 metadata record through bbolt's
+// storageVersion reads the unchanged legacy/current metadata record through bbolt's
 // read-only API. This prevents bstore's automatic registration machinery from
 // modifying an unsupported database before Weave rejects it. metadataRecord's
 // on-disk shape is deliberately frozen: type-version uvarint, one field bitmap
@@ -556,7 +556,7 @@ func insertUnit(tx *bstore.Tx, retained *retention, facts graph.UnitFacts) error
 		if !ok {
 			return fmt.Errorf("invalid symbol evidence %q", symbol.Evidence)
 		}
-		record := symbolRecord{ID: entity, StableID: symbol.ID, Unit: unit.ID, UnitStable: facts.Unit.ID, StableName: symbol.StableName, DisplayName: symbol.DisplayName, NormalizedName: symbol.NormalizedName, Kind: kind, Document: documentIDs[symbol.DocumentID], DocumentStable: symbol.DocumentID}
+		record := symbolRecord{ID: entity, StableID: symbol.ID, Unit: unit.ID, UnitStable: facts.Unit.ID, StableName: symbol.StableName, DisplayName: symbol.DisplayName, NormalizedName: symbol.NormalizedName, Kind: kind, Document: documentIDs[symbol.DocumentID], DocumentStable: symbol.DocumentID, SearchTerms: strings.Join(symbol.SearchTerms, "\x00")}
 		if err := tx.Insert(&record); err != nil {
 			return err
 		}
@@ -564,7 +564,7 @@ func insertUnit(tx *bstore.Tx, retained *retention, facts graph.UnitFacts) error
 		if err := tx.Insert(&detail); err != nil {
 			return err
 		}
-		for _, token := range graph.Tokens(symbol.DisplayName) {
+		for _, token := range graph.SymbolTokens(symbol) {
 			posting := tokenRecord{Unit: unit.ID, Token: token, Symbol: entity, SymbolStable: symbol.ID}
 			if err := tx.Insert(&posting); err != nil {
 				return err

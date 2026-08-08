@@ -74,6 +74,33 @@ func TestV2LogicalExportMatchesV1AndRoundTripsRichFacts(t *testing.T) {
 	}
 }
 
+func TestSearchTermsRoundTripAndFindContentEntity(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	facts := fixtureFacts("search")
+	facts.Symbols[0].SearchTerms = []string{"artifacts", "correctness", "latency", "retained"}
+	db := openTestDB(t, filepath.Join(t.TempDir(), "search.db"))
+	defer db.Close()
+	if err := db.ReplaceUnit(ctx, facts); err != nil {
+		t.Fatal(err)
+	}
+	values, truncated, err := db.FindSymbols(ctx, "artifacts", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if truncated || len(values) != 1 || values[0].ID != facts.Symbols[0].ID || !slices.Equal(values[0].SearchTerms, facts.Symbols[0].SearchTerms) {
+		t.Fatalf("search result = %#v truncated=%v", values, truncated)
+	}
+	snapshot, err := db.Export(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	index := slices.IndexFunc(snapshot.Symbols, func(symbol graph.Symbol) bool { return symbol.ID == facts.Symbols[0].ID })
+	if index < 0 || !slices.Equal(snapshot.Symbols[index].SearchTerms, facts.Symbols[0].SearchTerms) {
+		t.Fatalf("export = %#v", snapshot.Symbols)
+	}
+}
+
 func TestInternAndEntityLifecycleAcrossReplacementAndDeletion(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

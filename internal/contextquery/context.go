@@ -38,6 +38,9 @@ type Options struct {
 	ContextLines    int
 	MaxSourceBytes  int
 	FullDefinitions bool
+	// LexicalTerms are normalized discovery terms used only to anchor a file
+	// entity's current-source excerpt. They do not create graph evidence.
+	LexicalTerms []string
 }
 
 type Result struct {
@@ -205,7 +208,9 @@ func Build(ctx context.Context, store Store, target string, options Options, loc
 			item.Source = SourceExcerpt{Status: SourceUnavailable, Path: document.Path, Detail: "repository provenance is unavailable"}
 			continue
 		}
-		if options.FullDefinitions && item.Role == "definition" {
+		if focus.Kind == "file" && item.Role == "focus" && len(options.LexicalTerms) != 0 {
+			item.Source = loader.lexicalExcerpt(ctx, item.Repositories[0], document, options.LexicalTerms)
+		} else if options.FullDefinitions && item.Role == "definition" {
 			item.Source = loader.definitionExcerpt(ctx, item.Repositories[0], document, item.Range, focus.Kind)
 		} else {
 			item.Source = loader.excerpt(ctx, item.Repositories[0], document, item.Range)

@@ -7,7 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"go/ast"
+	goast "go/ast"
 	"go/parser"
 	"go/token"
 	"io"
@@ -15,10 +15,14 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 	"unicode/utf8"
 
 	"github.com/TheFellow/weave/internal/graph"
+	"github.com/yuin/goldmark"
+	mdast "github.com/yuin/goldmark/ast"
+	"github.com/yuin/goldmark/text"
 )
 
 const maxSourceFileBytes = 16 << 20
@@ -80,7 +84,7 @@ func (loader *sourceLoader) excerpt(ctx context.Context, repository Repository, 
 
 func (loader *sourceLoader) definitionExcerpt(ctx context.Context, repository Repository, document graph.Document, sourceRange graph.Range, kind string) SourceExcerpt {
 	file := loader.file(ctx, repository, document)
-	expanded, ok := expandedGoDefinition(file, document.Language, sourceRange, kind)
+	expanded, ok := expandedDefinition(file, document.Language, sourceRange, kind)
 	if !ok {
 		return loader.excerptFromFile(SourceExcerpt{Path: document.Path}, file, sourceRange)
 	}
@@ -89,6 +93,44 @@ func (loader *sourceLoader) definitionExcerpt(ctx context.Context, repository Re
 		return loader.excerptFromFile(SourceExcerpt{Path: document.Path}, file, sourceRange)
 	}
 	return result
+}
+
+// lexicalExcerpt keeps file-level fallback discovery useful to an agent by
+// returning the current line with the strongest query-term overlap. The graph
+// stores bounded terms, not a second copy of source text or term positions, so
+// the current file remains the source of truth for the excerpt.
+func (loader *sourceLoader) lexicalExcerpt(ctx context.Context, repository Repository, document graph.Document, terms []string) SourceExcerpt {
+	file := loader.file(ctx, repository, document)
+	if file.status != SourceCurrent {
+		return loader.excerptFromFile(SourceExcerpt{Path: document.Path}, file, graph.Range{})
+	}
+	bestLine, bestScore := 0, 0
+	for index, line := range file.lines {
+		lineTerms := graph.ExtractSearchTerms(line)
+		score := 0
+		for _, term := range terms {
+			for _, variant := range exploreTermVariants(term) {
+				if _, found := slices.BinarySearch(lineTerms, variant); found {
+					score++
+					break
+				}
+			}
+		}
+		if score > bestScore {
+			bestLine, bestScore = index, score
+		}
+	}
+	return loader.excerptFromFile(SourceExcerpt{Path: document.Path}, file, graph.Range{
+		Start: graph.Position{Line: int32(bestLine), Byte: -1},
+		End:   graph.Position{Line: int32(bestLine), Byte: -1},
+	})
+}
+
+func expandedDefinition(file sourceFile, language string, sourceRange graph.Range, kind string) (graph.Range, bool) {
+	if expanded, ok := expandedGoDefinition(file, language, sourceRange, kind); ok {
+		return expanded, true
+	}
+	return expandedMarkdownSection(file, language, sourceRange, kind)
 }
 
 func (loader *sourceLoader) file(ctx context.Context, repository Repository, document graph.Document) sourceFile {
@@ -149,9 +191,9 @@ func expandedGoDefinition(file sourceFile, language string, sourceRange graph.Ra
 		return graph.Range{}, false
 	}
 	targetLine := int(sourceRange.Start.Line) + 1
-	var selected *ast.FuncDecl
-	ast.Inspect(parsed, func(node ast.Node) bool {
-		declaration, ok := node.(*ast.FuncDecl)
+	var selected *goast.FuncDecl
+	goast.Inspect(parsed, func(node goast.Node) bool {
+		declaration, ok := node.(*goast.FuncDecl)
 		if !ok {
 			return true
 		}
@@ -170,6 +212,87 @@ func expandedGoDefinition(file sourceFile, language string, sourceRange graph.Ra
 		Start: graph.Position{Line: int32(start.Line - 1), Column: int32(start.Column - 1), Byte: int64(start.Offset)},
 		End:   graph.Position{Line: int32(end.Line - 1), Column: int32(end.Column - 1), Byte: int64(end.Offset)},
 	}, true
+}
+
+func expandedMarkdownSection(file sourceFile, language string, sourceRange graph.Range, kind string) (graph.Range, bool) {
+	if file.status != SourceCurrent || language != "markdown" || (kind != "section" && kind != "document") {
+		return graph.Range{}, false
+	}
+	content := []byte(strings.Join(file.lines, "\n"))
+	content = maskMarkdownFrontMatter(content)
+	document := goldmark.New().Parser().Parse(text.NewReader(content))
+	type heading struct {
+		line  int
+		level int
+	}
+	var headings []heading
+	if err := mdast.Walk(document, func(node mdast.Node, entering bool) (mdast.WalkStatus, error) {
+		value, ok := node.(*mdast.Heading)
+		if !entering || !ok || value.Lines().Len() == 0 {
+			return mdast.WalkContinue, nil
+		}
+		offset := value.Lines().At(0).Start
+		headings = append(headings, heading{line: bytes.Count(content[:offset], []byte{'\n'}), level: value.Level})
+		return mdast.WalkContinue, nil
+	}); err != nil {
+		return graph.Range{}, false
+	}
+	if kind == "document" {
+		endLine := len(file.lines)
+		if len(headings) != 0 {
+			endLine = max(1, headings[0].line)
+		}
+		return graph.Range{
+			Start: graph.Position{Line: 0, Column: 0, Byte: 0},
+			End:   graph.Position{Line: int32(endLine), Column: 0, Byte: -1},
+		}, true
+	}
+	targetLine := int(sourceRange.Start.Line)
+	for index, candidate := range headings {
+		if candidate.line != targetLine {
+			continue
+		}
+		endLine := len(file.lines)
+		for _, next := range headings[index+1:] {
+			if next.level <= candidate.level {
+				endLine = next.line
+				break
+			}
+		}
+		return graph.Range{
+			Start: graph.Position{Line: int32(candidate.line), Column: 0, Byte: -1},
+			End:   graph.Position{Line: int32(endLine), Column: 0, Byte: -1},
+		}, true
+	}
+	return graph.Range{}, false
+}
+
+func maskMarkdownFrontMatter(content []byte) []byte {
+	if !bytes.HasPrefix(content, []byte("---\n")) && !bytes.HasPrefix(content, []byte("---\r\n")) {
+		return content
+	}
+	masked := append([]byte(nil), content...)
+	opening := bytes.IndexByte(masked, '\n') + 1
+	for cursor := opening; cursor <= len(masked); {
+		next := bytes.IndexByte(masked[cursor:], '\n')
+		end := len(masked)
+		if next >= 0 {
+			end = cursor + next
+		}
+		if bytes.Equal(bytes.TrimSuffix(masked[cursor:end], []byte{'\r'}), []byte("---")) {
+			for index := 0; index < end; index++ {
+				if masked[index] != '\n' && masked[index] != '\r' {
+					masked[index] = ' '
+				}
+			}
+			return masked
+		}
+		if next < 0 {
+			return content
+		}
+		cursor = end + 1
+	}
+	return content
 }
 
 func loadSourceFile(ctx context.Context, root string, document graph.Document) sourceFile {

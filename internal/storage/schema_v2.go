@@ -5,7 +5,7 @@ import "github.com/TheFellow/weave/internal/graph"
 // StorageSchemaVersion is independent from graph.SchemaVersion: the latter is
 // the stable normalized/export model, while this number describes the private,
 // disposable bstore layout.
-const StorageSchemaVersion uint32 = 2
+const StorageSchemaVersion uint32 = 3
 
 type internRecord struct {
 	ID    uint32 `bstore:"typename WeaveV2Intern"`
@@ -60,6 +60,7 @@ type symbolRecord struct {
 	Kind           uint32 `bstore:"index"`
 	Document       uint64 `bstore:"index"`
 	DocumentStable string
+	SearchTerms    string
 }
 
 type symbolDetailRecord struct {

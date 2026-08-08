@@ -12,7 +12,11 @@ import (
 )
 
 // SchemaVersion is the current normalized fact schema stored by Weave.
-const SchemaVersion uint32 = 1
+const SchemaVersion uint32 = 2
+
+// MaxSearchTerms bounds provider-supplied lexical discovery hints per entity.
+// Terms are a compact query projection, not source text or semantic evidence.
+const MaxSearchTerms = 2048
 
 // Evidence describes how a fact was established.
 type Evidence string
@@ -96,8 +100,12 @@ type Symbol struct {
 	StableName     string `json:"stable_name"`
 	DisplayName    string `json:"display_name"`
 	NormalizedName string `json:"normalized_name"`
-	Kind           string `json:"kind"`
-	DocumentID     string `json:"document_id,omitempty"`
+	// SearchTerms are normalized lexical discovery hints for this exact entity.
+	// They let structured content and other providers make body concepts
+	// discoverable without storing source text in the graph.
+	SearchTerms []string `json:"search_terms,omitempty"`
+	Kind        string   `json:"kind"`
+	DocumentID  string   `json:"document_id,omitempty"`
 	// Definition is the canonical display anchor. All binding sites are retained
 	// as definition occurrences because some languages permit repeated bindings.
 	Definition Range    `json:"definition"`
@@ -195,6 +203,20 @@ func (f UnitFacts) Validate() error {
 		}
 		if symbol.NormalizedName == "" {
 			symbol.NormalizedName = NormalizeName(symbol.DisplayName)
+		}
+		if len(symbol.SearchTerms) > MaxSearchTerms {
+			return fmt.Errorf("symbol %q: search terms exceed %d", symbol.ID, MaxSearchTerms)
+		}
+		for index, term := range symbol.SearchTerms {
+			if len(term) > 128 {
+				return fmt.Errorf("symbol %q: search term exceeds 128 bytes", symbol.ID)
+			}
+			if tokens := Tokens(term); len(tokens) != 1 || tokens[0] != term {
+				return fmt.Errorf("symbol %q: search term %q is not one normalized token", symbol.ID, term)
+			}
+			if index != 0 && symbol.SearchTerms[index-1] >= term {
+				return fmt.Errorf("symbol %q: search terms are not sorted and unique", symbol.ID)
+			}
 		}
 		if symbol.DocumentID != "" {
 			if _, ok := documents[symbol.DocumentID]; !ok {
@@ -359,6 +381,30 @@ func Tokens(value string) []string {
 		previous = r
 	}
 	flush()
+	slices.Sort(tokens)
+	return slices.Compact(tokens)
+}
+
+// ExtractSearchTerms returns the bounded normalized token set used by
+// provider-owned lexical discovery projections.
+func ExtractSearchTerms(value string) []string {
+	tokens := Tokens(value)
+	result := tokens[:0]
+	for _, token := range tokens {
+		if len(token) >= 3 && len(token) <= 128 {
+			result = append(result, token)
+		}
+		if len(result) == MaxSearchTerms {
+			break
+		}
+	}
+	return result
+}
+
+// SymbolTokens returns every deduplicated posting for a symbol's display name
+// and provider-supplied discovery terms.
+func SymbolTokens(symbol Symbol) []string {
+	tokens := append(Tokens(symbol.DisplayName), symbol.SearchTerms...)
 	slices.Sort(tokens)
 	return slices.Compact(tokens)
 }

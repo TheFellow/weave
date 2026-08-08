@@ -137,6 +137,13 @@ Queries should prefer those complete occurrences. Until the first stable wire
 specification is published, this document, the fixtures, and the Go model must
 change together. A future stable encoding is not required to be protobuf.
 
+A symbol may include up to 2,048 sorted unique `search_terms`. Each value is one
+lowercase normalized identifier token of at most 128 bytes. Terms make the
+exact entity discoverable by additional provider-owned lexical concepts—for
+example, prose in a Markdown section. They are not source text, semantic facts,
+or evidence and cannot imply an edge. Providers should omit them unless they
+can deterministically derive them from that entity's authoritative input.
+
 ## Additive enrichment and composition
 
 Each successful run replaces only the complete inventory owned by the run's

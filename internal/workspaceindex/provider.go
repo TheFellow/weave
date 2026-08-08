@@ -25,10 +25,12 @@ import (
 
 const (
 	providerName         = "weave-workspace"
-	providerVersion      = "1"
+	providerVersion      = "4"
 	maxInventoryBytes    = 16 << 20
 	maxDocumentBytes     = 16 << 20
 	maxAllDocumentsBytes = 512 << 20
+	maxLexicalFileBytes  = 2 << 20
+	maxAllLexicalBytes   = 512 << 20
 	maxInventoryPaths    = 250_000
 	maxInventoryFacts    = 1_000_000
 	maxDocumentFacts     = 250_000
@@ -50,10 +52,20 @@ type entry struct {
 	info   os.FileInfo
 }
 
+type lexicalFile struct {
+	digest string
+	terms  []string
+}
+
 // Refresh inventories Git-visible paths, parses structured documents, and
 // replaces only units whose normalized inputs changed.
 func (provider Provider) Refresh(ctx context.Context, request freshness.Request) (freshness.Result, error) {
 	entries, err := inventory(ctx, request.Repository.Root)
+	if err != nil {
+		return freshness.Result{}, err
+	}
+	previous := previousUnits(request.Previous)
+	changed, err := changedPaths(ctx, request, previous)
 	if err != nil {
 		return freshness.Result{}, err
 	}
@@ -94,8 +106,37 @@ func (provider Provider) Refresh(ctx context.Context, request freshness.Request)
 		models[item.path] = model
 	}
 
+	lexical := make(map[string]lexicalFile)
+	var lexicalBytes int64
+	for _, item := range entries {
+		if item.kind != "file" || isMarkdown(item.path) || isAsset(item.path) {
+			continue
+		}
+		unitID := stableID("unit", request.Repository.Identity, item.path)
+		if changed != nil && !changed[item.path] {
+			if _, exists := previous[unitID]; exists {
+				continue
+			}
+		}
+		content, readErr := readBounded(filepath.Join(request.Repository.Root, filepath.FromSlash(item.path)), item.info, maxLexicalFileBytes)
+		if errors.Is(readErr, errDocumentTooLarge) {
+			continue
+		}
+		if readErr != nil {
+			return freshness.Result{}, fmt.Errorf("read lexical file %q: %w", item.path, readErr)
+		}
+		if !utf8.Valid(content) || bytes.IndexByte(content, 0) >= 0 {
+			continue
+		}
+		lexicalBytes += int64(len(content))
+		if lexicalBytes > maxAllLexicalBytes {
+			break
+		}
+		digest := sha256.Sum256(content)
+		lexical[item.path] = lexicalFile{digest: hex.EncodeToString(digest[:]), terms: graph.ExtractSearchTerms(string(content))}
+	}
+
 	resolver := newResolver(request.Repository.Identity, entries, models)
-	previous := previousUnits(request.Previous)
 	result := freshness.Result{Diagnostics: diagnostics}
 
 	inventoryFacts, err := buildInventory(request.Repository.Identity, entries, models, resolver)
@@ -111,7 +152,16 @@ func (provider Provider) Refresh(ctx context.Context, request freshness.Request)
 		if model, ok := models[item.path]; ok {
 			facts = model.facts(resolver)
 		} else {
-			facts = fileFacts(request.Repository.Identity, item)
+			unitID := stableID("unit", request.Repository.Identity, item.path)
+			value, indexed := lexical[item.path]
+			if changed != nil && !changed[item.path] && !indexed {
+				if old, exists := previous[unitID]; exists {
+					result.Units = append(result.Units, old)
+					delete(previous, unitID)
+					continue
+				}
+			}
+			facts = fileFacts(request.Repository.Identity, item, value, indexed)
 		}
 		if count := len(facts.Documents) + len(facts.Symbols) + len(facts.Occurrences) + len(facts.Edges); count > maxDocumentFacts {
 			return freshness.Result{}, fmt.Errorf("unit %q unexpectedly exceeds %d facts", item.path, maxDocumentFacts)
@@ -127,6 +177,21 @@ func (provider Provider) Refresh(ctx context.Context, request freshness.Request)
 	slices.SortFunc(result.Units, func(a, b freshness.Unit) int { return strings.Compare(a.ID, b.ID) })
 	slices.Sort(result.Removed)
 	slices.SortFunc(result.Batches, func(a, b graph.UnitFacts) int { return strings.Compare(a.Unit.ID, b.Unit.ID) })
+	return result, nil
+}
+
+func changedPaths(ctx context.Context, request freshness.Request, previous map[string]freshness.Unit) (map[string]bool, error) {
+	if request.Force || request.Previous == nil || len(previous) == 0 || request.Previous.Commit == "" {
+		return nil, nil
+	}
+	paths, err := request.Repository.DiffPaths(ctx, request.Previous.Commit)
+	if err != nil {
+		return nil, fmt.Errorf("find changed workspace paths: %w", err)
+	}
+	result := make(map[string]bool, len(paths))
+	for _, name := range paths {
+		result[filepath.ToSlash(name)] = true
+	}
 	return result, nil
 }
 
@@ -278,18 +343,26 @@ func isMarkdown(name string) bool {
 	return base == "llms.txt" || base == "llms-full.txt"
 }
 
-func fileFacts(identity string, item entry) graph.UnitFacts {
+func fileFacts(identity string, item entry, lexical lexicalFile, indexed bool) graph.UnitFacts {
 	unitID := stableID("unit", identity, item.path)
 	kind := item.kind
 	if kind == "file" && isAsset(item.path) {
 		kind = "asset"
 	}
-	fingerprint := digest("file", providerVersion, item.path, kind, item.target)
+	fingerprintValues := []string{"file", providerVersion, item.path, kind, item.target}
+	if indexed {
+		fingerprintValues = append(fingerprintValues, lexical.digest)
+	}
+	fingerprint := digest(fingerprintValues...)
+	searchTerms := []string(nil)
+	if indexed {
+		searchTerms = lexical.terms
+	}
 	return graph.UnitFacts{
 		Unit: graph.Unit{ID: unitID, Provider: providerName, ProviderVersion: providerVersion, Variant: kind, InputFingerprint: fingerprint, SurfaceFingerprint: fingerprint},
 		Symbols: []graph.Symbol{{
 			ID: fileSymbolID(identity, item.path), UnitID: unitID, StableName: item.path, DisplayName: path.Base(item.path),
-			Kind: kind, Provider: providerName, Evidence: graph.EvidenceExact,
+			SearchTerms: searchTerms, Kind: kind, Provider: providerName, Evidence: graph.EvidenceExact,
 		}},
 	}
 }

@@ -105,6 +105,7 @@ type symbolRecord struct {
 	StableName     string
 	DisplayName    string
 	NormalizedName string
+	SearchTerms    string
 	Kind           string
 	DocumentID     string
 	Definition     graph.Range
@@ -505,7 +506,7 @@ func upsertSymbol(tx *bstore.Tx, sourceID string, symbol graph.Symbol) error {
 }
 
 func insertTokens(tx *bstore.Tx, sourceID, symbolID string, symbol graph.Symbol) error {
-	for _, token := range graph.Tokens(symbol.DisplayName) {
+	for _, token := range graph.SymbolTokens(symbol) {
 		record := tokenRecord{ID: sourceID + "\x1f" + token + "\x1f" + symbol.ID, SourceID: sourceID, Token: token, SymbolID: symbolID}
 		if err := tx.Insert(&record); err != nil {
 			return err
@@ -566,11 +567,15 @@ func sourceIndexID(sourceID string) string {
 
 func toSymbolRecord(sourceID string, value graph.Symbol) symbolRecord {
 	indexedSource := sourceIndexID(sourceID)
-	return symbolRecord{indexedSource + "\x1f" + value.ID, value.ID, indexedSource, value.UnitID, value.StableName, value.DisplayName, value.NormalizedName, value.Kind, value.DocumentID, value.Definition, value.Provider, string(value.Evidence)}
+	return symbolRecord{indexedSource + "\x1f" + value.ID, value.ID, indexedSource, value.UnitID, value.StableName, value.DisplayName, value.NormalizedName, strings.Join(value.SearchTerms, "\x00"), value.Kind, value.DocumentID, value.Definition, value.Provider, string(value.Evidence)}
 }
 
 func fromSymbolRecord(value symbolRecord) graph.Symbol {
-	return graph.Symbol{ID: value.FactID, UnitID: value.UnitID, StableName: value.StableName, DisplayName: value.DisplayName, NormalizedName: value.NormalizedName, Kind: value.Kind, DocumentID: value.DocumentID, Definition: value.Definition, Provider: value.Provider, Evidence: graph.Evidence(value.Evidence)}
+	var searchTerms []string
+	if value.SearchTerms != "" {
+		searchTerms = strings.Split(value.SearchTerms, "\x00")
+	}
+	return graph.Symbol{ID: value.FactID, UnitID: value.UnitID, StableName: value.StableName, DisplayName: value.DisplayName, NormalizedName: value.NormalizedName, SearchTerms: searchTerms, Kind: value.Kind, DocumentID: value.DocumentID, Definition: value.Definition, Provider: value.Provider, Evidence: graph.Evidence(value.Evidence)}
 }
 
 func toEdgeRecord(sourceID string, value graph.Edge) edgeRecord {

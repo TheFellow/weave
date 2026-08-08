@@ -41,6 +41,19 @@ func TestExploreTermsRetainEvidenceTermsFromLongResearchQuestion(t *testing.T) {
 	}
 }
 
+func TestExploreTermsDoNotLoseTheEndOfAnAgentResearchQuestion(t *testing.T) {
+	question := "Explain why query latency alone is insufficient to evaluate Weave as an agent research tool. Describe the limitations of the initial uncontrolled dogfood, how observed agent friction should feed product changes, how the paired with-Weave and without-Weave arms isolate the tool, which artifacts and measurements are retained, how answer correctness is checked, and how the first paired result should and should not be interpreted."
+	terms := exploreTerms(question)
+	for _, want := range []string{"latency", "uncontrolled", "friction", "artifacts", "measurements", "correctness", "result"} {
+		if !containsString(terms, want) {
+			t.Fatalf("terms %v omit %q", terms, want)
+		}
+	}
+	if shouldResolveExact(question) {
+		t.Fatal("long research question was treated as one exact symbol query")
+	}
+}
+
 func TestDiversifyExplicitScopesRetainsGUIAndTUI(t *testing.T) {
 	candidates := []scoredSymbol{
 		{symbol: graph.Symbol{ID: "gui-publish", StableName: "example/app/domains/menus/surfaces/gui.type.Presenter.method.Publish"}, score: 100},
@@ -63,6 +76,53 @@ func TestDiversifyMethodContainersDefersSiblingHelpers(t *testing.T) {
 	got := diversifyMethodContainers(candidates)
 	if got[0].symbol.ID != "publish" || got[1].symbol.ID != "module" || got[2].symbol.ID != "helper" {
 		t.Fatalf("diversified candidates = %#v", got)
+	}
+}
+
+func TestDiversifyContentNamesDefersGeneratedCopies(t *testing.T) {
+	candidates := []scoredSymbol{
+		{symbol: graph.Symbol{ID: "authored", Kind: "section", DisplayName: "Storage model"}},
+		{symbol: graph.Symbol{ID: "generated", Kind: "section", DisplayName: "Storage model"}},
+		{symbol: graph.Symbol{ID: "constraints", Kind: "section", DisplayName: "Concurrency constraints"}},
+	}
+	got := diversifyContentNames(candidates)
+	if got[0].symbol.ID != "authored" || got[1].symbol.ID != "constraints" || got[2].symbol.ID != "generated" {
+		t.Fatalf("diversified content candidates = %#v", got)
+	}
+}
+
+func TestExploreContentSpecificityPenalizesBroadGeneratedRepresentations(t *testing.T) {
+	specific := graph.Symbol{Kind: "section", SearchTerms: make([]string, 80), Evidence: graph.EvidenceSyntactic}
+	broad := graph.Symbol{Kind: "section", SearchTerms: make([]string, 2048), Evidence: graph.EvidenceGenerated}
+	if exploreContentSpecificityScore(specific) <= exploreContentSpecificityScore(broad) {
+		t.Fatalf("specific score %d did not beat broad score %d", exploreContentSpecificityScore(specific), exploreContentSpecificityScore(broad))
+	}
+}
+
+func TestExploreRarityPrefersDiscriminatingTerms(t *testing.T) {
+	if exploreRarityScore(4, false) <= exploreRarityScore(64, false) || exploreRarityScore(64, false) <= exploreRarityScore(512, true) {
+		t.Fatal("rarity score does not prefer bounded uncommon terms")
+	}
+}
+
+func TestExploreTermVariantsHandleCommonSuffixes(t *testing.T) {
+	for input, want := range map[string]string{"retained": "retains", "measurements": "measurement", "losses": "loss", "queries": "query"} {
+		if !containsString(exploreTermVariants(input), want) {
+			t.Fatalf("variants for %q = %v, omit %q", input, exploreTermVariants(input), want)
+		}
+	}
+}
+
+func TestContentDocumentScopeKeepsRelatedSectionsTogether(t *testing.T) {
+	candidates := []scoredSymbol{
+		{symbol: graph.Symbol{StableName: "guide.md#result", Kind: "section"}, score: 100},
+		{symbol: graph.Symbol{StableName: "other.md#noise", Kind: "section"}, score: 95},
+		{symbol: graph.Symbol{StableName: "guide.md#controls", Kind: "section"}, score: 70},
+		{symbol: graph.Symbol{StableName: "guide.md#limits", Kind: "section"}, score: 60},
+	}
+	got := applyContentDocumentScope(candidates)
+	if got[2].score != 110 || got[3].score != 100 || got[1].score != 95 {
+		t.Fatalf("scoped scores = %#v", got)
 	}
 }
 

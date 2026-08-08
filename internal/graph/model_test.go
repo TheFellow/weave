@@ -24,6 +24,28 @@ func TestTokensSplitIdentifiersDeterministically(t *testing.T) {
 	}
 }
 
+func TestExtractSearchTermsBoundsAndNormalizesContent(t *testing.T) {
+	t.Parallel()
+	got := graph.ExtractSearchTerms("Latency alone is insufficient; retained ARTIFACTS make correctness auditable. x " + strings.Repeat("z", 129))
+	want := []string{"alone", "artifacts", "auditable", "correctness", "insufficient", "latency", "make", "retained"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ExtractSearchTerms() = %q, want %q", got, want)
+	}
+}
+
+func TestUnitFactsValidationRejectsInvalidSearchTerms(t *testing.T) {
+	facts := graph.UnitFacts{
+		Unit: graph.Unit{ID: "unit", Provider: "fixture", ProviderVersion: "1"},
+		Symbols: []graph.Symbol{{
+			ID: "symbol", UnitID: "unit", StableName: "Symbol", DisplayName: "Symbol", SearchTerms: []string{"Not-Normalized"},
+			Kind: "section", Provider: "fixture", Evidence: graph.EvidenceSyntactic,
+		}},
+	}
+	if err := facts.Validate(); err == nil || !strings.Contains(err.Error(), "search term") {
+		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
 func TestUnitFactsValidationRejectsCrossUnitDocument(t *testing.T) {
 	t.Parallel()
 	facts := graph.UnitFacts{

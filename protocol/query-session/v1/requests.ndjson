@@ -1,0 +1,3 @@
+{"protocol":"weave.query-session/v1","id":"research","command":"explore","arguments":["where is publish authorization enforced"],"limit":6,"max_source_bytes":32768}
+{"protocol":"weave.query-session/v1","id":"definition","command":"definition","arguments":["Module.Publish"],"limit":10}
+{"protocol":"weave.query-session/v1","id":"path","command":"path","arguments":["Commands.Publish","dao.Update"],"max_depth":8,"max_edges":2000,"limit":100}

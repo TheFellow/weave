@@ -23,6 +23,7 @@ import (
 	"github.com/TheFellow/weave/internal/graph"
 	"github.com/TheFellow/weave/internal/graphdiff"
 	"github.com/TheFellow/weave/internal/query"
+	"github.com/TheFellow/weave/internal/querysession"
 	"github.com/TheFellow/weave/internal/watch"
 	cli "github.com/urfave/cli/v3"
 )
@@ -43,6 +44,7 @@ func New(app application.Service, streams Streams) *cli.Command {
 		lifecycle(app, streams, "init", "initialize Weave for a repository"),
 		indexCommand(app, streams),
 		watchCommand(app, streams),
+		sessionCommand(app, streams),
 		lifecycle(app, streams, "status", "show index and freshness status"),
 		lookup(app, streams, "symbols", "find symbols"),
 		contextCommand(app, streams),
@@ -68,6 +70,25 @@ func New(app application.Service, streams Streams) *cli.Command {
 		versionCommand(app, streams),
 	}
 	return root
+}
+
+func sessionCommand(app application.Service, streams Streams) *cli.Command {
+	return &cli.Command{
+		Name: "session", Usage: "serve persistent bounded agent queries over NDJSON",
+		UsageText: "weave session",
+		Action: func(ctx context.Context, cmd *cli.Command) error {
+			if cmd.Args().Len() != 0 {
+				return cli.Exit("session expects no arguments", 2)
+			}
+			factory, ok := app.(application.ResidentFactory)
+			if !ok {
+				return errors.New("application does not support resident query sessions")
+			}
+			resident := factory.Resident()
+			defer resident.Close()
+			return querysession.Serve(ctx, resident, streams.Stdin, streams.Stdout)
+		},
+	}
 }
 
 func watchCommand(app application.Service, streams Streams) *cli.Command {

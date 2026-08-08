@@ -25,6 +25,7 @@ import (
 	"github.com/TheFellow/weave/internal/graph"
 	"github.com/TheFellow/weave/internal/graphdiff"
 	"github.com/TheFellow/weave/internal/query"
+	"github.com/TheFellow/weave/internal/querysession"
 	"github.com/TheFellow/weave/internal/storage"
 	"github.com/TheFellow/weave/internal/watch"
 	"github.com/scip-code/scip/bindings/go/scip"
@@ -289,6 +290,40 @@ func TestWatchCommandRejectsArgumentsBoundsAndUnsupportedApplication(t *testing.
 	local := application.Local{}
 	if err := local.Watch(context.Background(), watch.Options{PollInterval: watch.DefaultPollInterval}, func(watch.Event) error { return nil }); err == nil || !strings.Contains(err.Error(), "repository-managed freshness") {
 		t.Fatalf("unmanaged local watch error = %v", err)
+	}
+}
+
+func TestSessionCommandServesMultipleQueriesThroughOneResident(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "index.db")
+	db, err := storage.Open(ctx, path, storage.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.ReplaceUnit(ctx, commandFixture()); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	input := strings.Join([]string{
+		`{"protocol":"weave.query-session/v1","id":"one","command":"symbols","arguments":["authorize"]}`,
+		`{"protocol":"weave.query-session/v1","id":"two","command":"callees","arguments":["fixture.HandleRequest"]}`,
+	}, "\n") + "\n"
+	var output bytes.Buffer
+	root := command.New(application.Local{DatabasePath: path}, command.Streams{Stdin: strings.NewReader(input), Stdout: &output, Stderr: &bytes.Buffer{}})
+	if err := root.Run(ctx, []string{"weave", "session"}); err != nil {
+		t.Fatal(err)
+	}
+	decoder := json.NewDecoder(&output)
+	for _, wantID := range []string{"one", "two"} {
+		var frame querysession.Frame
+		if err := decoder.Decode(&frame); err != nil {
+			t.Fatal(err)
+		}
+		if frame.ID != wantID || frame.Result == nil || frame.Error != nil {
+			t.Fatalf("frame = %#v", frame)
+		}
 	}
 }
 

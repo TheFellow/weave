@@ -61,6 +61,7 @@ func TestEnsureDeterministicQueryEquivalentAndProvenance(t *testing.T) {
 	ctx := context.Background()
 	directory := filepath.Join(t.TempDir(), "aggregate")
 	target := symbol("target", "Target")
+	target.SearchTerms = []string{"authorization", "enforcement"}
 	caller := symbol("caller", "CallTarget")
 	call := graph.Edge{ID: "call", UnitID: "unit", From: caller.ID, To: target.ID, Kind: graph.EdgeCalls, Evidence: graph.EvidenceExact, Provider: "fixture"}
 	firstStore := &fixtureSource{symbols: []graph.Symbol{caller, target}, edges: []graph.Edge{call}}
@@ -78,6 +79,10 @@ func TestEnsureDeterministicQueryEquivalentAndProvenance(t *testing.T) {
 	values, truncated, err := db.FindSymbols(ctx, "Target", 10)
 	if err != nil || truncated || len(values) != 2 || values[0].ID != target.ID {
 		t.Fatalf("FindSymbols = %#v, %t, %v", values, truncated, err)
+	}
+	values, truncated, err = db.FindSymbols(ctx, "authorization", 10)
+	if err != nil || truncated || len(values) != 1 || !reflect.DeepEqual(values[0].SearchTerms, target.SearchTerms) {
+		t.Fatalf("search-term FindSymbols = %#v, %t, %v", values, truncated, err)
 	}
 	edges, truncated, err := db.EdgesTo(ctx, target.ID, []graph.EdgeKind{graph.EdgeCalls}, 10)
 	if err != nil || truncated || !reflect.DeepEqual(edges, []graph.Edge{call}) {

@@ -422,6 +422,27 @@ func (model *documentModel) sectionAt(offset int) string {
 	return result
 }
 
+func (model *documentModel) headingSearchTerms(index int) []string {
+	heading := model.headings[index]
+	end := len(model.content)
+	if index+1 < len(model.headings) {
+		end = model.headings[index+1].start
+	}
+	start := min(max(heading.end, 0), end)
+	return graph.ExtractSearchTerms(string(model.content[start:end]))
+}
+
+func (model *documentModel) preludeSearchTerms() []string {
+	end := len(model.content)
+	if len(model.headings) != 0 {
+		end = model.headings[0].start
+	}
+	metadata := append([]string{model.metadata.Title, model.metadata.Series}, model.metadata.Topics...)
+	metadata = append(metadata, model.metadata.Tags...)
+	metadata = append(metadata, model.metadata.Categories...)
+	return graph.ExtractSearchTerms(strings.Join(metadata, " ") + " " + string(model.content[:max(0, end)]))
+}
+
 func parseHTML(content []byte, base int) ([]rawHeading, []linkModel, []generatedMarker, error) {
 	tokenizer := html.NewTokenizer(bytes.NewReader(content))
 	tokenizer.SetMaxBuf(maxDestinationBytes * 2)
@@ -942,25 +963,30 @@ func (model *documentModel) facts(resolver *resolver) graph.UnitFacts {
 		title = path.Base(model.path)
 	}
 	zero := model.sourceRange(0, 0)
+	contentEvidence := graph.EvidenceSyntactic
+	base := strings.ToLower(path.Base(model.path))
+	if model.generatedFrom != "" || base == "llms.txt" || base == "llms-full.txt" {
+		contentEvidence = graph.EvidenceGenerated
+	}
 	facts.Symbols = append(facts.Symbols, graph.Symbol{
-		ID: rootID, UnitID: unitID, StableName: model.path, DisplayName: title, Kind: "document", DocumentID: documentID,
-		Definition: zero, Provider: providerName, Evidence: graph.EvidenceSyntactic,
+		ID: rootID, UnitID: unitID, StableName: model.path, DisplayName: title, SearchTerms: model.preludeSearchTerms(), Kind: "document", DocumentID: documentID,
+		Definition: zero, Provider: providerName, Evidence: contentEvidence,
 	})
 	facts.Occurrences = append(facts.Occurrences, graph.Occurrence{
 		ID: stableID("occurrence", unitID, rootID, "definition"), UnitID: unitID, SymbolID: rootID, DocumentID: documentID,
-		Role: "definition", Range: zero, Provider: providerName, Evidence: graph.EvidenceSyntactic,
+		Role: "definition", Range: zero, Provider: providerName, Evidence: contentEvidence,
 	})
-	for _, heading := range model.headings {
+	for index, heading := range model.headings {
 		sourceRange := model.sourceRange(heading.start, heading.end)
 		facts.Symbols = append(facts.Symbols, graph.Symbol{
-			ID: heading.id, UnitID: unitID, StableName: model.path + "#" + heading.anchor, DisplayName: heading.title, Kind: "section",
-			DocumentID: documentID, Definition: sourceRange, Provider: providerName, Evidence: graph.EvidenceSyntactic,
+			ID: heading.id, UnitID: unitID, StableName: model.path + "#" + heading.anchor, DisplayName: heading.title, SearchTerms: model.headingSearchTerms(index), Kind: "section",
+			DocumentID: documentID, Definition: sourceRange, Provider: providerName, Evidence: contentEvidence,
 		})
 		facts.Occurrences = append(facts.Occurrences, graph.Occurrence{
 			ID: stableID("occurrence", unitID, heading.id, "definition"), UnitID: unitID, SymbolID: heading.id, DocumentID: documentID,
-			Role: "definition", Range: sourceRange, Provider: providerName, Evidence: graph.EvidenceSyntactic,
+			Role: "definition", Range: sourceRange, Provider: providerName, Evidence: contentEvidence,
 		})
-		facts.Edges = append(facts.Edges, sourceEdge(unitID, heading.parent, heading.id, graph.EdgeContains, graph.EvidenceSyntactic, documentID, sourceRange))
+		facts.Edges = append(facts.Edges, sourceEdge(unitID, heading.parent, heading.id, graph.EdgeContains, contentEvidence, documentID, sourceRange))
 	}
 	for _, block := range model.blocks {
 		sourceRange := model.sourceRange(block.start, block.end)
@@ -970,9 +996,10 @@ func (model *documentModel) facts(resolver *resolver) graph.UnitFacts {
 		}
 		facts.Symbols = append(facts.Symbols, graph.Symbol{
 			ID: block.id, UnitID: unitID, StableName: fmt.Sprintf("%s#code-%d", model.path, block.ordinal), DisplayName: display,
-			Kind: "code-block", DocumentID: documentID, Definition: sourceRange, Provider: providerName, Evidence: graph.EvidenceSyntactic,
+			SearchTerms: graph.ExtractSearchTerms(string(model.content[max(0, block.start):min(len(model.content), block.end)])),
+			Kind:        "code-block", DocumentID: documentID, Definition: sourceRange, Provider: providerName, Evidence: contentEvidence,
 		})
-		facts.Edges = append(facts.Edges, sourceEdge(unitID, block.parent, block.id, graph.EdgeContains, graph.EvidenceSyntactic, documentID, sourceRange))
+		facts.Edges = append(facts.Edges, sourceEdge(unitID, block.parent, block.id, graph.EdgeContains, contentEvidence, documentID, sourceRange))
 	}
 	for _, link := range model.links {
 		target, resolved := resolver.resolve(model.path, link.destination)

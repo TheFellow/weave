@@ -175,6 +175,121 @@ func TestExploreBuildsBoundedDossiersFromResearchPhrase(t *testing.T) {
 	}
 }
 
+func TestExploreReturnsCompleteMarkdownSection(t *testing.T) {
+	ctx := context.Background()
+	content := "# Guide\n\nIntroduction.\n\n## Generated files\n\nEdit sources, then regenerate outputs.\n\n### Validation\n\nGenerated links stay in Markdown.\n\n## Preview\n\nRun the local server.\n"
+	root := gitRepository(t, map[string]string{"README.md": content})
+	definition := occurrence("section-definition", "section-id", "document-id", "definition", 4, 0, 18)
+	definition.Provider = "weave-workspace"
+	definition.Evidence = graph.EvidenceSyntactic
+	facts := graph.UnitFacts{
+		Unit: graph.Unit{ID: "unit", Provider: "weave-workspace", ProviderVersion: "1"},
+		Documents: []graph.Document{{
+			ID: "document-id", UnitID: "unit", Path: "README.md", Language: "markdown", ContentHash: contentHash(content), Provider: "weave-workspace", ProviderVersion: "1",
+		}},
+		Symbols: []graph.Symbol{{
+			ID: "section-id", UnitID: "unit", StableName: "README.md#generated-files", DisplayName: "Generated files", SearchTerms: graph.ExtractSearchTerms("Edit sources, then regenerate outputs. Generated links stay in Markdown."), Kind: "section", DocumentID: "document-id",
+			Definition: definition.Range, Provider: "weave-workspace", Evidence: graph.EvidenceSyntactic,
+		}},
+		Occurrences: []graph.Occurrence{definition},
+	}
+	database := filepath.Join(t.TempDir(), "index.db")
+	writeFacts(t, database, facts)
+	db, err := storage.Open(ctx, database, storage.Options{MustExist: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	results, _, err := contextquery.Explore(ctx, db, "where should I edit sources and regenerate outputs while keeping links in Markdown", contextquery.ExploreOptions{
+		FocusLimit: 2,
+		Context:    contextquery.Options{Scope: "local", Limit: 4, ContextLines: 0, MaxSourceBytes: 4096},
+	}, fixedLocator(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 || len(results[0].Evidence) != 1 {
+		t.Fatalf("results = %#v", results)
+	}
+	lines := results[0].Evidence[0].Source.Lines
+	if len(lines) != 8 || lines[0].Text != "## Generated files" || lines[4].Text != "### Validation" || lines[6].Text != "Generated links stay in Markdown." {
+		t.Fatalf("section source = %#v", results[0].Evidence[0].Source)
+	}
+}
+
+func TestExploreReturnsMarkdownDocumentPrelude(t *testing.T) {
+	ctx := context.Background()
+	content := "---\ntitle: Guide\n---\n\nA semantic query needs useful evidence, not latency alone.\n\n## Details\n\nLater detail.\n"
+	root := gitRepository(t, map[string]string{"README.md": content})
+	definition := occurrence("document-definition", "document-symbol", "document-id", "definition", 0, 0, 0)
+	definition.Provider = "weave-workspace"
+	definition.Evidence = graph.EvidenceSyntactic
+	facts := graph.UnitFacts{
+		Unit: graph.Unit{ID: "unit", Provider: "weave-workspace", ProviderVersion: "4"},
+		Documents: []graph.Document{{
+			ID: "document-id", UnitID: "unit", Path: "README.md", Language: "markdown", ContentHash: contentHash(content), Provider: "weave-workspace", ProviderVersion: "4",
+		}},
+		Symbols: []graph.Symbol{{
+			ID: "document-symbol", UnitID: "unit", StableName: "README.md", DisplayName: "Guide", SearchTerms: graph.ExtractSearchTerms("A semantic query needs useful evidence, not latency alone."), Kind: "document", DocumentID: "document-id",
+			Definition: definition.Range, Provider: "weave-workspace", Evidence: graph.EvidenceSyntactic,
+		}},
+		Occurrences: []graph.Occurrence{definition},
+	}
+	database := filepath.Join(t.TempDir(), "index.db")
+	writeFacts(t, database, facts)
+	db, err := storage.Open(ctx, database, storage.Options{MustExist: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	results, _, err := contextquery.Explore(ctx, db, "document-symbol", contextquery.ExploreOptions{
+		FocusLimit: 2,
+		Context:    contextquery.Options{Scope: "local", Limit: 2, ContextLines: 0, MaxSourceBytes: 4096},
+	}, fixedLocator(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := results[0].Evidence[0].Source.Lines
+	if len(lines) != 6 || lines[0].Text != "---" || !strings.Contains(lines[4].Text, "useful evidence") {
+		t.Fatalf("document prelude = %#v", results[0].Evidence[0].Source)
+	}
+}
+
+func TestExploreRanksWholePhraseFileAndAnchorsMatchingSource(t *testing.T) {
+	ctx := context.Background()
+	content := "package demo\n\n// GatedDispatcher owns publication lifetime independently from background work.\ntype GatedDispatcher struct{}\n"
+	root := gitRepository(t, map[string]string{"dispatcher.go": content})
+	facts := graph.UnitFacts{
+		Unit: graph.Unit{ID: "unit", Provider: "weave-workspace", ProviderVersion: "2"},
+		Symbols: []graph.Symbol{
+			{ID: "file-id", UnitID: "unit", StableName: "dispatcher.go", DisplayName: "dispatcher.go", SearchTerms: graph.ExtractSearchTerms(content), Kind: "file", Provider: "weave-workspace", Evidence: graph.EvidenceExact},
+			{ID: "background-id", UnitID: "unit", StableName: "context.Background", DisplayName: "Background", Kind: "function", Provider: "weave-workspace", Evidence: graph.EvidenceExact},
+		},
+	}
+	database := filepath.Join(t.TempDir(), "index.db")
+	writeFacts(t, database, facts)
+	db, err := storage.Open(ctx, database, storage.Options{MustExist: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	results, _, err := contextquery.Explore(ctx, db, "publication lifetime independently from background work", contextquery.ExploreOptions{
+		FocusLimit: 2,
+		Context:    contextquery.Options{Scope: "local", Limit: 2, ContextLines: 0, MaxSourceBytes: 4096},
+	}, fixedLocator(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 2 || results[0].Focus.Symbol.ID != "file-id" {
+		t.Fatalf("ranked results = %#v", results)
+	}
+	if source := results[0].Evidence[0].Source; source.Status != contextquery.SourceCurrent || source.StartLine != 3 || len(source.Lines) != 1 || !strings.Contains(source.Lines[0].Text, "publication lifetime") {
+		t.Fatalf("lexical source = %#v", source)
+	}
+}
+
 func TestContextProjectsCurrentSourceForRelationshipEvidence(t *testing.T) {
 	ctx := context.Background()
 	content := "package demo\nfunc Target() { Helper() }\n"

@@ -41,6 +41,7 @@ func Explore(ctx context.Context, store Store, value string, options ExploreOpti
 	contextOptions := options.Context
 	contextOptions.MaxSourceBytes = max(1, options.Context.MaxSourceBytes/len(symbols))
 	contextOptions.FullDefinitions = true
+	contextOptions.LexicalTerms = exploreTerms(value)
 	results := make([]Result, 0, len(symbols))
 	for _, symbol := range symbols {
 		result, buildErr := Build(ctx, store, symbol.ID, contextOptions, locate)
@@ -59,10 +60,12 @@ type scoredSymbol struct {
 }
 
 func exploreCandidates(ctx context.Context, store Store, value string, limit int) ([]graph.Symbol, bool, error) {
-	if symbol, err := query.ResolveUnique(ctx, store, value); err == nil {
-		return []graph.Symbol{symbol}, false, nil
-	} else if !errors.Is(err, query.ErrAmbiguous) && !errors.Is(err, query.ErrNotFound) {
-		return nil, false, err
+	if shouldResolveExact(value) {
+		if symbol, err := query.ResolveUnique(ctx, store, value); err == nil {
+			return []graph.Symbol{symbol}, false, nil
+		} else if !errors.Is(err, query.ErrAmbiguous) && !errors.Is(err, query.ErrNotFound) {
+			return nil, false, err
+		}
 	}
 
 	terms := exploreTerms(value)
@@ -79,6 +82,7 @@ func exploreCandidates(ctx context.Context, store Store, value string, limit int
 	byID := map[string]scoredSymbol{}
 	truncated := false
 	for _, term := range searchTerms {
+		termMatches := map[string]scoredSymbol{}
 		for _, variant := range exploreTermVariants(term) {
 			matches, termTruncated, err := store.FindSymbols(ctx, variant, fetchLimit)
 			if err != nil {
@@ -86,29 +90,50 @@ func exploreCandidates(ctx context.Context, store Store, value string, limit int
 			}
 			truncated = truncated || termTruncated
 			for index, symbol := range matches {
-				candidate := byID[symbol.ID]
-				candidate.symbol = symbol
-				candidate.score += max(1, 5-index/8)
-				candidate.score += exploreNameScore(symbol, variant, term == searchTerms[0])
-				byID[symbol.ID] = candidate
+				score := max(1, 5-index/8) + exploreRarityScore(len(matches), termTruncated) + exploreNameScore(symbol, variant, len(terms) <= 12 && term == searchTerms[0])
+				if current, exists := termMatches[symbol.ID]; !exists || score > current.score {
+					termMatches[symbol.ID] = scoredSymbol{symbol: symbol, score: score}
+				}
 			}
+		}
+		for id, match := range termMatches {
+			candidate := byID[id]
+			candidate.symbol = match.symbol
+			candidate.score += match.score
+			byID[id] = candidate
 		}
 	}
 
 	candidates := make([]scoredSymbol, 0, len(byID))
 	for _, candidate := range byID {
 		candidate.score += exploreKindScore(candidate.symbol.Kind)
+		coverage := exploreSearchCoverage(candidate.symbol, searchTerms)
+		candidate.score += coverage * 10
+		if coverage >= 3 && coverage == len(searchTerms) && len(candidate.symbol.SearchTerms) <= max(256, len(searchTerms)*32) {
+			candidate.score += 100
+		}
+		candidate.score += exploreContentSpecificityScore(candidate.symbol)
+		if candidate.symbol.Evidence == graph.EvidenceGenerated {
+			candidate.score -= 80
+		}
 		if strings.HasPrefix(candidate.symbol.DisplayName, "Test") {
 			candidate.score -= 40
 		}
 		stable := strings.ToLower(candidate.symbol.StableName)
 		for _, term := range terms {
+			if strings.Contains(stable, term) {
+				// Repository paths and stable semantic names are durable scope
+				// signals even when that term was not the posting which first
+				// discovered the candidate.
+				candidate.score += 8
+			}
 			if exploreScopeTerm(term) && strings.Contains(stable, term) {
 				candidate.score += exploreScopeScore(term)
 			}
 		}
 		candidates = append(candidates, candidate)
 	}
+	candidates = applyContentDocumentScope(candidates)
 	candidates = applyExplicitDomainScope(candidates, terms)
 	slices.SortFunc(candidates, func(left, right scoredSymbol) int {
 		if left.score != right.score {
@@ -120,6 +145,7 @@ func exploreCandidates(ctx context.Context, store Store, value string, limit int
 		return strings.Compare(left.symbol.ID, right.symbol.ID)
 	})
 	candidates = diversifyMethodContainers(candidates)
+	candidates = diversifyContentNames(candidates)
 	candidates = diversifyExplicitScopes(candidates, terms, limit)
 	if len(candidates) > limit {
 		candidates = candidates[:limit]
@@ -130,6 +156,109 @@ func exploreCandidates(ctx context.Context, store Store, value string, limit int
 		result = append(result, candidate.symbol)
 	}
 	return result, truncated, nil
+}
+
+func applyContentDocumentScope(candidates []scoredSymbol) []scoredSymbol {
+	bestPath, bestScore := "", 0
+	for _, candidate := range candidates {
+		if candidate.symbol.Kind != "section" && candidate.symbol.Kind != "document" {
+			continue
+		}
+		name := candidate.symbol.StableName
+		if index := strings.IndexByte(name, '#'); index >= 0 {
+			name = name[:index]
+		}
+		if bestPath == "" || candidate.score > bestScore || (candidate.score == bestScore && name < bestPath) {
+			bestPath, bestScore = name, candidate.score
+		}
+	}
+	if bestPath == "" {
+		return candidates
+	}
+	count := 0
+	for _, candidate := range candidates {
+		if candidate.symbol.StableName == bestPath || strings.HasPrefix(candidate.symbol.StableName, bestPath+"#") {
+			count++
+		}
+	}
+	if count < 3 {
+		return candidates
+	}
+	for index := range candidates {
+		if candidates[index].symbol.StableName == bestPath || strings.HasPrefix(candidates[index].symbol.StableName, bestPath+"#") {
+			candidates[index].score += 40
+		}
+	}
+	return candidates
+}
+
+func exploreRarityScore(matches int, truncated bool) int {
+	if truncated {
+		return 1
+	}
+	switch {
+	case matches <= 4:
+		return 30
+	case matches <= 16:
+		return 18
+	case matches <= 64:
+		return 10
+	case matches <= 256:
+		return 4
+	default:
+		return 1
+	}
+}
+
+func exploreContentSpecificityScore(symbol graph.Symbol) int {
+	switch symbol.Kind {
+	case "section", "document", "code-block":
+		// A very broad generated page or document prelude can contain every
+		// query token by accident. Prefer the smallest authored section that
+		// explains the concept while leaving broad entities discoverable.
+		return -min(600, max(0, len(symbol.SearchTerms)-64)/4)
+	case "file":
+		return -min(300, max(0, len(symbol.SearchTerms)-256)/8)
+	default:
+		return 0
+	}
+}
+
+func exploreSearchCoverage(symbol graph.Symbol, terms []string) int {
+	coverage := 0
+	for _, term := range terms {
+		for _, variant := range exploreTermVariants(term) {
+			if _, found := slices.BinarySearch(symbol.SearchTerms, variant); found {
+				coverage++
+				break
+			}
+		}
+	}
+	return coverage
+}
+
+func shouldResolveExact(value string) bool {
+	return len(value) <= 512 && len(strings.Fields(value)) <= 12
+}
+
+func diversifyContentNames(candidates []scoredSymbol) []scoredSymbol {
+	preferred := make([]scoredSymbol, 0, len(candidates))
+	overflow := make([]scoredSymbol, 0, len(candidates))
+	seen := map[string]bool{}
+	for _, candidate := range candidates {
+		if candidate.symbol.Kind != "section" && candidate.symbol.Kind != "document" {
+			preferred = append(preferred, candidate)
+			continue
+		}
+		name := strings.ToLower(candidate.symbol.DisplayName)
+		if seen[name] {
+			overflow = append(overflow, candidate)
+			continue
+		}
+		seen[name] = true
+		preferred = append(preferred, candidate)
+	}
+	return append(preferred, overflow...)
 }
 
 func diversifyMethodContainers(candidates []scoredSymbol) []scoredSymbol {
@@ -305,11 +434,13 @@ func exploreScopeTerm(term string) bool {
 func exploreTerms(value string) []string {
 	stop := map[string]bool{
 		"a": true, "an": true, "and": true, "are": true, "as": true, "at": true,
-		"be": true, "by": true, "can": true, "cannot": true, "direct": true, "does": true,
-		"explain": true, "from": true, "how": true, "identify": true, "in": true,
-		"into": true, "is": true, "it": true, "of": true, "on": true, "or": true,
-		"that": true, "the": true, "this": true, "through": true, "to": true,
-		"what": true, "when": true, "where": true, "which": true, "why": true, "with": true,
+		"alone": true, "be": true, "by": true, "can": true, "cannot": true, "describe": true,
+		"direct": true, "does": true, "evaluate": true, "explain": true, "feed": true,
+		"from": true, "how": true, "identify": true, "in": true, "initial": true,
+		"into": true, "is": true, "it": true, "limitations": true, "of": true,
+		"on": true, "or": true, "should": true, "that": true, "the": true, "this": true,
+		"through": true, "to": true, "tool": true, "using": true, "what": true,
+		"when": true, "where": true, "which": true, "why": true, "with": true,
 	}
 	seen := map[string]bool{}
 	var result []string
@@ -321,7 +452,7 @@ func exploreTerms(value string) []string {
 		}
 		seen[term] = true
 		result = append(result, term)
-		if len(result) == 24 {
+		if len(result) == 32 {
 			break
 		}
 	}
@@ -333,7 +464,6 @@ func exploreTerms(value string) []string {
 
 func exploreNameScore(symbol graph.Symbol, term string, primary bool) int {
 	name := strings.ToLower(symbol.DisplayName)
-	stable := strings.ToLower(symbol.StableName)
 	score := 0
 	if name == term {
 		if primary {
@@ -351,22 +481,21 @@ func exploreNameScore(symbol graph.Symbol, term string, primary bool) int {
 			score += 10
 		}
 	}
-	if strings.Contains(stable, term) {
-		score += 2
-	}
 	return score
 }
 
 func exploreTermVariants(term string) []string {
 	result := []string{term}
 	if strings.HasSuffix(term, "ed") && len(term) > 4 {
-		stem := strings.TrimSuffix(term, "d")
-		if stem != term {
-			result = append(result, stem)
-		}
+		stem := strings.TrimSuffix(term, "ed")
+		result = append(result, strings.TrimSuffix(term, "d"), stem, stem+"s")
 	} else if strings.HasSuffix(term, "ing") && len(term) > 5 {
 		stem := strings.TrimSuffix(term, "ing")
 		result = append(result, stem, stem+"e")
+	} else if strings.HasSuffix(term, "ies") && len(term) > 4 {
+		result = append(result, strings.TrimSuffix(term, "ies")+"y", strings.TrimSuffix(term, "s"))
+	} else if strings.HasSuffix(term, "es") && len(term) > 4 {
+		result = append(result, strings.TrimSuffix(term, "es"), strings.TrimSuffix(term, "s"))
 	} else if strings.HasSuffix(term, "s") && len(term) > 4 {
 		result = append(result, strings.TrimSuffix(term, "s"))
 	}
@@ -380,10 +509,16 @@ func exploreKindScore(kind string) int {
 		return 100
 	case "type", "interface", "test":
 		return 40
+	case "section":
+		return 40
+	case "code-block":
+		return 20
 	case "field", "constant", "route":
 		return -10
 	case "variable", "parameter":
 		return -20
+	case "asset", "directory", "url":
+		return -30
 	case "package", "file", "document":
 		return -10
 	default:

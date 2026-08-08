@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/TheFellow/weave/internal/adapter"
@@ -157,8 +158,9 @@ func (Noop) Execute(_ context.Context, invocation Invocation) (Response, error) 
 	return Response{Schema: QuerySchema, Command: invocation.Command}, nil
 }
 
-// Local executes queries against one local database file. Each invocation owns
-// the file handle, which permits gc to compact offline without hidden state.
+// Local executes queries against one local database file. Ordinary CLI
+// invocations own the file handle for their duration. Resident creates the
+// explicit long-lived owner used by agent query sessions.
 type Local struct {
 	DatabasePath       string
 	Directory          string
@@ -170,6 +172,180 @@ type Local struct {
 	AdapterConfigError error
 	AdapterStore       adapter.Store
 	CatalogPath        string
+}
+
+// ResidentFactory creates an explicit long-lived database owner. The bstore
+// database can only be opened by one process at a time, so callers must close a
+// resident before using ordinary CLI commands against the same worktree.
+type ResidentFactory interface {
+	Resident() *Resident
+}
+
+// Resident serializes query and refresh work around one reusable database
+// handle. This is the IDE-shaped access path: one process owns the index, many
+// requests reuse its hot state, and a changed source observation causes the
+// handle to be closed before the authoritative refresh runs.
+type Resident struct {
+	app              Local
+	mu               sync.Mutex
+	db               *storage.DB
+	observationToken string
+	status           *freshness.Status
+	pending          *freshness.Observation
+	pendingError     error
+	observerCancel   context.CancelFunc
+	observerDone     chan struct{}
+	closed           bool
+}
+
+// Resident returns a long-lived local query service. It does not open the
+// database until the first database-backed request.
+func (app Local) Resident() *Resident { return &Resident{app: app} }
+
+// Close releases the resident's exclusive database ownership.
+func (resident *Resident) Close() error {
+	resident.mu.Lock()
+	resident.closed = true
+	cancel, done := resident.observerCancel, resident.observerDone
+	resident.observerCancel = nil
+	err := resident.closeDatabase()
+	resident.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	if done != nil {
+		<-done
+	}
+	return err
+}
+
+// Execute reuses one database handle for local graph queries. Operations that
+// can mutate, compact, federate, or otherwise open storage independently first
+// release the resident handle and use the ordinary one-shot implementation.
+func (resident *Resident) Execute(ctx context.Context, invocation Invocation) (Response, error) {
+	resident.mu.Lock()
+	defer resident.mu.Unlock()
+	if resident.closed {
+		return Response{}, errors.New("resident query service is closed")
+	}
+	if invocation.Scope == "catalog" || !residentQuery(invocation.Command) {
+		if err := resident.closeDatabase(); err != nil {
+			return Response{}, err
+		}
+		resident.observationToken = ""
+		resident.status = nil
+		return resident.app.Execute(ctx, invocation)
+	}
+	if err := resident.ensureDatabase(ctx); err != nil {
+		return Response{}, err
+	}
+	resident.startObserver()
+	response := Response{Schema: QuerySchema, Command: invocation.Command, Query: append([]string(nil), invocation.Arguments...)}
+	if resident.status != nil {
+		status := *resident.status
+		response.Freshness = &status
+	}
+	return resident.app.executeDatabase(ctx, resident.db, response, invocation)
+}
+
+func (resident *Resident) ensureDatabase(ctx context.Context) error {
+	if resident.app.Freshness != nil {
+		if resident.pendingError != nil {
+			return fmt.Errorf("observe resident index freshness: %w", resident.pendingError)
+		}
+		if resident.db != nil && resident.pending == nil {
+			return nil
+		}
+		observation, err := resident.app.Freshness.Observe(ctx)
+		if err != nil {
+			return err
+		}
+		if resident.pending != nil {
+			observation = *resident.pending
+		}
+		if resident.db != nil && observation.Token == resident.observationToken && observation.Status.Current {
+			resident.pending = nil
+			return nil
+		}
+		if err := resident.closeDatabase(); err != nil {
+			return err
+		}
+		status, err := resident.app.Freshness.Ensure(ctx, false)
+		if err != nil {
+			return err
+		}
+		observation, err = resident.app.Freshness.Observe(ctx)
+		if err != nil {
+			return err
+		}
+		resident.observationToken = observation.Token
+		resident.status = &status
+		resident.pending = nil
+		resident.pendingError = nil
+	}
+	if resident.db != nil {
+		return nil
+	}
+	path, err := resident.app.databasePath(ctx)
+	if err != nil {
+		return err
+	}
+	resident.db, err = storage.Open(ctx, path, storage.Options{MustExist: true})
+	return err
+}
+
+// startObserver moves the relatively expensive exact Git observation off the
+// query path. As with an IDE VFS/indexing loop, a request may briefly see the
+// preceding generation; context source reads still hash-check their files, and
+// the next request after a detected change refreshes before querying.
+func (resident *Resident) startObserver() {
+	if resident.app.Freshness == nil || resident.observerCancel != nil {
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	resident.observerCancel = cancel
+	resident.observerDone = done
+	go resident.observe(ctx, done)
+}
+
+func (resident *Resident) observe(ctx context.Context, done chan<- struct{}) {
+	defer close(done)
+	ticker := time.NewTicker(watch.DefaultPollInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			observation, err := resident.app.Freshness.Observe(ctx)
+			resident.mu.Lock()
+			if resident.closed {
+				resident.mu.Unlock()
+				return
+			}
+			if err != nil {
+				resident.pendingError = err
+			} else {
+				resident.pendingError = nil
+				if observation.Token != resident.observationToken || !observation.Status.Current {
+					resident.pending = &observation
+				} else {
+					resident.pending = nil
+				}
+			}
+			resident.mu.Unlock()
+		}
+	}
+}
+
+func (resident *Resident) closeDatabase() error {
+	if resident.db == nil {
+		return nil
+	}
+	err := resident.db.Close()
+	resident.db = nil
+	return err
 }
 
 // Watch warms the same query-authoritative per-worktree freshness coordinator.
@@ -265,7 +441,11 @@ func (app Local) Execute(ctx context.Context, invocation Invocation) (Response, 
 		return Response{}, err
 	}
 	defer db.Close()
+	return app.executeDatabase(ctx, db, response, invocation)
+}
 
+func (app Local) executeDatabase(ctx context.Context, db *storage.DB, response Response, invocation Invocation) (Response, error) {
+	var err error
 	switch invocation.Command {
 	case "symbols":
 		response.Symbols, response.Truncated, err = db.FindSymbols(ctx, invocation.Arguments[0], invocation.Limit)
@@ -391,7 +571,52 @@ func (app Local) Execute(ctx context.Context, invocation Invocation) (Response, 
 			return Response{}, fmt.Errorf("%s: enrich result: %w", invocation.Command, err)
 		}
 	}
+	stripSearchTerms(&response)
 	return response, nil
+}
+
+// Search terms are an internal discovery projection. Returning hundreds of
+// postings with every match wastes agent context and adds no evidence beyond
+// the entity and source already returned. Full diagnostic export retains them.
+func stripSearchTerms(response *Response) {
+	if response == nil || response.Export != nil {
+		return
+	}
+	for index := range response.Symbols {
+		response.Symbols[index].SearchTerms = nil
+	}
+	for index := range response.Tests {
+		response.Tests[index].SearchTerms = nil
+	}
+	stripContext := func(result *contextquery.Result) {
+		if result == nil {
+			return
+		}
+		result.Focus.Symbol.SearchTerms = nil
+		for index := range result.Incoming {
+			if result.Incoming[index].Entity != nil {
+				result.Incoming[index].Entity.Symbol.SearchTerms = nil
+			}
+		}
+		for index := range result.Outgoing {
+			if result.Outgoing[index].Entity != nil {
+				result.Outgoing[index].Entity.Symbol.SearchTerms = nil
+			}
+		}
+	}
+	stripContext(response.Context)
+	for index := range response.Contexts {
+		stripContext(&response.Contexts[index])
+	}
+}
+
+func residentQuery(command string) bool {
+	switch command {
+	case "symbols", "context", "explore", "definition", "references", "callers", "callees", "dependencies", "path", "impact", "graph", "workspace find", "workspace outline", "workspace links", "workspace backlinks":
+		return true
+	default:
+		return false
+	}
 }
 
 func (app Local) ci(ctx context.Context, response Response, invocation Invocation) (Response, error) {
@@ -683,6 +908,7 @@ func (app Local) federated(ctx context.Context, response Response, invocation In
 		response.Context.Metadata.Freshness.Partial = store.Partial()
 	}
 	response.Sources = store.Sources()
+	stripSearchTerms(&response)
 	return response, nil
 }
 

@@ -9,7 +9,7 @@ import (
 	"github.com/mjl-/bstore"
 )
 
-// verifyStorage checks the v2 indirection/cold-record invariants before Export
+// verifyStorage checks the compact indirection/cold-record invariants before Export
 // attempts to hydrate them. This keeps verify useful even when logical damage
 // makes a complete public fact impossible to reconstruct.
 func (db *DB) verifyStorage(ctx context.Context) ([]Issue, error) {

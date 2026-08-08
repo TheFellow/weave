@@ -53,6 +53,10 @@ func TestProviderIndexesWorkspaceAndStructuredContent(t *testing.T) {
 			t.Fatalf("invalid source range: %#v", edge)
 		}
 	}
+	code := unitForSymbol(t, result.Batches, fileSymbolID(request.Repository.Identity, "docs/code.go"))
+	if len(code.Symbols) != 1 || !slices.Contains(code.Symbols[0].SearchTerms, "package") || !slices.Contains(code.Symbols[0].SearchTerms, "docs") {
+		t.Fatalf("generic lexical file = %#v", code.Symbols)
+	}
 	for _, edge := range readme.Edges {
 		if edge.To == fileSymbolID(request.Repository.Identity, "not-a-link") {
 			t.Fatal("fenced code was interpreted as a link")
@@ -72,6 +76,11 @@ func TestProviderIndexesWorkspaceAndStructuredContent(t *testing.T) {
 	assertEdgeFromTo(t, generated.Edges, graph.EdgeGenerates,
 		fileSymbolID(request.Repository.Identity, "README.md"),
 		fileSymbolID(request.Repository.Identity, "articles/readme.md"))
+	for _, symbol := range generated.Symbols {
+		if symbol.Evidence != graph.EvidenceGenerated {
+			t.Fatalf("generated symbol evidence = %q, want generated", symbol.Evidence)
+		}
+	}
 
 	inventory := unitByVariant(t, result.Batches, "inventory")
 	assertSymbol(t, inventory.Symbols, "workspace", ".")
@@ -216,6 +225,26 @@ func TestHeadingAnchorHandlesEscapesUnicodeAndDuplicates(t *testing.T) {
 	}
 }
 
+func TestMarkdownSectionSearchTermsComeFromItsBody(t *testing.T) {
+	content := []byte("# Benchmark\n\nRetained artifacts make correctness auditable.\n\n## Result\n\nA single paired sample is not a population estimate.\n")
+	model, err := parseDocument("example/repo", "README.md", content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	facts := model.facts(newResolver("example/repo", []entry{{path: "README.md", kind: "file"}}, map[string]*documentModel{"README.md": model}))
+	benchmark := slices.IndexFunc(facts.Symbols, func(symbol graph.Symbol) bool { return symbol.StableName == "README.md#benchmark" })
+	result := slices.IndexFunc(facts.Symbols, func(symbol graph.Symbol) bool { return symbol.StableName == "README.md#result" })
+	if benchmark < 0 || result < 0 {
+		t.Fatalf("section symbols = %#v", facts.Symbols)
+	}
+	if !slices.Contains(facts.Symbols[benchmark].SearchTerms, "artifacts") || slices.Contains(facts.Symbols[benchmark].SearchTerms, "population") {
+		t.Fatalf("benchmark search terms = %q", facts.Symbols[benchmark].SearchTerms)
+	}
+	if !slices.Contains(facts.Symbols[result].SearchTerms, "population") || !slices.Contains(facts.Symbols[result].SearchTerms, "sample") {
+		t.Fatalf("result search terms = %q", facts.Symbols[result].SearchTerms)
+	}
+}
+
 func TestMalformedStructuredDocumentsDegradeToFileTopology(t *testing.T) {
 	root := t.TempDir()
 	files := map[string][]byte{
@@ -277,6 +306,19 @@ func TestGeneratedMarkersAwayFromTheDocumentPreambleAreInert(t *testing.T) {
 	}
 	if model.generatedFrom != "" {
 		t.Fatalf("embedded generated marker became document provenance: %q", model.generatedFrom)
+	}
+}
+
+func TestLLMSAggregationsAreGeneratedEvidence(t *testing.T) {
+	model, err := parseDocument("example/repo", "llms-full.txt", []byte("# Combined\n\nCollected content.\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	facts := model.facts(newResolver("example/repo", []entry{{path: "llms-full.txt", kind: "file"}}, map[string]*documentModel{"llms-full.txt": model}))
+	for _, symbol := range facts.Symbols {
+		if symbol.Evidence != graph.EvidenceGenerated {
+			t.Fatalf("LLM aggregation evidence = %q, want generated", symbol.Evidence)
+		}
 	}
 }
 
