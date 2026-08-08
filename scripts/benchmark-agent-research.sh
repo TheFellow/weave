@@ -31,11 +31,6 @@ mkdir -p "$work/with-bin" "$work/without-bin"
 go build -trimpath -o "$work/with-bin/weave" ./cmd/weave
 ln -s "$root/scripts/weave-benchmark-blocked" "$work/without-bin/weave"
 
-model_args=()
-if [[ -n "${WEAVE_AGENT_BENCHMARK_MODEL:-}" ]]; then
-  model_args=(--model "$WEAVE_AGENT_BENCHMARK_MODEL")
-fi
-
 {
   echo "timestamp_utc=$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
   echo "weave_commit=$(git rev-parse HEAD)"
@@ -73,6 +68,15 @@ run_arm() {
   } >"$sample_directory/prompt.md"
 
   : >"$sample_directory/blocked-weave.log"
+  local codex_args=(
+    exec --ephemeral --ignore-user-config --json --sandbox read-only
+    --config shell_environment_policy.inherit=all
+    --cd "$clone" --output-last-message "$sample_directory/answer.md"
+  )
+  if [[ -n "${WEAVE_AGENT_BENCHMARK_MODEL:-}" ]]; then
+    codex_args+=(--model "$WEAVE_AGENT_BENCHMARK_MODEL")
+  fi
+  codex_args+=(-)
   set +e
   PATH="$arm_path" WEAVE_BENCHMARK_BLOCK_LOG="$sample_directory/blocked-weave.log" \
     python3 "$root/scripts/measure-command.py" \
@@ -80,10 +84,7 @@ run_arm() {
       --stdout "$sample_directory/events.jsonl" \
       --stderr "$sample_directory/stderr.txt" \
       --result "$sample_directory/process.json" -- \
-      "$codex_executable" exec --ephemeral --ignore-user-config --json --sandbox read-only \
-      --config shell_environment_policy.inherit=all \
-      --cd "$clone" --output-last-message "$sample_directory/answer.md" \
-      "${model_args[@]}" - <"$sample_directory/prompt.md"
+      "$codex_executable" "${codex_args[@]}" <"$sample_directory/prompt.md"
   local exit_code=$?
   set -e
 
