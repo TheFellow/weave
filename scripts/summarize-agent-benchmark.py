@@ -42,7 +42,7 @@ for event in events:
         continue
     item = event.get("item") or {}
     if item.get("type") in {"command_execution", "mcp_tool_call", "tool_call"}:
-        commands.append(command_text(item))
+        commands.append((command_text(item), item.get("exit_code")))
 
 usage = {}
 for event in events:
@@ -64,9 +64,11 @@ blocked_attempts = 0
 if block_log.exists():
     blocked_attempts = len(block_log.read_text(encoding="utf-8", errors="replace").splitlines())
 
-search_pattern = re.compile(r"(^|[;&|]\s*|\s)(rg|grep|find|fd)(\s|$)")
-read_pattern = re.compile(r"(^|[;&|]\s*|\s)(sed|cat|head|tail|bat)(\s|$)")
-weave_pattern = re.compile(r"(^|[/\s])weave(\s|$)")
+command_boundary = r"(?:^|[\s;&|'\"])(?:[^\s;&|'\"]*/)?"
+command_end = r"(?=[\s|'\"]|$)"
+search_pattern = re.compile(command_boundary + r"(?:rg|grep|find|fd)" + command_end)
+read_pattern = re.compile(command_boundary + r"(?:sed|cat|head|tail|bat)" + command_end)
+weave_pattern = re.compile(command_boundary + r"weave" + command_end)
 
 result = {
     "schema": "weave.agent-research-sample/v1",
@@ -78,9 +80,10 @@ result = {
     "answer_bytes": len(answer.encode("utf-8")),
     "answer_words": len(answer.split()),
     "command_executions": len(commands),
-    "weave_commands": sum(bool(weave_pattern.search(value)) for value in commands),
-    "filesystem_search_commands": sum(bool(search_pattern.search(value)) for value in commands),
-    "source_read_commands": sum(bool(read_pattern.search(value)) for value in commands),
+    "weave_commands": sum(bool(weave_pattern.search(value)) for value, _ in commands),
+    "successful_weave_commands": sum(bool(weave_pattern.search(value)) and exit_code == 0 for value, exit_code in commands),
+    "filesystem_search_commands": sum(bool(search_pattern.search(value)) for value, _ in commands),
+    "source_read_commands": sum(bool(read_pattern.search(value)) for value, _ in commands),
     "blocked_weave_attempts": blocked_attempts,
     "rubric": {
         "matched": sum(check["matched"] for check in checks),

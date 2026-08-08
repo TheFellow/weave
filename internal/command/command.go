@@ -643,7 +643,7 @@ func contextCommand(app application.Service, streams Streams) *cli.Command {
 func exploreCommand(app application.Service, streams Streams) *cli.Command {
 	flags := []cli.Flag{
 		jsonFlag(),
-		&cli.IntFlag{Name: "limit", Value: 6, Usage: "maximum relevant entities", Validator: func(value int) error {
+		&cli.IntFlag{Name: "limit", Value: 8, Usage: "maximum relevant entities", Validator: func(value int) error {
 			if value < 1 || value > 32 {
 				return fmt.Errorf("must be between 1 and 32")
 			}

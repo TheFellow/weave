@@ -55,7 +55,7 @@ run_arm() {
 
   if [[ "$arm" == "with-weave" ]]; then
     arm_path="$work/with-bin:$PATH"
-    guidance="A current local semantic index is available as the weave CLI. Start with weave explore using the research question, treat its current source excerpts as already-read evidence, and use narrower weave queries before filesystem search or file reads."
+    guidance="A current local semantic index is available as the weave CLI. Start with one weave explore using the research question and treat its current source excerpts as already-read evidence. Use targeted queries or file reads only for specific evidence that dossier does not contain."
     (cd "$clone" && PATH="$arm_path" weave index --json >"$sample_directory/index.json")
   fi
 

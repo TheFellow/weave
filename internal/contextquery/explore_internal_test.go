@@ -31,3 +31,46 @@ func TestRelationshipProximityPrefersSameUnitThenSameRepositoryPath(t *testing.T
 		t.Fatalf("same domain was not preferred")
 	}
 }
+
+func TestExploreTermsRetainEvidenceTermsFromLongResearchQuestion(t *testing.T) {
+	terms := exploreTerms("Explain how a menu publish request is authorized from GUI TUI through the public domain module command middleware readiness validation persistence and tests")
+	for _, want := range []string{"menu", "publish", "gui", "tui", "middleware", "readiness", "persistence", "tests"} {
+		if !containsString(terms, want) {
+			t.Fatalf("terms %v omit %q", terms, want)
+		}
+	}
+}
+
+func TestDiversifyExplicitScopesRetainsGUIAndTUI(t *testing.T) {
+	candidates := []scoredSymbol{
+		{symbol: graph.Symbol{ID: "gui-publish", StableName: "example/app/domains/menus/surfaces/gui.type.Presenter.method.Publish"}, score: 100},
+		{symbol: graph.Symbol{ID: "module", StableName: "example/app/domains/menus.type.Module.method.Publish"}, score: 90},
+		{symbol: graph.Symbol{ID: "command", StableName: "example/app/domains/menus/internal/commands.type.Commands.method.Publish"}, score: 80},
+		{symbol: graph.Symbol{ID: "tui-publish", StableName: "example/app/domains/menus/surfaces/tui.type.ListViewModel.method.performPublish"}, score: 70},
+	}
+	got := diversifyExplicitScopes(candidates, []string{"menu", "publish", "gui", "tui"}, 3)
+	if !containsScope(got[:3], "gui") || !containsScope(got[:3], "tui") {
+		t.Fatalf("diversified candidates = %#v", got[:3])
+	}
+}
+
+func TestDiversifyMethodContainersDefersSiblingHelpers(t *testing.T) {
+	candidates := []scoredSymbol{
+		{symbol: graph.Symbol{ID: "publish", StableName: "example/surfaces/gui.type.Presenter.method.Publish"}},
+		{symbol: graph.Symbol{ID: "helper", StableName: "example/surfaces/gui.type.Presenter.method.publish"}},
+		{symbol: graph.Symbol{ID: "module", StableName: "example/domains/menus.type.Module.method.Publish"}},
+	}
+	got := diversifyMethodContainers(candidates)
+	if got[0].symbol.ID != "publish" || got[1].symbol.ID != "module" || got[2].symbol.ID != "helper" {
+		t.Fatalf("diversified candidates = %#v", got)
+	}
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}

@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/TheFellow/weave/internal/graph"
 	"github.com/TheFellow/weave/internal/query"
@@ -67,14 +68,14 @@ func exploreCandidates(ctx context.Context, store Store, value string, limit int
 	terms := exploreTerms(value)
 	searchTerms := make([]string, 0, len(terms))
 	for _, term := range terms {
-		if !exploreScopeTerm(term) {
+		if !exploreScopeTerm(term) || term == "gui" || term == "tui" {
 			searchTerms = append(searchTerms, term)
 		}
 	}
 	if len(searchTerms) == 0 {
 		searchTerms = terms
 	}
-	fetchLimit := min(512, max(limit*8, 32))
+	fetchLimit := min(512, max(limit*16, 64))
 	byID := map[string]scoredSymbol{}
 	truncated := false
 	for _, term := range searchTerms {
@@ -88,7 +89,7 @@ func exploreCandidates(ctx context.Context, store Store, value string, limit int
 				candidate := byID[symbol.ID]
 				candidate.symbol = symbol
 				candidate.score += max(1, 5-index/8)
-				candidate.score += exploreNameScore(symbol, variant)
+				candidate.score += exploreNameScore(symbol, variant, term == searchTerms[0])
 				byID[symbol.ID] = candidate
 			}
 		}
@@ -97,6 +98,9 @@ func exploreCandidates(ctx context.Context, store Store, value string, limit int
 	candidates := make([]scoredSymbol, 0, len(byID))
 	for _, candidate := range byID {
 		candidate.score += exploreKindScore(candidate.symbol.Kind)
+		if strings.HasPrefix(candidate.symbol.DisplayName, "Test") {
+			candidate.score -= 40
+		}
 		stable := strings.ToLower(candidate.symbol.StableName)
 		for _, term := range terms {
 			if exploreScopeTerm(term) && strings.Contains(stable, term) {
@@ -115,6 +119,8 @@ func exploreCandidates(ctx context.Context, store Store, value string, limit int
 		}
 		return strings.Compare(left.symbol.ID, right.symbol.ID)
 	})
+	candidates = diversifyMethodContainers(candidates)
+	candidates = diversifyExplicitScopes(candidates, terms, limit)
 	if len(candidates) > limit {
 		candidates = candidates[:limit]
 		truncated = true
@@ -124,6 +130,93 @@ func exploreCandidates(ctx context.Context, store Store, value string, limit int
 		result = append(result, candidate.symbol)
 	}
 	return result, truncated, nil
+}
+
+func diversifyMethodContainers(candidates []scoredSymbol) []scoredSymbol {
+	preferred := make([]scoredSymbol, 0, len(candidates))
+	overflow := make([]scoredSymbol, 0, len(candidates))
+	seen := map[string]bool{}
+	for _, candidate := range candidates {
+		container := methodContainer(candidate.symbol.StableName)
+		if container != "" && seen[container] {
+			overflow = append(overflow, candidate)
+			continue
+		}
+		if container != "" {
+			seen[container] = true
+		}
+		preferred = append(preferred, candidate)
+	}
+	return append(preferred, overflow...)
+}
+
+func methodContainer(stableName string) string {
+	if index := strings.Index(stableName, ".method."); index >= 0 {
+		return stableName[:index]
+	}
+	return ""
+}
+
+// diversifyExplicitScopes preserves the best lexical ordering while ensuring
+// an explicitly named presentation surface is represented. Natural research
+// questions commonly ask for both GUI and TUI flow; one surface can otherwise
+// consume the entire bound through several exact same-named methods.
+func diversifyExplicitScopes(candidates []scoredSymbol, terms []string, limit int) []scoredSymbol {
+	if len(candidates) <= limit || limit < 2 {
+		return candidates
+	}
+	result := slices.Clone(candidates)
+	primary := primaryExploreTerm(terms)
+	for _, scope := range []string{"gui", "tui"} {
+		if !slices.Contains(terms, scope) || containsScope(result[:limit], scope) {
+			continue
+		}
+		candidateIndex := -1
+		for index := limit; index < len(result); index++ {
+			if symbolHasScope(result[index].symbol, scope) && symbolMatchesTerm(result[index].symbol, primary) {
+				candidateIndex = index
+				break
+			}
+		}
+		if candidateIndex < 0 {
+			for index := limit; index < len(result); index++ {
+				if symbolHasScope(result[index].symbol, scope) {
+					candidateIndex = index
+					break
+				}
+			}
+		}
+		if candidateIndex < 0 {
+			continue
+		}
+		replace := limit - 1
+		result[replace], result[candidateIndex] = result[candidateIndex], result[replace]
+	}
+	return result
+}
+
+func primaryExploreTerm(terms []string) string {
+	for _, term := range terms {
+		if !exploreScopeTerm(term) {
+			return term
+		}
+	}
+	return ""
+}
+
+func symbolMatchesTerm(symbol graph.Symbol, term string) bool {
+	return term != "" && (strings.Contains(strings.ToLower(symbol.DisplayName), term) || strings.Contains(strings.ToLower(symbol.StableName), term))
+}
+
+func containsScope(candidates []scoredSymbol, scope string) bool {
+	return slices.ContainsFunc(candidates, func(candidate scoredSymbol) bool {
+		return symbolHasScope(candidate.symbol, scope)
+	})
+}
+
+func symbolHasScope(symbol graph.Symbol, scope string) bool {
+	stable := strings.ToLower(symbol.StableName)
+	return strings.Contains(stable, "/surfaces/"+scope+".") || strings.Contains(stable, "/surfaces/"+scope+"/")
 }
 
 func applyExplicitDomainScope(candidates []scoredSymbol, terms []string) []scoredSymbol {
@@ -202,7 +295,7 @@ func exploreScopeScore(term string) int {
 
 func exploreScopeTerm(term string) bool {
 	switch term {
-	case "code", "data", "domain", "flow", "function", "gui", "menu", "method", "persistence", "request", "state", "system", "tui":
+	case "backend", "code", "data", "domain", "flow", "function", "gui", "menu", "method", "persistence", "public", "request", "state", "system", "tui":
 		return true
 	default:
 		return false
@@ -212,10 +305,11 @@ func exploreScopeTerm(term string) bool {
 func exploreTerms(value string) []string {
 	stop := map[string]bool{
 		"a": true, "an": true, "and": true, "are": true, "as": true, "at": true,
-		"be": true, "by": true, "does": true, "from": true, "how": true, "in": true,
+		"be": true, "by": true, "can": true, "cannot": true, "direct": true, "does": true,
+		"explain": true, "from": true, "how": true, "identify": true, "in": true,
 		"into": true, "is": true, "it": true, "of": true, "on": true, "or": true,
 		"that": true, "the": true, "this": true, "through": true, "to": true,
-		"what": true, "when": true, "where": true, "which": true, "with": true,
+		"what": true, "when": true, "where": true, "which": true, "why": true, "with": true,
 	}
 	seen := map[string]bool{}
 	var result []string
@@ -227,7 +321,7 @@ func exploreTerms(value string) []string {
 		}
 		seen[term] = true
 		result = append(result, term)
-		if len(result) == 12 {
+		if len(result) == 24 {
 			break
 		}
 	}
@@ -237,14 +331,25 @@ func exploreTerms(value string) []string {
 	return result
 }
 
-func exploreNameScore(symbol graph.Symbol, term string) int {
+func exploreNameScore(symbol graph.Symbol, term string, primary bool) int {
 	name := strings.ToLower(symbol.DisplayName)
 	stable := strings.ToLower(symbol.StableName)
 	score := 0
 	if name == term {
-		score += 100
+		if primary {
+			score += 200
+			if first, _ := utf8.DecodeRuneInString(name); unicode.IsLower(first) {
+				score -= 120
+			}
+		} else {
+			score += 35
+		}
 	} else if symbol.Kind != "package" && symbol.Kind != "file" && strings.Contains(name, term) {
-		score += 15
+		if primary {
+			score += 60
+		} else {
+			score += 10
+		}
 	}
 	if strings.Contains(stable, term) {
 		score += 2
