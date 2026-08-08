@@ -20,7 +20,17 @@ import (
 	"golang.org/x/tools/go/packages"
 )
 
-const providerVersion = "3"
+const providerVersion = "4"
+
+// Repository packages need full syntax and types, but their dependencies do
+// not. NeedTypes imports dependency export data so references, calls, and
+// interfaces remain compiler-resolved. NeedDeps would apply NeedSyntax and
+// NeedTypesInfo recursively to the complete dependency graph, retaining syntax
+// trees and identifier maps that Weave never emits and making modest services
+// consume gigabytes while indexing.
+const packageLoadMode = packages.NeedName | packages.NeedFiles | packages.NeedCompiledGoFiles |
+	packages.NeedImports | packages.NeedTypes | packages.NeedSyntax |
+	packages.NeedTypesInfo | packages.NeedModule | packages.NeedForTest
 
 // Provider indexes the active Go build without permitting dependency download
 // or go.mod/go.sum mutation. It preserves the user's Go toolchain selection so
@@ -55,12 +65,9 @@ func (provider Provider) Refresh(ctx context.Context, request freshness.Request)
 		return freshness.Result{}, err
 	}
 	configuration := &packages.Config{
-		Context: ctx,
-		Dir:     root,
-		Mode: packages.NeedName | packages.NeedFiles | packages.NeedCompiledGoFiles |
-			packages.NeedImports | packages.NeedDeps | packages.NeedTypes |
-			packages.NeedSyntax | packages.NeedTypesInfo | packages.NeedModule |
-			packages.NeedForTest,
+		Context:    ctx,
+		Dir:        root,
+		Mode:       packageLoadMode,
 		Tests:      true,
 		Env:        goEnvironment(provider.AllowNetwork),
 		BuildFlags: append([]string{"-mod=readonly"}, provider.BuildFlags...),

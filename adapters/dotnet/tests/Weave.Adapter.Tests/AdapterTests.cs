@@ -21,6 +21,9 @@ public sealed class AdapterTests
     {
         var paths = new RepositoryPaths(Path.Combine(Fixtures, "Mixed"));
         Assert.Equal("Core/Greeter.cs", paths.RelativeFile(Path.Combine(Fixtures, "Mixed", "Core", "Greeter.cs")));
+        Assert.True(paths.TryRelativeFile(Path.Combine(Fixtures, "Mixed", "Core", "Greeter.cs"), out var relative));
+        Assert.Equal("Core/Greeter.cs", relative);
+        Assert.False(paths.TryRelativeFile(Path.Combine(Fixtures, "outside.cs"), out _));
         Assert.Throws<InvalidDataException>(() => paths.RelativeFile(Path.Combine(Fixtures, "outside.cs")));
     }
 
@@ -81,6 +84,25 @@ public sealed class AdapterTests
     {
         var root = Path.Combine(Fixtures, "Malformed");
         await Assert.ThrowsAnyAsync<Exception>(() => new CSharpIndexer(new RepositoryPaths(root), Request(root)).IndexAsync(CancellationToken.None));
+    }
+
+    [Fact]
+    public void NearestNestedSolutionDefinesTheProjectBoundary()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "weave-dotnet-solutions-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(Path.Combine(root, "adapter"));
+        Directory.CreateDirectory(Path.Combine(root, "tests", "fixtures"));
+        try
+        {
+            var primary = Path.Combine(root, "adapter", "Primary.sln");
+            File.WriteAllText(primary, "");
+            File.WriteAllText(Path.Combine(root, "tests", "fixtures", "Fixture.sln"), "");
+            Assert.Equal([primary], CSharpIndexer.FindSolutions(root));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
     }
 
     private static IndexRequest Request(string root) => new()

@@ -149,7 +149,7 @@ func (provider Provider) Refresh(ctx context.Context, request freshness.Request)
 	if provider.ProbeProviderVersion || provider.CapabilityDigest != "" {
 		probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		capabilities, _, probeErr := provider.Runner.Describe(probeCtx, adapter.Executable{
-			Path: provider.Path, Args: provider.Args, Dir: request.Repository.Root, Env: adapterEnvironment(),
+			Path: provider.Path, Args: provider.Args, Dir: request.Repository.Root, Env: adapter.ChildEnvironment(),
 		})
 		cancel()
 		if probeErr != nil {
@@ -201,7 +201,7 @@ func (provider Provider) Refresh(ctx context.Context, request freshness.Request)
 		runner.Limits.MaxTotalBytes = maxAdapterOutputBytes
 	}
 	result, err := runner.Index(runCtx, adapter.Executable{
-		Path: provider.Path, Args: provider.Args, Dir: request.Repository.Root, Env: adapterEnvironment(),
+		Path: provider.Path, Args: provider.Args, Dir: request.Repository.Root, Env: adapter.ChildEnvironment(),
 	}, adapter.IndexRequest{
 		RequestID: hex.EncodeToString(requestID), RepositoryRoot: request.Repository.Root,
 		RepositoryIdentity: request.Repository.Identity,
@@ -510,15 +510,4 @@ func sortedKeys(values map[string]freshness.Unit) []string {
 	}
 	slices.Sort(result)
 	return result
-}
-
-func adapterEnvironment() []string {
-	allowed := []string{"PATH", "DOTNET_ROOT", "DOTNET_HOST_PATH", "CARGO_HOME", "RUSTUP_HOME", "RUSTUP_TOOLCHAIN", "WEAVE_RUST_ANALYZER", "WEAVE_SCIP_CLANG", "TMPDIR", "TMP", "TEMP", "SystemRoot", "WINDIR", "HOME", "USERPROFILE", "NUGET_PACKAGES"}
-	var environment []string
-	for _, name := range allowed {
-		if value, ok := os.LookupEnv(name); ok {
-			environment = append(environment, name+"="+value)
-		}
-	}
-	return environment
 }

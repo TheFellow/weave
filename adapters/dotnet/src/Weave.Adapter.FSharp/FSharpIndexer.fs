@@ -7,6 +7,7 @@ open System.Text
 open System.Threading
 open System.Threading.Tasks
 open Buildalyzer
+open Buildalyzer.Environment
 open Buildalyzer.IO
 open FSharp.Compiler.CodeAnalysis
 open FSharp.Compiler.Symbols
@@ -65,7 +66,9 @@ type FSharpIndexer private () =
                 manager.GetProject(IOPath.Parse projectPath)
                 |> Option.ofObj
                 |> Option.defaultWith (fun () -> failwith ("F# project not found: " + projectPath))
-            let results = analyzer.Build() |> Seq.sortBy (fun r -> r.TargetFramework) |> Seq.toArray
+            let environmentOptions = EnvironmentOptions()
+            environmentOptions.Restore <- false
+            let results = analyzer.Build(environmentOptions) |> Seq.sortBy (fun r -> r.TargetFramework) |> Seq.toArray
             let units = List<UnitFacts>()
             let projectDirectory =
                 match Path.GetDirectoryName(Path.GetFullPath projectPath) with

@@ -19,12 +19,27 @@ public sealed class RepositoryPaths
 
     public string RelativeFile(string path)
     {
-        var full = Path.GetFullPath(path);
-        if (!full.StartsWith(rootPrefix, comparison)) throw new InvalidDataException($"source path escapes repository root: {path}");
-        var relative = Path.GetRelativePath(Root, full).Replace(Path.DirectorySeparatorChar, '/');
-        if (relative == ".." || relative.StartsWith("../", StringComparison.Ordinal)) throw new InvalidDataException($"source path escapes repository root: {path}");
-        EnsureLinksStayInside(relative, path);
+        if (!TryRelativeFile(path, out var relative))
+            throw new InvalidDataException($"source path escapes repository root: {path}");
         return relative;
+    }
+
+    public bool TryRelativeFile(string path, out string relative)
+    {
+        var full = Path.GetFullPath(path);
+        if (!full.StartsWith(rootPrefix, comparison))
+        {
+            relative = "";
+            return false;
+        }
+        relative = Path.GetRelativePath(Root, full).Replace(Path.DirectorySeparatorChar, '/');
+        if (relative == ".." || relative.StartsWith("../", StringComparison.Ordinal))
+        {
+            relative = "";
+            return false;
+        }
+        EnsureLinksStayInside(relative, path);
+        return true;
     }
 
     private void EnsureLinksStayInside(string relative, string original)

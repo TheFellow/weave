@@ -3,7 +3,29 @@ package adapter
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"os"
 )
+
+// ChildEnvironment returns the bounded ambient environment shared by every
+// adapter entry point. Keeping one allowlist prevents doctor, explicit index,
+// and automatic freshness from observing different toolchains.
+func ChildEnvironment() []string {
+	allowed := []string{
+		"PATH", "HOME", "USERPROFILE", "JAVA_HOME",
+		"DOTNET_ROOT", "DOTNET_HOST_PATH", "NUGET_PACKAGES",
+		"CARGO_HOME", "RUSTUP_HOME", "RUSTUP_TOOLCHAIN",
+		"WEAVE_RUST_ANALYZER", "WEAVE_SCIP_CLANG", "WEAVE_SCIP_TYPESCRIPT",
+		"WEAVE_SCIP_JAVA", "WEAVE_SCIP_JAVA_VERSION", "WEAVE_SCIP_JAVA_METADATA_VERSION",
+		"TMPDIR", "TMP", "TEMP", "SystemRoot", "WINDIR",
+	}
+	var environment []string
+	for _, name := range allowed {
+		if value, ok := os.LookupEnv(name); ok {
+			environment = append(environment, name+"="+value)
+		}
+	}
+	return environment
+}
 
 // EnvironmentRegistrations preserves the original explicit companion-adapter
 // overrides without restoring ambient PATH discovery. The negotiated claims

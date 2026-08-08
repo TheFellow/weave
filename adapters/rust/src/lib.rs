@@ -1,6 +1,6 @@
 //! `weave.adapter/v0` bridge from rust-analyzer's SCIP export to Weave facts.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::ffi::OsStr;
 use std::fmt::{self, Display};
 use std::fs;
@@ -233,6 +233,7 @@ pub fn index(analyzer: &OsStr, input: &[u8], output: &mut dyn Write) -> Result<(
     }
 
     let root = canonical_root(&request.repository_root)?;
+    let project_root = discover_project_root(&root)?;
     let toolchain = toolchain_identity(analyzer, &root)?;
     let version = provider_version(&toolchain);
     let temporary = tempfile::Builder::new()
@@ -254,7 +255,7 @@ pub fn index(analyzer: &OsStr, input: &[u8], output: &mut dyn Write) -> Result<(
 
     let mut command = Command::new(analyzer);
     command
-        .current_dir(&root)
+        .current_dir(&project_root)
         // rust-analyzer's hand-written CLI expects the positional project path
         // before options; placing it last currently parses as an empty project.
         .args(["scip", ".", "--config-path"])
@@ -291,8 +292,9 @@ pub fn index(analyzer: &OsStr, input: &[u8], output: &mut dyn Write) -> Result<(
         MAX_INDEX_BYTES,
         "read rust-analyzer SCIP index",
     )?;
-    let index = scip_types::Index::parse_from_bytes(&encoded)
+    let mut index = scip_types::Index::parse_from_bytes(&encoded)
         .map_err(|error| AdapterError::wrap("decode rust-analyzer SCIP index", error))?;
+    rebase_documents(&mut index, &root, &project_root)?;
     let identity = if request.repository_identity.is_empty() {
         root.to_string_lossy().replace('\\', "/")
     } else {
@@ -313,6 +315,86 @@ pub fn index(analyzer: &OsStr, input: &[u8], output: &mut dyn Write) -> Result<(
         &units,
         request.limits,
     )
+}
+
+fn discover_project_root(root: &Path) -> Result<PathBuf> {
+    let mut directories = VecDeque::from([(root.to_path_buf(), 0_usize)]);
+    let mut nearest_depth = None;
+    let mut projects = Vec::new();
+    while let Some((directory, depth)) = directories.pop_front() {
+        if nearest_depth.is_some_and(|nearest| depth > nearest) {
+            break;
+        }
+        if directory.join("Cargo.toml").is_file() || directory.join("rust-project.json").is_file() {
+            nearest_depth = Some(depth);
+            projects.push(directory);
+            continue;
+        }
+        let entries = fs::read_dir(&directory)
+            .map_err(|error| AdapterError::wrap("discover Rust project", error))?;
+        let mut children = Vec::new();
+        for entry in entries {
+            let entry =
+                entry.map_err(|error| AdapterError::wrap("read Rust project entry", error))?;
+            let file_type = entry
+                .file_type()
+                .map_err(|error| AdapterError::wrap("inspect Rust project entry", error))?;
+            if !file_type.is_dir() {
+                continue;
+            }
+            if matches!(
+                entry.file_name().to_str(),
+                Some(".git" | "target" | "node_modules" | "bin" | "obj")
+            ) {
+                continue;
+            }
+            children.push(entry.path());
+        }
+        children.sort();
+        directories.extend(children.into_iter().map(|child| (child, depth + 1)));
+    }
+    match projects.as_slice() {
+        [] => Err(AdapterError::new(
+            "no Cargo.toml or rust-project.json found in repository",
+        )),
+        [project] => project
+            .canonicalize()
+            .map_err(|error| AdapterError::wrap("resolve Rust project root", error)),
+        _ => Err(AdapterError::new(format!(
+            "multiple nearest Rust projects found: {}",
+            projects
+                .iter()
+                .map(|project| project
+                    .strip_prefix(root)
+                    .unwrap_or(project)
+                    .to_string_lossy())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))),
+    }
+}
+
+fn rebase_documents(
+    index: &mut scip_types::Index,
+    repository_root: &Path,
+    project_root: &Path,
+) -> Result<()> {
+    let prefix = project_root
+        .strip_prefix(repository_root)
+        .map_err(|_| AdapterError::new("Rust project root escapes repository"))?;
+    if prefix.as_os_str().is_empty() {
+        return Ok(());
+    }
+    let prefix = prefix
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/");
+    for document in &mut index.documents {
+        let relative = safe_document_path(&document.relative_path)?;
+        document.relative_path = format!("{prefix}/{relative}");
+    }
+    Ok(())
 }
 
 fn validate_request(request: &IndexRequest) -> Result<()> {
@@ -502,6 +584,7 @@ pub fn normalize_index(
     let mut units = Vec::with_capacity(index.documents.len());
     let mut total_source = 0_u64;
     let mut total_facts = 0_usize;
+    let mut validated_symbols = BTreeSet::new();
     for (number, document) in index.documents.iter().enumerate() {
         let path = safe_document_path(&document.relative_path)
             .map_err(|error| AdapterError::new(format!("SCIP document {number}: {error}")))?;
@@ -524,6 +607,7 @@ pub fn normalize_index(
             &path,
             provider_version,
             variant,
+            &mut validated_symbols,
         )?;
         total_facts += 1 + facts.symbols.len() + facts.occurrences.len() + facts.edges.len();
         if total_facts > max_facts {
@@ -531,9 +615,31 @@ pub fn normalize_index(
         }
         units.push(facts);
     }
+    dedupe_global_symbols(&mut units)?;
     units.sort_by(|left, right| left.unit.id.cmp(&right.unit.id));
     validate_global_ids(&units)?;
     Ok(units)
+}
+
+fn dedupe_global_symbols(units: &mut [UnitFacts]) -> Result<()> {
+    units.sort_by(|left, right| {
+        left.documents
+            .first()
+            .map(|document| &document.path)
+            .cmp(&right.documents.first().map(|document| &document.path))
+            .then_with(|| left.unit.id.cmp(&right.unit.id))
+    });
+    let mut seen = BTreeSet::new();
+    for facts in units {
+        let symbol_count = facts.symbols.len();
+        facts
+            .symbols
+            .retain(|symbol| seen.insert(symbol.id.clone()));
+        if facts.symbols.len() != symbol_count {
+            refresh_unit_fingerprints(facts)?;
+        }
+    }
+    Ok(())
 }
 
 fn safe_document_path(value: &str) -> Result<String> {
@@ -626,6 +732,7 @@ fn normalize_document(
     path: &str,
     provider_version: &str,
     variant: &str,
+    validated_symbols: &mut BTreeSet<String>,
 ) -> Result<UnitFacts> {
     let unit_id = stable_id("scip-unit:", &[identity, path, PROVIDER, provider_version]);
     let document_id = stable_id("scip-document:", &[identity, PROVIDER, path]);
@@ -666,17 +773,19 @@ fn normalize_document(
     let encoding = document.position_encoding.enum_value().map_err(|value| {
         AdapterError::new(format!("unsupported SCIP position encoding {value}"))
     })?;
+    let source_index = SourceIndex::new(source);
     let mut definitions = BTreeMap::<String, SourceRange>::new();
+    let mut symbol_ids = BTreeMap::<String, String>::new();
     let mut occurrences = Vec::new();
     for (number, occurrence) in document.occurrences.iter().enumerate() {
         if occurrence.symbol.is_empty() {
             continue;
         }
-        validate_symbol(&occurrence.symbol)
+        validate_symbol_once(&occurrence.symbol, validated_symbols)
             .map_err(|error| AdapterError::new(format!("occurrence {number}: {error}")))?;
         let raw_range = occurrence_range(occurrence)
             .map_err(|error| AdapterError::new(format!("occurrence {number}: {error}")))?;
-        let range = convert_range(source, encoding, raw_range)?;
+        let range = convert_range(&source_index, encoding, raw_range)?;
         let definition = has_role(occurrence, scip_types::SymbolRole::Definition)
             || has_role(occurrence, scip_types::SymbolRole::ForwardDefinition);
         let role = if definition {
@@ -691,7 +800,7 @@ fn normalize_document(
         }
         occurrences.push(RawOccurrence {
             symbol: occurrence.symbol.clone(),
-            symbol_id: symbol_id(identity, path, &occurrence.symbol),
+            symbol_id: cached_symbol_id(&mut symbol_ids, identity, path, &occurrence.symbol),
             role,
             range,
         });
@@ -703,7 +812,7 @@ fn normalize_document(
                 "symbol information {number} has no symbol"
             )));
         }
-        validate_symbol(&information.symbol)
+        validate_symbol_once(&information.symbol, validated_symbols)
             .map_err(|error| AdapterError::new(format!("symbol information {number}: {error}")))?;
         let display_name = if information.display_name.is_empty() {
             information.symbol.clone()
@@ -711,7 +820,7 @@ fn normalize_document(
             information.display_name.clone()
         };
         let definition = definitions.get(&information.symbol).cloned();
-        let id = symbol_id(identity, path, &information.symbol);
+        let id = cached_symbol_id(&mut symbol_ids, identity, path, &information.symbol);
         facts.symbols.push(Symbol {
             id: id.clone(),
             unit_id: unit_id.clone(),
@@ -731,10 +840,10 @@ fn normalize_document(
             evidence: "exact",
         });
         for relationship in &information.relationships {
-            validate_symbol(&relationship.symbol).map_err(|error| {
+            validate_symbol_once(&relationship.symbol, validated_symbols).map_err(|error| {
                 AdapterError::new(format!("symbol information {number} relationship: {error}"))
             })?;
-            let target = symbol_id(identity, path, &relationship.symbol);
+            let target = cached_symbol_id(&mut symbol_ids, identity, path, &relationship.symbol);
             if relationship.is_implementation {
                 facts
                     .edges
@@ -785,12 +894,18 @@ fn normalize_document(
             &right.id,
         ))
     });
+    refresh_unit_fingerprints(&mut facts)?;
+    Ok(facts)
+}
+
+fn refresh_unit_fingerprints(facts: &mut UnitFacts) -> Result<()> {
     facts.unit.surface_fingerprint = digest_json(&json!({
         "symbols": facts.symbols,
         "edges": facts.edges,
     }))?;
+    facts.unit.inventory_digest.clear();
     facts.unit.inventory_digest = digest_json(&facts)?;
-    Ok(facts)
+    Ok(())
 }
 
 fn validate_symbol(value: &str) -> Result<()> {
@@ -800,6 +915,15 @@ fn validate_symbol(value: &str) -> Result<()> {
     scip::symbol::parse_symbol(value)
         .map(|_| ())
         .map_err(|error| AdapterError::new(format!("invalid SCIP symbol: {error:?}")))
+}
+
+fn validate_symbol_once(value: &str, validated: &mut BTreeSet<String>) -> Result<()> {
+    if validated.contains(value) {
+        return Ok(());
+    }
+    validate_symbol(value)?;
+    validated.insert(value.to_owned());
+    Ok(())
 }
 
 fn occurrence_range(value: &scip_types::Occurrence) -> Result<(i32, i32, i32, i32)> {
@@ -830,7 +954,7 @@ fn occurrence_range(value: &scip_types::Occurrence) -> Result<(i32, i32, i32, i3
 }
 
 fn convert_range(
-    source: &[u8],
+    source: &SourceIndex<'_>,
     encoding: scip_types::PositionEncoding,
     value: (i32, i32, i32, i32),
 ) -> Result<SourceRange> {
@@ -843,7 +967,7 @@ fn convert_range(
 }
 
 fn convert_position(
-    source: &[u8],
+    source: &SourceIndex<'_>,
     encoding: scip_types::PositionEncoding,
     line: i32,
     character: i32,
@@ -851,7 +975,8 @@ fn convert_position(
     if line < 0 || character < 0 {
         return Err(AdapterError::new("negative source coordinate"));
     }
-    let (line_bytes, offset) = source_line(source, line as usize)
+    let (line_bytes, offset) = source
+        .line(line as usize)
         .ok_or_else(|| AdapterError::new(format!("line {line} exceeds source")))?;
     let column = byte_column(line_bytes, encoding, character as usize)?;
     Ok(Position {
@@ -861,33 +986,39 @@ fn convert_position(
     })
 }
 
-fn source_line(source: &[u8], target: usize) -> Option<(&[u8], usize)> {
-    let mut start = 0;
-    let mut line = 0;
-    for (index, value) in source.iter().enumerate() {
-        if *value != b'\n' {
-            continue;
+struct SourceIndex<'a> {
+    source: &'a [u8],
+    lines: Vec<(usize, usize)>,
+}
+
+impl<'a> SourceIndex<'a> {
+    fn new(source: &'a [u8]) -> Self {
+        let mut lines = Vec::new();
+        let mut start = 0;
+        for (index, value) in source.iter().enumerate() {
+            if *value == b'\n' {
+                let end = if index > start && source[index - 1] == b'\r' {
+                    index - 1
+                } else {
+                    index
+                };
+                lines.push((start, end));
+                start = index + 1;
+            }
         }
-        if line == target {
-            let end = if index > start && source[index - 1] == b'\r' {
-                index - 1
-            } else {
-                index
-            };
-            return Some((&source[start..end], start));
-        }
-        line += 1;
-        start = index + 1;
-    }
-    if line == target {
         let end = if source.len() > start && source[source.len() - 1] == b'\r' {
             source.len() - 1
         } else {
             source.len()
         };
-        Some((&source[start..end], start))
-    } else {
-        None
+        lines.push((start, end));
+        Self { source, lines }
+    }
+
+    fn line(&self, target: usize) -> Option<(&'a [u8], usize)> {
+        self.lines
+            .get(target)
+            .map(|(start, end)| (&self.source[*start..*end], *start))
     }
 }
 
@@ -965,6 +1096,20 @@ fn symbol_id(identity: &str, path: &str, symbol: &str) -> String {
     } else {
         stable_id("scip-symbol:", &[identity, PROVIDER, symbol])
     }
+}
+
+fn cached_symbol_id(
+    values: &mut BTreeMap<String, String>,
+    identity: &str,
+    path: &str,
+    symbol: &str,
+) -> String {
+    if let Some(id) = values.get(symbol) {
+        return id.clone();
+    }
+    let id = symbol_id(identity, path, symbol);
+    values.insert(symbol.to_owned(), id.clone());
+    id
 }
 
 fn semantic_edge(unit_id: &str, from: &str, to: &str, kind: &'static str) -> Edge {
@@ -1198,11 +1343,107 @@ mod tests {
     }
 
     #[test]
+    fn source_index_resolves_lines_without_rescanning() {
+        let source = SourceIndex::new(b"first\r\nsecond\n");
+        assert_eq!(source.line(0), Some((&b"first"[..], 0)));
+        assert_eq!(source.line(1), Some((&b"second"[..], 7)));
+        assert_eq!(source.line(2), Some((&b""[..], 14)));
+        assert_eq!(source.line(3), None);
+        let position = convert_position(
+            &source,
+            scip_types::PositionEncoding::UTF8CodeUnitOffsetFromLineStart,
+            1,
+            3,
+        )
+        .unwrap();
+        assert_eq!(
+            position,
+            Position {
+                line: 1,
+                column: 3,
+                byte: 10
+            }
+        );
+    }
+
+    #[test]
     fn unsafe_paths_are_rejected() {
         for path in ["", "/abs.rs", "../out.rs", "src/../out.rs", "src\\out.rs"] {
             assert!(safe_document_path(path).is_err(), "accepted {path:?}");
         }
         assert_eq!(safe_document_path("src/lib.rs").unwrap(), "src/lib.rs");
+    }
+
+    #[test]
+    fn nested_project_is_discovered_and_rebased_to_the_repository() {
+        let temporary = tempfile::tempdir().unwrap();
+        let project = temporary.path().join("adapters/rust");
+        let deeper = temporary.path().join("tests/fixtures/sample");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(&deeper).unwrap();
+        fs::write(project.join("Cargo.toml"), "[workspace]\n").unwrap();
+        fs::write(deeper.join("Cargo.toml"), "[workspace]\n").unwrap();
+        let root = temporary.path().canonicalize().unwrap();
+        let project = project.canonicalize().unwrap();
+        assert_eq!(discover_project_root(&root).unwrap(), project);
+
+        let mut index = scip_types::Index {
+            documents: vec![scip_types::Document {
+                relative_path: "src/lib.rs".to_owned(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        rebase_documents(&mut index, &root, &project).unwrap();
+        assert_eq!(index.documents[0].relative_path, "adapters/rust/src/lib.rs");
+    }
+
+    #[test]
+    fn duplicate_global_symbols_have_deterministic_document_ownership() {
+        let symbol = Symbol {
+            id: "global".to_owned(),
+            unit_id: "unit-b".to_owned(),
+            stable_name: "crate/".to_owned(),
+            display_name: "crate".to_owned(),
+            normalized_name: "crate".to_owned(),
+            kind: "package".to_owned(),
+            document_id: String::new(),
+            definition: SourceRange::default(),
+            provider: PROVIDER.to_owned(),
+            evidence: "exact",
+        };
+        let unit = |id: &str, path: &str| UnitFacts {
+            unit: Unit {
+                id: id.to_owned(),
+                provider: PROVIDER.to_owned(),
+                provider_version: "test".to_owned(),
+                language: "rust".to_owned(),
+                variant: String::new(),
+                input_fingerprint: String::new(),
+                surface_fingerprint: String::new(),
+                inventory_digest: String::new(),
+            },
+            documents: vec![Document {
+                id: format!("document-{id}"),
+                unit_id: id.to_owned(),
+                path: path.to_owned(),
+                language: "rust".to_owned(),
+                content_hash: String::new(),
+                provider: PROVIDER.to_owned(),
+                provider_version: "test".to_owned(),
+            }],
+            symbols: vec![Symbol {
+                unit_id: id.to_owned(),
+                ..symbol.clone()
+            }],
+            occurrences: Vec::new(),
+            edges: Vec::new(),
+        };
+        let mut units = vec![unit("unit-b", "src/z.rs"), unit("unit-a", "src/a.rs")];
+        dedupe_global_symbols(&mut units).unwrap();
+        assert_eq!(units[0].documents[0].path, "src/a.rs");
+        assert_eq!(units[0].symbols.len(), 1);
+        assert!(units[1].symbols.is_empty());
     }
 
     #[test]
