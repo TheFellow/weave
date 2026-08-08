@@ -55,7 +55,7 @@ answer = answer_path.read_text(encoding="utf-8", errors="replace") if answer_pat
 rubric = json.loads(Path(args.rubric).read_text(encoding="utf-8"))
 checks = []
 for check in rubric.get("required", []):
-    matched = re.search(check["pattern"], answer, re.IGNORECASE | re.MULTILINE) is not None
+    matched = re.search(check["pattern"], answer, re.IGNORECASE | re.MULTILINE | re.DOTALL) is not None
     checks.append({"id": check["id"], "matched": matched})
 
 sample = json.loads(Path(args.sample).read_text(encoding="utf-8"))

@@ -123,3 +123,56 @@ successful workload rather than a statistically general performance claim.
 The material result is that the one initial dossier supplied the GUI, TUI,
 module, command, readiness, persistence, and test seams while preserving the
 same rubric completeness as ordinary repository exploration.
+
+## Content-repository paired case
+
+A second paired case asked both agents to explain the measurement argument in
+the GitHub Pages repository from body concepts rather than heading names. Both
+answers matched the deterministic 8/8 rubric. The Weave arm made one `explore`
+call and one targeted source read; the control made two filesystem searches and
+one source read.
+
+| Measure | With Weave | Without Weave | Difference |
+| --- | ---: | ---: | ---: |
+| Correctness rubric | 8/8 | 8/8 | — |
+| Input tokens | 50,461 | 64,117 | 21.3% fewer |
+| Output tokens | 1,322 | 1,447 | 8.6% fewer |
+| Wall time | 16.17s | 14.27s | 1.90s slower |
+| Command executions | 2 | 2 | equal |
+| Filesystem searches | 0 | 2 | 2 fewer |
+| Source-read commands | 1 | 1 | equal |
+
+This is also one sample. It demonstrates that body discovery can eliminate
+filesystem search and reduce tokens without claiming a wall-time win. The
+sample then drove ranking corrections: broad generated pages no longer outrank
+focused authored sections, rare terms and entity length are balanced, related
+sections remain coherent, Markdown preludes expand, and file-level matches
+anchor their source at the matching line.
+
+On the final candidate, the same long prompt returned eight coherent authored
+guide entities: the paired result, benchmark question, product corrections,
+document premise, recorded losses, consolidation caveat, experimental controls,
+and supporting flow. A separate Mixology query for “publication lifetime
+independently from background work” ranked `pkg/toolkits/gui/dispatcher.go`
+first and returned the exact comment at lines 25–26 while retaining its
+compiler-derived `defines` relationships.
+
+## Resident-query latency and ownership
+
+One local macOS run against the rebuilt Mixology storage-v3 index measured a
+single `symbols Readiness --limit 5` query and then 20 identical requests over
+one foreground `weave session`:
+
+| Path | Latency |
+| --- | ---: |
+| One-shot CLI | 751.974 ms |
+| Session first request | 1,453.892 ms |
+| Session warm median | 0.379 ms |
+| Session warm range | 0.275–2.193 ms |
+
+This is a latency sample, not a throughput distribution. It proves the intended
+shape: the cold request pays freshness and open costs, while serialized warm
+queries reuse one handle. A concurrent ordinary CLI process failed with the
+bounded `inspect database schema: timeout` error while the session owned bstore;
+after session EOF, the same CLI command succeeded. The ownership constraint is
+therefore visible, tested, and released correctly rather than hidden.

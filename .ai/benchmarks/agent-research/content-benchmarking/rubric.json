@@ -1,0 +1,12 @@
+{
+  "required": [
+    {"id": "latency-insufficient", "pattern": "latency.{0,180}(insufficient|not enough|only.{0,80}(speed|fast)|not.{0,80}(complete|finish|help))|insufficient.{0,120}latency"},
+    {"id": "uncontrolled-limit", "pattern": "(uncontrolled|no without-Weave arm|no control arm|could not attribute|cannot attribute)"},
+    {"id": "friction-product", "pattern": "(ambiguous|opaque|duplicate|builtin).{0,180}(product|change|improv)|product.{0,180}(ambiguous|opaque|duplicate|builtin)"},
+    {"id": "paired-isolation", "pattern": "((same|identical).{0,40}question).{0,180}(isolated clone|clone)|(isolated clone|clone).{0,180}((same|identical).{0,40}question)"},
+    {"id": "blocked-control", "pattern": "(blocked|shadow).{0,120}(weave|executable)|control.{0,180}(PATH|unavailable)"},
+    {"id": "measurements", "pattern": "token.{0,180}(command|search|read)|command.{0,180}(search|read)"},
+    {"id": "correctness", "pattern": "8/8|eight.{0,40}eight|rubric"},
+    {"id": "single-sample", "pattern": "(single|one).{0,120}(sample|pair|workload)|(not|should not).{0,120}(general|population estimate|conclusive)"}
+  ]
+}

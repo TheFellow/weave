@@ -40,6 +40,9 @@ ln -s "$root/scripts/weave-benchmark-blocked" "$work/without-bin/weave"
   echo "go=$(go version)"
   echo "runs=$runs"
   echo "timeout_seconds=$timeout_seconds"
+  echo "agent_sandbox=workspace-write"
+  echo "index_access=exact-clone-.git/weave"
+  echo "source_worktree_audit=git-status-porcelain"
 } >"$output/environment.txt"
 
 run_arm() {
