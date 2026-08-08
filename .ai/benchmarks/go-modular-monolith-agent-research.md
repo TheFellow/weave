@@ -100,3 +100,26 @@ The reproducible paired-arm harness now lives at
 correctness rubric under `.ai/benchmarks/agent-research/menu-publish/`. It
 retains raw event logs and answers so tool-count and token claims remain
 auditable instead of being inferred from the final prose.
+
+## Controlled paired-arm proof run
+
+The first valid paired run used Weave commit `9c756c7`, repository commit
+`7b01054`, Codex CLI 0.147.0, and one isolated clone per arm. The indexed arm
+made one successful `weave explore` call. The control arm had a same-named
+blocking executable on `PATH`; neither arm changed its source worktree.
+
+| Measure | With Weave | Without Weave | Reduction |
+| --- | ---: | ---: | ---: |
+| Correctness rubric | 8/8 | 8/8 | — |
+| Input tokens | 167,344 | 342,080 | 51.1% |
+| Output tokens | 2,816 | 3,621 | 22.2% |
+| Wall time | 27.8s | 33.2s | 16.3% |
+| Command executions | 5 | 8 | 37.5% |
+| Filesystem searches | 1 | 4 | 75.0% |
+| Source-read commands | 4 | 6 | 33.3% |
+
+This is a single paired sample, so it demonstrates the harness and a concrete
+successful workload rather than a statistically general performance claim.
+The material result is that the one initial dossier supplied the GUI, TUI,
+module, command, readiness, persistence, and test seams while preserving the
+same rubric completeness as ordinary repository exploration.
