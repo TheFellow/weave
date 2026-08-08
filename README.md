@@ -134,7 +134,9 @@ outgoing sections provide the direct semantic neighborhood. Those sections
 collapse duplicate endpoints, prefer calls and contract edges over their
 underlying references, and omit local-variable and language-builtin references
 that are already visible in the source excerpt. The narrower graph commands and
-JSON export retain access to exhaustive facts. Compiler-qualified entities
+direct `context` command retain access to exhaustive facts and relationship
+source excerpts; multi-focus `explore` omits those redundant neighboring
+excerpts to keep structured agent responses bounded. Compiler-qualified entities
 accept concise names such as
 `AvailabilityCalculator.Readiness`, `Presenter.loadReadiness`, or
 `ReadinessReport.HasBlockers`; JSON retains the opaque stable graph IDs when a
@@ -201,6 +203,9 @@ before running index, GC, verification, catalog, or authored-link operations.
 The session deliberately excludes those maintenance and mutation commands.
 The complete wire fields, bounds, lifecycle, and language-neutral golden
 requests live in the [`weave.query-session/v1` contract](protocol/query-session/v1/README.md).
+Its multi-focus explore frame keeps full focus source and exact relationship
+edges while reducing repeated neighbor entities to compact `adjacent` follow-up
+coordinates; direct context remains the full-fidelity structured query.
 
 ## Controlled agent research benchmark
 
@@ -297,6 +302,11 @@ weave workspace links README.md
 weave workspace backlinks docs/design.md
 weave workspace backlinks docs/design.md --scope catalog
 ```
+
+`workspace find` treats a multiword value as an intersection of its bounded
+lexical postings, so the documented phrase form finds entities containing the
+complete concept instead of passing an impossible space-containing token to
+the index.
 
 `ws` is an alias for `workspace`. Documents, sections, directories, assets, and
 routes have stable repository-qualified graph identities. Relative Markdown

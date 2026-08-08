@@ -38,6 +38,9 @@ type Options struct {
 	ContextLines    int
 	MaxSourceBytes  int
 	FullDefinitions bool
+	// OmitRelationshipSources keeps a multi-focus discovery response compact;
+	// direct context queries retain relationship excerpts by default.
+	OmitRelationshipSources bool
 	// LexicalTerms are normalized discovery terms used only to anchor a file
 	// entity's current-source excerpt. They do not create graph evidence.
 	LexicalTerms []string
@@ -56,6 +59,17 @@ type Result struct {
 type Entity struct {
 	Symbol       graph.Symbol `json:"symbol"`
 	Repositories []Repository `json:"repositories,omitempty"`
+}
+
+// EntitySummary is the exact follow-up identity used by compact multi-focus
+// agent responses. Direct context keeps the complete Entity representation.
+type EntitySummary struct {
+	ID          string         `json:"id"`
+	StableName  string         `json:"stable_name"`
+	DisplayName string         `json:"display_name"`
+	Kind        string         `json:"kind"`
+	Provider    string         `json:"provider"`
+	Evidence    graph.Evidence `json:"evidence"`
 }
 
 type Evidence struct {
@@ -77,6 +91,7 @@ type Evidence struct {
 type Relationship struct {
 	Edge         graph.Edge      `json:"edge"`
 	Entity       *Entity         `json:"entity,omitempty"`
+	Adjacent     *EntitySummary  `json:"adjacent,omitempty"`
 	Document     *graph.Document `json:"document,omitempty"`
 	Repositories []Repository    `json:"repositories,omitempty"`
 	Source       *SourceExcerpt  `json:"source,omitempty"`
@@ -216,11 +231,13 @@ func Build(ctx context.Context, store Store, target string, options Options, loc
 			item.Source = loader.excerpt(ctx, item.Repositories[0], document, item.Range)
 		}
 	}
-	if err := hydrateRelationshipSources(ctx, store, result.Incoming, loader, locate); err != nil {
-		return Result{}, err
-	}
-	if err := hydrateRelationshipSources(ctx, store, result.Outgoing, loader, locate); err != nil {
-		return Result{}, err
+	if !options.OmitRelationshipSources {
+		if err := hydrateRelationshipSources(ctx, store, result.Incoming, loader, locate); err != nil {
+			return Result{}, err
+		}
+		if err := hydrateRelationshipSources(ctx, store, result.Outgoing, loader, locate); err != nil {
+			return Result{}, err
+		}
 	}
 	result.Metadata.SourceBytes = loader.used
 	result.Metadata.Truncation.Source = loader.truncated

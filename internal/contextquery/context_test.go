@@ -159,6 +159,13 @@ func TestExploreBuildsBoundedDossiersFromResearchPhrase(t *testing.T) {
 	if results[0].Metadata.SourceBytes+results[1].Metadata.SourceBytes > 4096 {
 		t.Fatalf("shared source budget exceeded: %#v", results)
 	}
+	for _, result := range results {
+		for _, relationship := range append(append([]contextquery.Relationship{}, result.Incoming...), result.Outgoing...) {
+			if relationship.Source != nil {
+				t.Fatalf("explore included redundant relationship source: %#v", relationship)
+			}
+		}
+	}
 
 	exact, exactTruncated, err := contextquery.Explore(ctx, db, "Target", contextquery.ExploreOptions{
 		FocusLimit: 4,

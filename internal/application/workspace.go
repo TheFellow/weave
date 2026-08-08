@@ -61,20 +61,70 @@ func executeWorkspace(ctx context.Context, store workspaceStore, response *Respo
 func findWorkspaceSymbols(ctx context.Context, store workspaceStore, value string, limit int) ([]graph.Symbol, bool, error) {
 	candidateLimit := max(1024, limit*16)
 	candidateLimit = min(candidateLimit, 100000)
-	values, truncated, err := store.FindSymbols(ctx, value, candidateLimit)
-	if err != nil {
-		return nil, false, err
+	terms := graph.ExtractSearchTerms(value)
+	if len(strings.Fields(value)) <= 1 || len(terms) <= 1 {
+		values, truncated, err := store.FindSymbols(ctx, value, candidateLimit)
+		if err != nil {
+			return nil, false, err
+		}
+		result := values[:0]
+		for _, symbol := range values {
+			if workspaceKinds[symbol.Kind] {
+				result = append(result, symbol)
+			}
+		}
+		if len(result) > limit {
+			result, truncated = result[:limit], true
+		}
+		return result, truncated, nil
 	}
-	result := values[:0]
-	for _, symbol := range values {
-		if workspaceKinds[symbol.Kind] {
-			result = append(result, symbol)
+	type match struct {
+		symbol graph.Symbol
+		score  int
+		count  int
+	}
+	matches := map[string]match{}
+	truncated := false
+	for termIndex, term := range terms {
+		values, more, err := store.FindSymbols(ctx, term, candidateLimit)
+		if err != nil {
+			return nil, false, err
+		}
+		truncated = truncated || more
+		for index, symbol := range values {
+			if !workspaceKinds[symbol.Kind] {
+				continue
+			}
+			current, exists := matches[symbol.ID]
+			if termIndex != 0 && (!exists || current.count != termIndex) {
+				continue
+			}
+			current.symbol = symbol
+			current.count++
+			current.score += index
+			matches[symbol.ID] = current
 		}
 	}
+	result := make([]match, 0, len(matches))
+	for _, candidate := range matches {
+		if candidate.count == len(terms) {
+			result = append(result, candidate)
+		}
+	}
+	slices.SortFunc(result, func(a, b match) int {
+		if a.score != b.score {
+			return a.score - b.score
+		}
+		return strings.Compare(a.symbol.StableName+"\x00"+a.symbol.ID, b.symbol.StableName+"\x00"+b.symbol.ID)
+	})
 	if len(result) > limit {
 		result, truncated = result[:limit], true
 	}
-	return result, truncated, nil
+	values := make([]graph.Symbol, 0, len(result))
+	for _, candidate := range result {
+		values = append(values, candidate.symbol)
+	}
+	return values, truncated, nil
 }
 
 func resolveWorkspace(ctx context.Context, store workspaceStore, value string) (graph.Symbol, error) {

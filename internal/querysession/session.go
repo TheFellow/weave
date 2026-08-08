@@ -14,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/TheFellow/weave/internal/application"
+	"github.com/TheFellow/weave/internal/contextquery"
 	"github.com/TheFellow/weave/internal/graph"
 	"github.com/TheFellow/weave/internal/query"
 )
@@ -97,6 +98,9 @@ func Serve(ctx context.Context, service application.Service, input io.Reader, ou
 			}
 			continue
 		}
+		if request.Command == "explore" {
+			compactExplore(&result)
+		}
 		if err := encoder.Encode(Frame{Protocol: Protocol, ID: request.ID, Result: &result}); err != nil {
 			return err
 		}
@@ -105,6 +109,34 @@ func Serve(ctx context.Context, service application.Service, input io.Reader, ou
 		return fmt.Errorf("read query session request: %w", err)
 	}
 	return nil
+}
+
+func compactExplore(response *application.Response) {
+	for contextIndex := range response.Contexts {
+		result := &response.Contexts[contextIndex]
+		for evidenceIndex := range result.Evidence {
+			result.Evidence[evidenceIndex].Document = nil
+			result.Evidence[evidenceIndex].Repositories = nil
+		}
+		compactRelationships := func(values []contextquery.Relationship) {
+			for index := range values {
+				item := &values[index]
+				if item.Entity != nil {
+					symbol := item.Entity.Symbol
+					item.Adjacent = &contextquery.EntitySummary{
+						ID: symbol.ID, StableName: symbol.StableName, DisplayName: symbol.DisplayName,
+						Kind: symbol.Kind, Provider: symbol.Provider, Evidence: symbol.Evidence,
+					}
+				}
+				item.Entity = nil
+				item.Document = nil
+				item.Repositories = nil
+				item.Source = nil
+			}
+		}
+		compactRelationships(result.Incoming)
+		compactRelationships(result.Outgoing)
+	}
 }
 
 func errorFrame(id, code, message string) Frame {
@@ -184,6 +216,9 @@ func (request Request) invocation() (application.Invocation, error) {
 	maxSourceBytes := request.MaxSourceBytes
 	if maxSourceBytes == 0 {
 		maxSourceBytes = 64 << 10
+		if request.Command == "explore" {
+			maxSourceBytes = 32 << 10
+		}
 	}
 	if maxSourceBytes < 1 || maxSourceBytes > 4<<20 {
 		return application.Invocation{}, errors.New("max_source_bytes must be between 1 and 4194304")
@@ -191,6 +226,9 @@ func (request Request) invocation() (application.Invocation, error) {
 	relationshipLimit := request.RelationshipLimit
 	if relationshipLimit == 0 {
 		relationshipLimit = 6
+		if request.Command == "explore" {
+			relationshipLimit = 4
+		}
 	}
 	if relationshipLimit < 1 || relationshipLimit > 512 {
 		return application.Invocation{}, errors.New("relationship_limit must be between 1 and 512")

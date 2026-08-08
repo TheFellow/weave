@@ -30,7 +30,9 @@ Every request requires:
 Optional bounds mirror the CLI: `limit`, `max_depth`, `max_edges`, `kinds`,
 `direction`, `context_lines`, `max_source_bytes`, `relationship_limit`,
 `impact_files`, `impact_packages`, and `diff_revision`. Zero or omission selects
-the documented CLI-shaped default. Unknown fields, unknown edge kinds, invalid
+the documented CLI-shaped default. The agent-oriented `explore` default keeps
+eight focuses but uses a 32 KiB shared source budget and four relationships per
+direction; callers can raise either bound explicitly. Unknown fields, unknown edge kinds, invalid
 bounds, catalog scope, and unsupported commands are rejected without ending the
 session.
 
@@ -68,9 +70,16 @@ do not terminate the stream. Error messages are valid UTF-8 and bounded to 8
 KiB. A request line is bounded to 1 MiB; exceeding the framing limit terminates
 the process because the next record boundary cannot be recovered safely.
 
-Responses are bounded by the request/default result ceilings. `context` and
-`explore` include current source excerpts and provenance; graph identities and
-facts remain independent of the language provider that produced them.
+Responses are bounded by the request/default result ceilings. `context` returns
+the complete rich entity and relationship representation. Multi-focus
+`explore` keeps complete focus evidence and source, but replaces each repeated
+neighbor entity/provenance block with an `adjacent` summary containing its exact
+ID, stable/display names, kind, provider, and evidence. The relationship edge
+still carries exact endpoints, location, kind, provider, and evidence. This
+projection avoids repeating the same local repository and symbol internals
+dozens of times while preserving deterministic follow-up coordinates. Graph
+identities and facts remain independent of the language provider that produced
+them.
 
 ## Lifecycle and freshness
 

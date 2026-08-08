@@ -176,3 +176,14 @@ queries reuse one handle. A concurrent ordinary CLI process failed with the
 bounded `inspect database schema: timeout` error while the session owned bstore;
 after session EOF, the same CLI command succeeded. The ownership constraint is
 therefore visible, tested, and released correctly rather than hidden.
+
+The final installed-endpoint matrix also exposed structured-response overhead:
+an eight-focus Mixology explore initially returned 229,134 bytes in 1.19s
+because every neighboring relationship repeated full source, repository, and
+symbol records. Explore now keeps full focus evidence, omits redundant neighbor
+source, uses compact exact `adjacent` coordinates, and defaults the session to a
+32 KiB focus-source budget plus four relationships per direction. The same
+request returned 84,036 bytes in 0.74s, a 63.3% byte reduction, while retaining
+all eight focuses and 60 typed relationship edges. Direct `context` remains the
+full-fidelity follow-up. These are single local samples, retained as product
+regression evidence rather than generalized latency claims.

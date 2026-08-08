@@ -41,6 +41,7 @@ func Explore(ctx context.Context, store Store, value string, options ExploreOpti
 	contextOptions := options.Context
 	contextOptions.MaxSourceBytes = max(1, options.Context.MaxSourceBytes/len(symbols))
 	contextOptions.FullDefinitions = true
+	contextOptions.OmitRelationshipSources = true
 	contextOptions.LexicalTerms = exploreTerms(value)
 	results := make([]Result, 0, len(symbols))
 	for _, symbol := range symbols {

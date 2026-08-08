@@ -38,6 +38,14 @@ session state. Other Weave processes against the same worktree are expected to
 hit the existing bounded open timeout while a session owns the database. This
 constraint is documented rather than hidden.
 
+The session's multi-focus `explore` projection keeps complete focus evidence
+and source but compacts repeated neighboring entities to exact adjacent
+ID/name/kind/provider/evidence coordinates. Relationship edges retain their
+exact endpoints, ranges, providers, and evidence. Its omitted defaults use a
+32 KiB shared focus-source budget and four relationships per direction; direct
+`context` retains the complete rich relationship representation, and clients
+may raise the explore bounds explicitly.
+
 ## Consequences
 
 Warm requests avoid process startup, repeated bstore opens, schema preflights,

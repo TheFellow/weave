@@ -36,8 +36,11 @@ and focused sections, keeps matching sections from the strongest document
 coherent, and demotes explicit generated representations. Known `llms.txt` and
 `llms-full.txt` aggregations are labeled generated evidence. A generic file
 dossier locates the strongest matching current line before applying the normal
-source context and byte bounds. Search terms remain discovery hints and never
-imply a graph relationship or stronger semantic edge.
+source context and byte bounds. Multi-focus explore results include complete
+focus evidence but omit redundant source excerpts for every adjacent edge;
+their typed relationships and locations remain, and direct `context` queries
+retain the richer relationship excerpts. Search terms remain discovery hints
+and never imply a graph relationship or stronger semantic edge.
 
 ## Consequences
 

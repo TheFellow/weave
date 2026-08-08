@@ -11,11 +11,38 @@ import (
 	"testing"
 
 	"github.com/TheFellow/weave/internal/application"
+	"github.com/TheFellow/weave/internal/contextquery"
+	"github.com/TheFellow/weave/internal/graph"
 )
 
 type recordingService struct {
 	invocations []application.Invocation
 	err         error
+}
+
+func TestCompactExplorePreservesExactFollowUpCoordinates(t *testing.T) {
+	document := graph.Document{ID: "document", Path: "source.go"}
+	source := contextquery.SourceExcerpt{Status: contextquery.SourceCurrent, Path: "source.go"}
+	response := application.Response{Contexts: []contextquery.Result{{
+		Evidence: []contextquery.Evidence{{Document: &document, Repositories: []contextquery.Repository{{Identity: "example/repo"}}, Source: source}},
+		Incoming: []contextquery.Relationship{{
+			Edge:     graph.Edge{ID: "edge", From: "caller", To: "focus", Kind: graph.EdgeCalls, Provider: "compiler", Evidence: graph.EvidenceExact},
+			Entity:   &contextquery.Entity{Symbol: graph.Symbol{ID: "caller", StableName: "example.Caller", DisplayName: "Caller", Kind: "function", Provider: "compiler", Evidence: graph.EvidenceExact}},
+			Document: &document, Repositories: []contextquery.Repository{{Identity: "example/repo"}}, Source: &source,
+		}},
+	}}}
+	compactExplore(&response)
+	result := response.Contexts[0]
+	if result.Evidence[0].Document != nil || len(result.Evidence[0].Repositories) != 0 || result.Evidence[0].Source.Path != "source.go" {
+		t.Fatalf("compact evidence = %#v", result.Evidence[0])
+	}
+	relationship := result.Incoming[0]
+	if relationship.Entity != nil || relationship.Adjacent == nil || relationship.Adjacent.ID != "caller" || relationship.Adjacent.StableName != "example.Caller" || relationship.Edge.ID != "edge" {
+		t.Fatalf("compact relationship = %#v", relationship)
+	}
+	if relationship.Document != nil || relationship.Source != nil || len(relationship.Repositories) != 0 {
+		t.Fatalf("redundant relationship fields survived: %#v", relationship)
+	}
 }
 
 func (service *recordingService) Execute(_ context.Context, invocation application.Invocation) (application.Response, error) {
@@ -33,7 +60,7 @@ func TestServeExecutesMultipleBoundedQueries(t *testing.T) {
 	if err := Serve(context.Background(), service, strings.NewReader(input), &output); err != nil {
 		t.Fatal(err)
 	}
-	if len(service.invocations) != 2 || service.invocations[0].Limit != 8 || service.invocations[0].MaxSourceBytes != 64<<10 || service.invocations[1].MaxDepth != 3 {
+	if len(service.invocations) != 2 || service.invocations[0].Limit != 8 || service.invocations[0].MaxSourceBytes != 32<<10 || service.invocations[0].ContextLimit != 4 || service.invocations[1].MaxDepth != 3 {
 		t.Fatalf("invocations = %#v", service.invocations)
 	}
 	decoder := json.NewDecoder(&output)

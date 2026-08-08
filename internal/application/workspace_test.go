@@ -25,6 +25,13 @@ func TestWorkspaceQueriesAreStrictAndAggregateSectionLinks(t *testing.T) {
 		t.Fatal(err)
 	}
 	app := Local{DatabasePath: databasePath}
+	found, err := app.Execute(ctx, Invocation{Command: "workspace find", Arguments: []string{"publication lifetime independently"}, Limit: 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(found.Symbols) != 1 || found.Symbols[0].ID != "design" {
+		t.Fatalf("phrase find = %#v", found)
+	}
 
 	outline, err := app.Execute(ctx, Invocation{Command: "workspace outline", Arguments: []string{"README.md"}, Limit: 20, MaxDepth: 1})
 	if err != nil {
@@ -66,7 +73,7 @@ func workspaceFixture() graph.UnitFacts {
 		},
 		Symbols: []graph.Symbol{
 			{ID: "readme", UnitID: "workspace-fixture", StableName: "README.md", DisplayName: "Readme", Kind: "document", DocumentID: "readme-doc", Definition: zero, Provider: "test", Evidence: graph.EvidenceSyntactic},
-			{ID: "design", UnitID: "workspace-fixture", StableName: "README.md#design", DisplayName: "Design", Kind: "section", DocumentID: "readme-doc", Definition: zero, Provider: "test", Evidence: graph.EvidenceSyntactic},
+			{ID: "design", UnitID: "workspace-fixture", StableName: "README.md#design", DisplayName: "Design", SearchTerms: []string{"independently", "lifetime", "publication"}, Kind: "section", DocumentID: "readme-doc", Definition: zero, Provider: "test", Evidence: graph.EvidenceSyntactic},
 			{ID: "guide", UnitID: "workspace-fixture", StableName: "docs/guide.md", DisplayName: "Guide", Kind: "document", DocumentID: "guide-doc", Definition: zero, Provider: "test", Evidence: graph.EvidenceSyntactic},
 			{ID: "guide-section", UnitID: "workspace-fixture", StableName: "docs/guide.md#details", DisplayName: "Details", Kind: "section", DocumentID: "guide-doc", Definition: zero, Provider: "test", Evidence: graph.EvidenceSyntactic},
 		},
