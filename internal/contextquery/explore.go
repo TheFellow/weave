@@ -39,6 +39,7 @@ func Explore(ctx context.Context, store Store, value string, options ExploreOpti
 
 	contextOptions := options.Context
 	contextOptions.MaxSourceBytes = max(1, options.Context.MaxSourceBytes/len(symbols))
+	contextOptions.FullDefinitions = true
 	results := make([]Result, 0, len(symbols))
 	for _, symbol := range symbols {
 		result, buildErr := Build(ctx, store, symbol.ID, contextOptions, locate)
@@ -104,6 +105,7 @@ func exploreCandidates(ctx context.Context, store Store, value string, limit int
 		}
 		candidates = append(candidates, candidate)
 	}
+	candidates = applyExplicitDomainScope(candidates, terms)
 	slices.SortFunc(candidates, func(left, right scoredSymbol) int {
 		if left.score != right.score {
 			return right.score - left.score
@@ -122,6 +124,67 @@ func exploreCandidates(ctx context.Context, store Store, value string, limit int
 		result = append(result, candidate.symbol)
 	}
 	return result, truncated, nil
+}
+
+func applyExplicitDomainScope(candidates []scoredSymbol, terms []string) []scoredSymbol {
+	requestedDomains := map[string]bool{}
+	for _, candidate := range candidates {
+		domain := symbolDomain(candidate.symbol.StableName)
+		for _, term := range terms {
+			if domainMatchesTerm(domain, term) {
+				requestedDomains[domain] = true
+			}
+		}
+	}
+	if len(requestedDomains) == 0 {
+		return candidates
+	}
+	exactCounts := map[string]int{}
+	for _, term := range terms {
+		for _, variant := range exploreTermVariants(term) {
+			for _, candidate := range candidates {
+				if strings.EqualFold(candidate.symbol.DisplayName, variant) {
+					exactCounts[variant]++
+				}
+			}
+		}
+	}
+	result := make([]scoredSymbol, 0, len(candidates))
+	for _, candidate := range candidates {
+		if requestedDomains[symbolDomain(candidate.symbol.StableName)] || rareExactCandidate(candidate.symbol, exactCounts) {
+			result = append(result, candidate)
+		}
+	}
+	if len(result) < 2 {
+		return candidates
+	}
+	return result
+}
+
+func symbolDomain(stableName string) string {
+	const marker = "/domains/"
+	index := strings.Index(stableName, marker)
+	if index < 0 {
+		return ""
+	}
+	remainder := stableName[index+len(marker):]
+	if end := strings.IndexAny(remainder, "/."); end >= 0 {
+		return remainder[:end]
+	}
+	return remainder
+}
+
+func domainMatchesTerm(domain, term string) bool {
+	if domain == "" {
+		return false
+	}
+	return domain == term || strings.TrimSuffix(domain, "s") == strings.TrimSuffix(term, "s")
+}
+
+func rareExactCandidate(symbol graph.Symbol, exactCounts map[string]int) bool {
+	name := strings.ToLower(symbol.DisplayName)
+	count := exactCounts[name]
+	return count > 0 && count <= 2
 }
 
 func exploreScopeScore(term string) int {
@@ -209,11 +272,11 @@ func exploreTermVariants(term string) []string {
 func exploreKindScore(kind string) int {
 	switch kind {
 	case "function", "method":
-		return 50
+		return 100
 	case "type", "interface", "test":
-		return 20
+		return 40
 	case "field", "constant", "route":
-		return 5
+		return -10
 	case "variable", "parameter":
 		return -20
 	case "package", "file", "document":

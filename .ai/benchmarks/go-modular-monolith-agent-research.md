@@ -93,5 +93,10 @@ entities using symbol-name, kind, and path-scope evidence, and returns multiple
 ordinary context dossiers under one shared byte budget. A representative menu
 publish question returns the GUI publish boundary, `Module.Publish`, and
 `Commands.Publish` in one roughly 2-second call on this repository. This is a
-promising functional check, not a post-change agent benchmark; the controlled
-and fresh-agent measurements required by the vision remain future evidence.
+promising functional check, not by itself a controlled agent benchmark.
+
+The reproducible paired-arm harness now lives at
+`scripts/benchmark-agent-research.sh`, with this question and its deterministic
+correctness rubric under `.ai/benchmarks/agent-research/menu-publish/`. It
+retains raw event logs and answers so tool-count and token claims remain
+auditable instead of being inferred from the final prose.

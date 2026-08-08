@@ -128,7 +128,7 @@ func TestContextCollapsesReferenceDuplicatesAndPrioritizesFlowEdges(t *testing.T
 
 func TestExploreBuildsBoundedDossiersFromResearchPhrase(t *testing.T) {
 	ctx := context.Background()
-	content := "package demo\nfunc Target() { Helper() }\nfunc Helper() {}\n"
+	content := "package demo\nfunc Target() {\n\tHelper()\n}\nfunc Caller() { Target() }\nfunc Helper() {}\n"
 	root := gitRepository(t, map[string]string{"main.go": content})
 	facts := sourceFacts("main.go", content)
 	database := filepath.Join(t.TempDir(), "index.db")
@@ -168,6 +168,10 @@ func TestExploreBuildsBoundedDossiersFromResearchPhrase(t *testing.T) {
 	}, fixedLocator(root))
 	if err != nil || len(exact) != 1 || exact[0].Focus.Symbol.ID != "target-id" || exactTruncated {
 		t.Fatalf("exact explore = %#v, %t, %v", exact, exactTruncated, err)
+	}
+	definition := exact[0].Evidence[0].Source
+	if definition.StartLine != 2 || definition.EndLine != 4 || len(definition.Lines) != 3 || definition.Lines[1].Text != "\tHelper()" {
+		t.Fatalf("full definition source = %#v", definition)
 	}
 }
 

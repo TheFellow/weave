@@ -7,6 +7,9 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io"
 	"os"
 	"os/exec"
@@ -71,12 +74,34 @@ func newSourceLoader(contextLines, maxBytes int) *sourceLoader {
 
 func (loader *sourceLoader) excerpt(ctx context.Context, repository Repository, document graph.Document, sourceRange graph.Range) SourceExcerpt {
 	result := SourceExcerpt{Path: document.Path}
+	file := loader.file(ctx, repository, document)
+	return loader.excerptFromFile(result, file, sourceRange)
+}
+
+func (loader *sourceLoader) definitionExcerpt(ctx context.Context, repository Repository, document graph.Document, sourceRange graph.Range, kind string) SourceExcerpt {
+	file := loader.file(ctx, repository, document)
+	expanded, ok := expandedGoDefinition(file, document.Language, sourceRange, kind)
+	if !ok {
+		return loader.excerptFromFile(SourceExcerpt{Path: document.Path}, file, sourceRange)
+	}
+	result := loader.excerptFromFile(SourceExcerpt{Path: document.Path}, file, expanded)
+	if result.Status == SourceBudget {
+		return loader.excerptFromFile(SourceExcerpt{Path: document.Path}, file, sourceRange)
+	}
+	return result
+}
+
+func (loader *sourceLoader) file(ctx context.Context, repository Repository, document graph.Document) sourceFile {
 	key := repository.Root + "\x00" + document.Path + "\x00" + document.ContentHash
 	file, ok := loader.files[key]
 	if !ok {
 		file = loadSourceFile(ctx, repository.Root, document)
 		loader.files[key] = file
 	}
+	return file
+}
+
+func (loader *sourceLoader) excerptFromFile(result SourceExcerpt, file sourceFile, sourceRange graph.Range) SourceExcerpt {
 	result.Status, result.Detail, result.Hash = file.status, file.detail, file.hash
 	if file.status != SourceCurrent {
 		if file.status == SourceTooLarge {
@@ -112,6 +137,39 @@ func (loader *sourceLoader) excerpt(ctx context.Context, repository Repository, 
 	loader.used += cost
 	result.StartLine, result.EndLine, result.Lines = wanted[0].Number, wanted[len(wanted)-1].Number, wanted
 	return result
+}
+
+func expandedGoDefinition(file sourceFile, language string, sourceRange graph.Range, kind string) (graph.Range, bool) {
+	if file.status != SourceCurrent || language != "go" || (kind != "function" && kind != "method") {
+		return graph.Range{}, false
+	}
+	fileSet := token.NewFileSet()
+	parsed, err := parser.ParseFile(fileSet, "source.go", strings.Join(file.lines, "\n"), parser.SkipObjectResolution)
+	if err != nil {
+		return graph.Range{}, false
+	}
+	targetLine := int(sourceRange.Start.Line) + 1
+	var selected *ast.FuncDecl
+	ast.Inspect(parsed, func(node ast.Node) bool {
+		declaration, ok := node.(*ast.FuncDecl)
+		if !ok {
+			return true
+		}
+		start, end := fileSet.Position(declaration.Pos()), fileSet.Position(declaration.End())
+		if start.Line <= targetLine && targetLine <= end.Line {
+			selected = declaration
+			return false
+		}
+		return true
+	})
+	if selected == nil {
+		return graph.Range{}, false
+	}
+	start, end := fileSet.Position(selected.Pos()), fileSet.Position(selected.End())
+	return graph.Range{
+		Start: graph.Position{Line: int32(start.Line - 1), Column: int32(start.Column - 1), Byte: int64(start.Offset)},
+		End:   graph.Position{Line: int32(end.Line - 1), Column: int32(end.Column - 1), Byte: int64(end.Offset)},
+	}, true
 }
 
 func loadSourceFile(ctx context.Context, root string, document graph.Document) sourceFile {

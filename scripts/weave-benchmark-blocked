@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ -n "${WEAVE_BENCHMARK_BLOCK_LOG:-}" ]]; then
+  printf '%s\n' "$*" >>"$WEAVE_BENCHMARK_BLOCK_LOG"
+fi
+echo "weave is intentionally unavailable in this benchmark arm" >&2
+exit 126

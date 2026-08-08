@@ -169,6 +169,29 @@ rather than silently choosing a target. Catalog context uses the existing
 bounded refresh-before-open federation and reports partial members through
 diagnostics and freshness metadata.
 
+## Controlled agent research benchmark
+
+The checked-in harness runs the same read-only research question in isolated
+clones with and without Weave, retains raw Codex JSONL and final answers, and
+reports wall time, token usage, command executions, Weave calls, filesystem
+searches, source-read commands, control-arm contamination, and a deterministic
+answer rubric:
+
+```sh
+scripts/benchmark-agent-research.sh \
+  /path/to/go-modular-monolith \
+  .ai/benchmarks/agent-research/menu-publish \
+  /tmp/weave-agent-results \
+  1
+```
+
+Set `WEAVE_AGENT_BENCHMARK_MODEL` to pin a model and increase the final argument
+for repeated samples. The harness requires an authenticated `codex` executable,
+uses read-only agent sandboxes, builds the candidate once, indexes only the
+with-Weave clones, shadows `weave` with a logging rejection in control clones,
+and rejects dirty source repositories. Benchmark output stays outside the
+worktree by design.
+
 ## Graphviz DOT
 
 `weave graph` renders a bounded neighborhood around any resolvable symbol,

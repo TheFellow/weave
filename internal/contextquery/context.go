@@ -33,10 +33,11 @@ type Locator func(kind, id string) []Repository
 // Options are independently bounded; Limit applies to each occurrence and
 // relationship section rather than allowing one section to starve another.
 type Options struct {
-	Scope          string
-	Limit          int
-	ContextLines   int
-	MaxSourceBytes int
+	Scope           string
+	Limit           int
+	ContextLines    int
+	MaxSourceBytes  int
+	FullDefinitions bool
 }
 
 type Result struct {
@@ -204,7 +205,11 @@ func Build(ctx context.Context, store Store, target string, options Options, loc
 			item.Source = SourceExcerpt{Status: SourceUnavailable, Path: document.Path, Detail: "repository provenance is unavailable"}
 			continue
 		}
-		item.Source = loader.excerpt(ctx, item.Repositories[0], document, item.Range)
+		if options.FullDefinitions && item.Role == "definition" {
+			item.Source = loader.definitionExcerpt(ctx, item.Repositories[0], document, item.Range, focus.Kind)
+		} else {
+			item.Source = loader.excerpt(ctx, item.Repositories[0], document, item.Range)
+		}
 	}
 	if err := hydrateRelationshipSources(ctx, store, result.Incoming, loader, locate); err != nil {
 		return Result{}, err
@@ -279,19 +284,6 @@ func relationships(ctx context.Context, store Store, focus string, outgoing bool
 	for _, edge := range byEndpoint {
 		edges = append(edges, edge)
 	}
-	slices.SortFunc(edges, func(left, right graph.Edge) int {
-		if rank := relationshipRank(left.Kind) - relationshipRank(right.Kind); rank != 0 {
-			return rank
-		}
-		leftAdjacent, rightAdjacent := left.From, right.From
-		if outgoing {
-			leftAdjacent, rightAdjacent = left.To, right.To
-		}
-		if leftAdjacent != rightAdjacent {
-			return strings.Compare(leftAdjacent, rightAdjacent)
-		}
-		return strings.Compare(left.ID, right.ID)
-	})
 	truncated := storageTruncated
 	result := make([]Relationship, 0, len(edges))
 	for _, edge := range edges {
@@ -309,13 +301,64 @@ func relationships(ctx context.Context, store Store, focus string, outgoing bool
 		if lowValueReference(relationship) {
 			continue
 		}
-		if len(result) == limit {
-			truncated = true
-			break
-		}
 		result = append(result, relationship)
 	}
+	focusSymbol, _, err := store.Symbol(ctx, focus)
+	if err != nil {
+		return nil, false, err
+	}
+	slices.SortFunc(result, func(left, right Relationship) int {
+		if rank := relationshipRank(left.Edge.Kind) - relationshipRank(right.Edge.Kind); rank != 0 {
+			return rank
+		}
+		leftProximity := relationshipProximity(focusSymbol, left)
+		rightProximity := relationshipProximity(focusSymbol, right)
+		if leftProximity != rightProximity {
+			return rightProximity - leftProximity
+		}
+		leftName, rightName := relationshipName(left, outgoing), relationshipName(right, outgoing)
+		if leftName != rightName {
+			return strings.Compare(leftName, rightName)
+		}
+		return strings.Compare(left.Edge.ID, right.Edge.ID)
+	})
+	if len(result) > limit {
+		result = result[:limit]
+		truncated = true
+	}
 	return result, truncated, nil
+}
+
+func relationshipName(relationship Relationship, outgoing bool) string {
+	if relationship.Entity != nil && relationship.Entity.Symbol.StableName != "" {
+		return relationship.Entity.Symbol.StableName
+	}
+	if outgoing {
+		return relationship.Edge.To
+	}
+	return relationship.Edge.From
+}
+
+func relationshipProximity(focus graph.Symbol, relationship Relationship) int {
+	if relationship.Entity == nil {
+		return 0
+	}
+	adjacent := relationship.Entity.Symbol
+	score := commonPathSegments(focus.StableName, adjacent.StableName) * 10
+	if focus.UnitID != "" && focus.UnitID == adjacent.UnitID {
+		score += 1000
+	}
+	return score
+}
+
+func commonPathSegments(left, right string) int {
+	leftParts, rightParts := strings.Split(left, "/"), strings.Split(right, "/")
+	limit := min(len(leftParts), len(rightParts))
+	count := 0
+	for count < limit && leftParts[count] == rightParts[count] {
+		count++
+	}
+	return count
 }
 
 func lowValueReference(relationship Relationship) bool {
