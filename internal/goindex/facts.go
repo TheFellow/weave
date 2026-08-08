@@ -80,7 +80,7 @@ func (analysis *packageAnalysis) discoverObjectOwners() {
 	scope := analysis.pkg.Types.Scope()
 	for _, name := range scope.Names() {
 		object := scope.Lookup(name)
-		if object == nil {
+		if object == nil || object.Name() == "" {
 			continue
 		}
 		analysis.objects[object] = "package/" + name
@@ -166,6 +166,9 @@ func (analysis *packageAnalysis) addDefinitions() {
 		if object == nil || identifier.Name == "_" {
 			continue
 		}
+		if _, isImportBinding := object.(*types.PkgName); isImportBinding {
+			continue
+		}
 		id := analysis.objectID(object)
 		analysis.objects[object] = analysis.objectPath(object)
 		documentID, sourceRange, ok := analysis.source(identifier.Pos(), identifier.End())
@@ -210,6 +213,37 @@ func (analysis *packageAnalysis) addDefinitions() {
 			return false
 		})
 	}
+	analysis.addImplicitDefinitions()
+}
+
+func (analysis *packageAnalysis) addImplicitDefinitions() {
+	for node, object := range analysis.pkg.TypesInfo.Implicits {
+		if object == nil || object.Name() == "" {
+			continue
+		}
+		if _, isImportBinding := object.(*types.PkgName); isImportBinding {
+			continue
+		}
+		id := analysis.objectID(object)
+		analysis.objects[object] = analysis.objectPath(object)
+		end := object.Pos() + token.Pos(len(object.Name()))
+		documentID, sourceRange, ok := analysis.source(object.Pos(), end)
+		if !ok {
+			documentID, sourceRange, ok = analysis.source(node.Pos(), node.Pos())
+		}
+		if !ok {
+			continue
+		}
+		analysis.facts.Symbols = append(analysis.facts.Symbols, graph.Symbol{
+			ID: id, UnitID: analysis.facts.Unit.ID, StableName: analysis.stableName(object),
+			DisplayName: object.Name(), NormalizedName: graph.NormalizeName(object.Name()), Kind: objectKind(object), DocumentID: documentID,
+			Definition: sourceRange, Provider: "weave-go", Evidence: graph.EvidenceExact,
+		})
+		analysis.facts.Occurrences = append(analysis.facts.Occurrences, analysis.occurrence("definition", id, documentID, sourceRange))
+		analysis.facts.Edges = append(analysis.facts.Edges, analysis.edge(
+			analysis.ownerAt(node.Pos()), id, graph.EdgeDefines, documentID, sourceRange,
+		))
+	}
 }
 
 func enclosingFunctionEnd(files []*ast.File, position token.Pos) token.Pos {
@@ -231,6 +265,7 @@ func (analysis *packageAnalysis) addOccurrencesAndEdges() {
 			continue
 		}
 		target := analysis.objectID(object)
+		analysis.addEndpointSymbol(object, target)
 		analysis.facts.Occurrences = append(analysis.facts.Occurrences, analysis.occurrence("reference", target, documentID, sourceRange))
 		analysis.facts.Edges = append(analysis.facts.Edges, analysis.edge(
 			analysis.ownerAt(identifier.Pos()), target, graph.EdgeReferences, documentID, sourceRange,
@@ -253,6 +288,7 @@ func (analysis *packageAnalysis) addOccurrencesAndEdges() {
 					return true
 				}
 				target := analysis.packageID(packageName.Imported().Path())
+				analysis.addEndpointSymbol(packageName, target)
 				analysis.facts.Edges = append(analysis.facts.Edges,
 					analysis.edge(analysis.packageID(analysis.pkg.PkgPath), target, graph.EdgeImports, documentID, sourceRange),
 					analysis.edge(analysis.packageID(analysis.pkg.PkgPath), target, graph.EdgeDependsOn, documentID, sourceRange),
@@ -273,6 +309,20 @@ func (analysis *packageAnalysis) addOccurrencesAndEdges() {
 			return true
 		})
 	}
+}
+
+func (analysis *packageAnalysis) addEndpointSymbol(object types.Object, id string) {
+	if object == nil || !strings.HasPrefix(id, "go-external:") {
+		return
+	}
+	stableName, displayName, kind := analysis.stableName(object), object.Name(), objectKind(object)
+	if packageName, ok := object.(*types.PkgName); ok && packageName.Imported() != nil {
+		stableName, displayName, kind = packageName.Imported().Path(), packageName.Imported().Path(), "package"
+	}
+	analysis.facts.Symbols = append(analysis.facts.Symbols, graph.Symbol{
+		ID: id, UnitID: analysis.facts.Unit.ID, StableName: stableName, DisplayName: displayName,
+		NormalizedName: graph.NormalizeName(stableName), Kind: kind, Provider: "weave-go", Evidence: graph.EvidenceExact,
+	})
 }
 
 func (analysis *packageAnalysis) calledObject(expression ast.Expr) types.Object {
@@ -441,6 +491,23 @@ func dedupeGlobalEdges(analyses []*packageAnalysis) {
 	}
 }
 
+func dedupeGlobalExternalSymbols(analyses []*packageAnalysis) {
+	seen := map[string]bool{}
+	for _, analysis := range analyses {
+		values := analysis.facts.Symbols[:0]
+		for _, symbol := range analysis.facts.Symbols {
+			if strings.HasPrefix(symbol.ID, "go-external:") {
+				if seen[symbol.ID] {
+					continue
+				}
+				seen[symbol.ID] = true
+			}
+			values = append(values, symbol)
+		}
+		analysis.facts.Symbols = values
+	}
+}
+
 func (analysis *packageAnalysis) ownerAt(position token.Pos) string {
 	owner := analysis.packageID(analysis.pkg.PkgPath)
 	width := token.Pos(^uint(0) >> 1)
@@ -514,21 +581,21 @@ func memberOwnerInPackage(object types.Object) string {
 			continue
 		}
 		for method := range named.Methods() {
-			if method == object {
+			if sameDeclaration(method, object) {
 				return name
 			}
 		}
 		switch underlying := named.Underlying().(type) {
 		case *types.Struct:
 			for field := range underlying.Fields() {
-				if field == object {
+				if sameDeclaration(field, object) {
 					return name
 				}
 			}
 		case *types.Interface:
 			underlying.Complete()
 			for method := range underlying.ExplicitMethods() {
-				if method == object {
+				if sameDeclaration(method, object) {
 					return name
 				}
 			}
@@ -537,19 +604,32 @@ func memberOwnerInPackage(object types.Object) string {
 	return ""
 }
 
+func sameDeclaration(left, right types.Object) bool {
+	if left == right {
+		return true
+	}
+	if left == nil || right == nil || left.Name() != right.Name() || left.Pos() != right.Pos() {
+		return false
+	}
+	leftPackage, rightPackage := left.Pkg(), right.Pkg()
+	return leftPackage != nil && rightPackage != nil && leftPackage.Path() == rightPackage.Path()
+}
+
 func (analysis *packageAnalysis) objectID(object types.Object) string {
 	if object == nil {
 		return ""
+	}
+	if packageName, ok := object.(*types.PkgName); ok && packageName.Imported() != nil {
+		return analysis.packageID(packageName.Imported().Path())
 	}
 	pkg := object.Pkg()
 	if pkg == nil {
 		return semanticID("go-external", "builtin", analysis.objectPath(object))
 	}
-	repository := analysis.repository
 	if pkg.Path() != analysis.pkg.PkgPath && !analysis.localPackagePath(pkg.Path()) {
-		repository = "external"
+		return semanticID("go-external", pkg.Path(), analysis.objectPath(object))
 	}
-	return semanticID("go", repository, pkg.Path(), analysis.objectPath(object))
+	return semanticID("go", analysis.repository, pkg.Path(), analysis.objectPath(object))
 }
 
 func (analysis *packageAnalysis) localPackagePath(path string) bool {
@@ -557,11 +637,10 @@ func (analysis *packageAnalysis) localPackagePath(path string) bool {
 }
 
 func (analysis *packageAnalysis) packageID(path string) string {
-	repository := analysis.repository
 	if path != analysis.pkg.PkgPath && !analysis.localPackagePath(path) {
-		repository = "external"
+		return semanticID("go-external", "package", path)
 	}
-	return semanticID("go-package", repository, path)
+	return semanticID("go-package", analysis.repository, path)
 }
 
 func (analysis *packageAnalysis) stableName(object types.Object) string {

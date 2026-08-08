@@ -83,6 +83,65 @@ func TestPlaceholderCommandsSucceedSilently(t *testing.T) {
 	}
 }
 
+func TestHelpShowsRequiredPositionalOperands(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		args []string
+		want string
+	}{
+		{[]string{"symbols", "--help"}, "weave symbols QUERY [options]"},
+		{[]string{"path", "--help"}, "weave path FROM TO [options]"},
+		{[]string{"graph", "--help"}, "weave graph QUERY [options]"},
+		{[]string{"workspace", "outline", "--help"}, "weave workspace outline QUERY [options]"},
+		{[]string{"repos", "remove", "--help"}, "weave repos remove KEY|IDENTITY|ROOT [options]"},
+		{[]string{"adapters", "update", "--help"}, "weave adapters update NAME EXECUTABLE [options]"},
+		{[]string{"adapters", "conformance", "--help"}, "weave adapters conformance EXECUTABLE --fixture DIRECTORY [options]"},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(strings.Join(test.args, " "), func(t *testing.T) {
+			t.Parallel()
+			var output bytes.Buffer
+			root := command.New(&recordingApplication{}, command.Streams{Stdin: strings.NewReader(""), Stdout: &output, Stderr: &output})
+			if err := root.Run(context.Background(), append([]string{"weave"}, test.args...)); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(output.String(), test.want) {
+				t.Fatalf("help = %q, want %q", output.String(), test.want)
+			}
+		})
+	}
+}
+
+func TestRelationshipTextUsesStableNamesAndPaths(t *testing.T) {
+	response := application.Response{
+		Command: "callers",
+		Symbols: []graph.Symbol{
+			{ID: "caller-id", StableName: "example.Caller"},
+			{ID: "callee-id", StableName: "example.Callee"},
+		},
+		Documents: []graph.Document{{ID: "doc-id", Path: "service.go"}},
+		Edges:     []graph.Edge{{From: "caller-id", To: "callee-id", Kind: graph.EdgeCalls, DocumentID: "doc-id", Range: graph.Range{Start: graph.Position{Line: 4, Column: 2}}}},
+	}
+	var output bytes.Buffer
+	root := command.New(&recordingApplication{response: response}, command.Streams{Stdin: strings.NewReader(""), Stdout: &output, Stderr: &bytes.Buffer{}})
+	if err := root.Run(context.Background(), []string{"weave", "callers", "Callee"}); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := output.String(), "example.Caller\tcalls\texample.Callee\tservice.go:5:3\n"; got != want {
+		t.Fatalf("output = %q, want %q", got, want)
+	}
+}
+
+func TestInteractiveGraphTreatsCancellationAsCleanShutdown(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	root := command.New(&recordingApplication{}, command.Streams{Stdin: strings.NewReader(""), Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}})
+	if err := root.Run(ctx, []string{"weave", "graph", "focus", "--interactive", "--no-open"}); err != nil {
+		t.Fatalf("canceled explorer = %v", err)
+	}
+}
+
 func TestAdapterLifecycleCommandsPreserveLiteralArgumentsAndPermissions(t *testing.T) {
 	app := &recordingApplication{}
 	root := command.New(app, command.Streams{Stdin: strings.NewReader(""), Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}})
@@ -801,14 +860,14 @@ func TestRealQueryCommands(t *testing.T) {
 		empty    bool
 	}{
 		{name: "symbols", args: []string{"symbols", "handle"}, contains: []string{"fixture:handle\tfunction\tHandleRequest"}},
-		{name: "definition", args: []string{"definition", "authorize"}, contains: []string{"fixture:authorize\tdefinition\tfixture:main.go:2:3", "fixture:authorize\tdefinition\tfixture:main.go:8:3"}},
+		{name: "definition", args: []string{"definition", "authorize"}, contains: []string{"fixture.authorize\tdefinition\tmain.go:2:3", "fixture.authorize\tdefinition\tmain.go:8:3"}},
 		{name: "definition anchor fallback", args: []string{"definition", "HandleRequest"}, contains: []string{"fixture:handle\tfunction\tHandleRequest"}},
-		{name: "references", args: []string{"references", "authorize"}, contains: []string{"fixture:authorize\treference\tfixture:main.go:8:3"}},
-		{name: "callers", args: []string{"callers", "authorize"}, contains: []string{"fixture:handle\tcalls\tfixture:authorize"}},
-		{name: "callees", args: []string{"callees", "HandleRequest"}, contains: []string{"fixture:handle\tcalls\tfixture:authorize"}},
-		{name: "dependencies", args: []string{"dependencies", "HandleRequest"}, contains: []string{"fixture:handle\tdepends-on\tfixture:authorize"}},
-		{name: "path", args: []string{"path", "HandleRequest", "authorize"}, contains: []string{"fixture:handle\tcalls\tfixture:authorize"}},
-		{name: "impact", args: []string{"impact", "authorize"}, contains: []string{"fixture:handle\tcalls\tfixture:authorize"}},
+		{name: "references", args: []string{"references", "authorize"}, contains: []string{"fixture.authorize\treference\tmain.go:8:3"}},
+		{name: "callers", args: []string{"callers", "authorize"}, contains: []string{"fixture.HandleRequest\tcalls\tfixture.authorize"}},
+		{name: "callees", args: []string{"callees", "HandleRequest"}, contains: []string{"fixture.HandleRequest\tcalls\tfixture.authorize"}},
+		{name: "dependencies", args: []string{"dependencies", "HandleRequest"}, contains: []string{"fixture.HandleRequest\tdepends-on\tfixture.authorize"}},
+		{name: "path", args: []string{"path", "HandleRequest", "authorize"}, contains: []string{"fixture.HandleRequest\tcalls\tfixture.authorize"}},
+		{name: "impact", args: []string{"impact", "authorize"}, contains: []string{"fixture.HandleRequest\tcalls\tfixture.authorize"}},
 		{name: "empty text", args: []string{"symbols", "missing"}, empty: true},
 		{name: "empty json", args: []string{"symbols", "missing", "--json"}, contains: []string{`"schema":"weave.query/v1"`, `"query":["missing"]`, `"truncated":false`}},
 		{name: "export", args: []string{"export", "--json"}, contains: []string{`"schema":"weave.export/v1"`, `"fixture:handle"`}},

@@ -1115,7 +1115,7 @@ func (db *DB) Verify(ctx context.Context) ([]Issue, error) {
 			}
 			issues = append(issues, issue)
 		}
-		if _, ok := symbols[occurrence.SymbolID]; !ok {
+		if _, ok := symbols[occurrence.SymbolID]; !ok && !intentionallyOpenEndpoint(occurrence.SymbolID) {
 			issues = append(issues, Issue{Severity: IssueWarning, Kind: "unresolved-occurrence", Record: occurrence.ID, Detail: "symbol " + occurrence.SymbolID + " is not indexed (external or builtin symbols may be intentionally unmaterialized)", Document: documents[occurrence.DocumentID].Path, Range: occurrence.Range})
 		}
 	}
@@ -1144,6 +1144,10 @@ func (db *DB) Verify(ctx context.Context) ([]Issue, error) {
 		return strings.Compare(a.Record, b.Record)
 	})
 	return issues, nil
+}
+
+func intentionallyOpenEndpoint(id string) bool {
+	return strings.HasPrefix(id, "external:") || strings.HasPrefix(id, "go-external:") || strings.HasPrefix(id, "open:") || strings.HasPrefix(id, "schema-open:")
 }
 
 // Compact rewrites a closed bstore/bbolt database and atomically replaces it.

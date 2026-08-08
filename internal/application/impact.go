@@ -62,18 +62,8 @@ func impactRoots(snapshot graph.Snapshot, files, packages []string) ([]string, [
 		}
 	}
 	for _, symbol := range snapshot.Symbols {
-		if selectedDocuments[symbol.DocumentID] || packageUnits[symbol.UnitID] {
+		if (selectedDocuments[symbol.DocumentID] && fileImpactRoot(symbol)) || packageUnits[symbol.UnitID] {
 			rootSet[symbol.ID] = true
-		}
-	}
-	for _, occurrence := range snapshot.Occurrences {
-		if selectedDocuments[occurrence.DocumentID] {
-			rootSet[occurrence.SymbolID] = true
-		}
-	}
-	for _, edge := range snapshot.Edges {
-		if selectedDocuments[edge.DocumentID] {
-			rootSet[edge.From], rootSet[edge.To] = true, true
 		}
 	}
 	roots := make([]string, 0, len(rootSet))
@@ -93,6 +83,15 @@ func impactRoots(snapshot graph.Snapshot, files, packages []string) ([]string, [
 		return nil, diagnostics, fmt.Errorf("no indexed graph roots matched the requested files or packages: %s", strings.Join(missing, ", "))
 	}
 	return roots, diagnostics, nil
+}
+
+func fileImpactRoot(symbol graph.Symbol) bool {
+	switch symbol.Kind {
+	case "function", "method", "type", "field", "constant", "package", "file", "asset", "symlink", "document", "section":
+		return true
+	default:
+		return false
+	}
 }
 
 func affectedTests(snapshot graph.Snapshot, nodes []string) []graph.Symbol {

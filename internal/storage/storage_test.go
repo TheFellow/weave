@@ -215,6 +215,27 @@ func TestVerifyFindsLogicalDamage(t *testing.T) {
 	}
 }
 
+func TestVerifyIgnoresExplicitOpenWorldOccurrences(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	db := openTestDB(t, filepath.Join(t.TempDir(), "index.db"))
+	defer db.Close()
+	for _, id := range []string{"go-external:stdlib", "open:remote-schema", "schema-open:dependency", "external:provider-symbol"} {
+		facts := fixtureFacts("unit-a")
+		facts.Occurrences[0].SymbolID = id
+		if err := db.ReplaceUnit(ctx, facts); err != nil {
+			t.Fatal(err)
+		}
+		issues, err := db.Verify(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(issues) != 0 {
+			t.Fatalf("Verify(%q) = %#v", id, issues)
+		}
+	}
+}
+
 func TestVerifyClassifiesOwnershipDamageAsFatal(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

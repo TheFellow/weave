@@ -20,7 +20,7 @@ import (
 	"golang.org/x/tools/go/packages"
 )
 
-const providerVersion = "2"
+const providerVersion = "3"
 
 // Provider indexes the active Go build without permitting dependency download
 // or go.mod/go.sum mutation. It preserves the user's Go toolchain selection so
@@ -103,6 +103,7 @@ func (provider Provider) Refresh(ctx context.Context, request freshness.Request)
 	// globally stable IDs, so assign each duplicate to the first package in the
 	// canonical package order rather than making persistence order-dependent.
 	dedupeGlobalEdges(analyses)
+	dedupeGlobalExternalSymbols(analyses)
 
 	result := freshness.Result{}
 	result.Units = make([]freshness.Unit, 0, len(analyses))

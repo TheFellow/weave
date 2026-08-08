@@ -277,7 +277,7 @@ func graphCommand(app application.Service, streams Streams) *cli.Command {
 	}
 	flags = append(flags, federationFlags()...)
 	return &cli.Command{
-		Name: "graph", Usage: "render a bounded semantic neighborhood as Graphviz DOT",
+		Name: "graph", Usage: "render a bounded semantic neighborhood as Graphviz DOT", UsageText: "weave graph QUERY [options]",
 		Flags: flags,
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 			if cmd.Args().Len() != 1 {
@@ -312,9 +312,13 @@ func graphCommand(app application.Service, streams Streams) *cli.Command {
 				if err != nil {
 					return err
 				}
-				return explorer.Run(ctx, explorer.Config{
+				err = explorer.Run(ctx, explorer.Config{
 					Engine: engine, Output: streams.Stderr, OpenBrowser: !cmd.Bool("no-open"),
 				})
+				if errors.Is(err, context.Canceled) {
+					return nil
+				}
+				return err
 			}
 			response, err := app.Execute(ctx, invocation)
 			if err != nil {
@@ -349,7 +353,7 @@ func workspaceCommands(app application.Service, streams Streams) *cli.Command {
 			}},
 		}
 		flags = append(flags, federationFlags()...)
-		return &cli.Command{Name: name, Usage: usage, Flags: flags, Action: invoke(app, streams, "workspace "+name, 1, 1)}
+		return &cli.Command{Name: name, Usage: usage, UsageText: "weave workspace " + name + " QUERY [options]", Flags: flags, Action: invoke(app, streams, "workspace "+name, 1, 1)}
 	}
 	return &cli.Command{Name: "workspace", Aliases: []string{"ws"}, Usage: "navigate files and structured content as a semantic graph", Commands: []*cli.Command{
 		child("find", "find files, documents, sections, routes, topics, and resources"),
@@ -444,11 +448,11 @@ func repositoryCommands(app application.Service, streams Streams) *cli.Command {
 		return result
 	}
 	return group("repos", "manage the explicit cross-repository catalog",
-		&cli.Command{Name: "add", Usage: "register one repository worktree", Flags: flags(true), Action: invokeCatalog(app, streams, "repos add", 0, 1)},
-		&cli.Command{Name: "remove", Usage: "remove a worktree by key, identity, or absolute root", Flags: flags(false), Action: invokeCatalog(app, streams, "repos remove", 1, 1)},
-		&cli.Command{Name: "list", Usage: "list registered repository worktrees", Flags: flags(true), Action: invokeCatalog(app, streams, "repos list", 0, 0)},
-		&cli.Command{Name: "status", Usage: "diagnose registered repository worktrees", Flags: flags(true), Action: invokeCatalog(app, streams, "repos status", 0, 0)},
-		&cli.Command{Name: "sync", Usage: "refresh registered repository metadata", Flags: flags(true), Action: invokeCatalog(app, streams, "repos sync", 0, 100)},
+		&cli.Command{Name: "add", Usage: "register one repository worktree", UsageText: "weave repos add [ROOT] [options]", Flags: flags(true), Action: invokeCatalog(app, streams, "repos add", 0, 1)},
+		&cli.Command{Name: "remove", Usage: "remove a worktree by key, identity, or absolute root", UsageText: "weave repos remove KEY|IDENTITY|ROOT [options]", Flags: flags(true), Action: invokeCatalog(app, streams, "repos remove", 1, 1)},
+		&cli.Command{Name: "list", Usage: "list registered repository worktrees", UsageText: "weave repos list [options]", Flags: flags(true), Action: invokeCatalog(app, streams, "repos list", 0, 0)},
+		&cli.Command{Name: "status", Usage: "diagnose registered repository worktrees", UsageText: "weave repos status [options]", Flags: flags(true), Action: invokeCatalog(app, streams, "repos status", 0, 0)},
+		&cli.Command{Name: "sync", Usage: "refresh registered repository metadata", UsageText: "weave repos sync [REPOSITORY ...] [options]", Flags: flags(true), Action: invokeCatalog(app, streams, "repos sync", 0, 100)},
 	)
 }
 
@@ -477,7 +481,7 @@ func adapterCommands(app application.Service, streams Streams) *cli.Command {
 		adapterInspection(app, streams, "list", "list configured and managed adapters without executing them"),
 		adapterInspection(app, streams, "doctor", "verify adapter integrity, protocol, claims, and requirements"),
 		adapterMutation(app, streams, "install", 1), adapterMutation(app, streams, "update", 2),
-		&cli.Command{Name: "remove", Usage: "remove a managed adapter", Flags: []cli.Flag{jsonFlag()}, Action: func(ctx context.Context, cmd *cli.Command) error {
+		&cli.Command{Name: "remove", Usage: "remove a managed adapter", UsageText: "weave adapters remove NAME [--json]", Flags: []cli.Flag{jsonFlag()}, Action: func(ctx context.Context, cmd *cli.Command) error {
 			if cmd.Args().Len() != 1 {
 				return cli.Exit("adapters remove expects one provider name", 2)
 			}
@@ -498,7 +502,11 @@ func adapterMutation(app application.Service, streams Streams, name string, arit
 		}
 		return nil
 	}}}, adapterPermissionFlags()...)
-	return &cli.Command{Name: name, Usage: name + " an explicit local adapter executable", Flags: flags, Action: func(ctx context.Context, cmd *cli.Command) error {
+	usageText := "weave adapters " + name + " EXECUTABLE [options]"
+	if name == "update" {
+		usageText = "weave adapters update NAME EXECUTABLE [options]"
+	}
+	return &cli.Command{Name: name, Usage: name + " an explicit local adapter executable", UsageText: usageText, Flags: flags, Action: func(ctx context.Context, cmd *cli.Command) error {
 		if cmd.Args().Len() != arity {
 			return cli.Exit(fmt.Sprintf("adapters %s expects %d argument(s)", name, arity), 2)
 		}
@@ -545,7 +553,7 @@ func adapterConformance(streams Streams) *cli.Command {
 		}
 		return nil
 	}}}, adapterPermissionFlags()...)
-	return &cli.Command{Name: "conformance", Usage: "run the language-neutral black-box adapter contract", Flags: flags, Action: func(ctx context.Context, cmd *cli.Command) error {
+	return &cli.Command{Name: "conformance", Usage: "run the language-neutral black-box adapter contract", UsageText: "weave adapters conformance EXECUTABLE --fixture DIRECTORY [options]", Flags: flags, Action: func(ctx context.Context, cmd *cli.Command) error {
 		if cmd.Args().Len() != 1 {
 			return cli.Exit("adapters conformance expects one executable", 2)
 		}
@@ -589,7 +597,7 @@ func group(name, usage string, children ...*cli.Command) *cli.Command {
 }
 
 func lookup(app application.Service, streams Streams, name, usage string) *cli.Command {
-	return &cli.Command{Name: name, Usage: usage, Flags: append([]cli.Flag{jsonFlag(), limitFlag()}, federationFlags()...), Action: invoke(app, streams, name, 1, 1)}
+	return &cli.Command{Name: name, Usage: usage, UsageText: "weave " + name + " QUERY [options]", Flags: append([]cli.Flag{jsonFlag(), limitFlag()}, federationFlags()...), Action: invoke(app, streams, name, 1, 1)}
 }
 
 func contextCommand(app application.Service, streams Streams) *cli.Command {
@@ -615,7 +623,7 @@ func contextCommand(app application.Service, streams Streams) *cli.Command {
 		}},
 	}
 	flags = append(flags, federationFlags()...)
-	return &cli.Command{Name: "context", Usage: "show bounded source-rich context for one exact entity", Flags: flags, Action: func(ctx context.Context, cmd *cli.Command) error {
+	return &cli.Command{Name: "context", Usage: "show bounded source-rich context for one exact entity", UsageText: "weave context QUERY [options]", Flags: flags, Action: func(ctx context.Context, cmd *cli.Command) error {
 		if cmd.Args().Len() != 1 {
 			return cli.Exit("context expects one argument", 2)
 		}
@@ -632,7 +640,11 @@ func contextCommand(app application.Service, streams Streams) *cli.Command {
 }
 
 func traversal(app application.Service, streams Streams, name, usage string, arguments int) *cli.Command {
-	return &cli.Command{Name: name, Usage: usage, Flags: []cli.Flag{
+	usageText := "weave " + name + " QUERY [options]"
+	if arguments == 2 {
+		usageText = "weave " + name + " FROM TO [options]"
+	}
+	return &cli.Command{Name: name, Usage: usage, UsageText: usageText, Flags: []cli.Flag{
 		jsonFlag(), limitFlag(), &cli.IntFlag{Name: "max-depth", Value: 8, Usage: "maximum traversal depth", Validator: func(v int) error {
 			if v < 1 || v > 100 {
 				return fmt.Errorf("must be between 1 and 100")
@@ -648,7 +660,7 @@ func traversal(app application.Service, streams Streams, name, usage string, arg
 }
 
 func impactCommand(app application.Service, streams Streams) *cli.Command {
-	return &cli.Command{Name: "impact", Usage: "find code and tests affected by symbols, files, packages, or a Git diff", Flags: []cli.Flag{
+	return &cli.Command{Name: "impact", Usage: "find code and tests affected by symbols, files, packages, or a Git diff", UsageText: "weave impact SYMBOL [options]\n   weave impact (--file PATH | --package PACKAGE | --git-diff REV) [options]", Flags: []cli.Flag{
 		jsonFlag(), limitFlag(), &cli.IntFlag{Name: "max-depth", Value: 8, Usage: "maximum traversal depth", Validator: func(v int) error {
 			if v < 1 || v > 100 {
 				return fmt.Errorf("must be between 1 and 100")
@@ -947,6 +959,9 @@ func render(writer io.Writer, response application.Response, jsonOutput bool) er
 	if strings.HasPrefix(response.Command, "diff ") && response.Diff != nil {
 		return renderDiff(writer, *response.Diff)
 	}
+	if response.Command == "callers" || response.Command == "callees" || response.Command == "dependencies" || response.Command == "path" || response.Command == "impact" {
+		return renderRelationships(writer, response)
+	}
 	if strings.HasPrefix(response.Command, "links ") {
 		for _, link := range response.Links {
 			if _, err := fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%s\n", link.ID, link.Kind, link.From, link.To, strconv.Quote(link.Note)); err != nil {
@@ -955,13 +970,31 @@ func render(writer io.Writer, response application.Response, jsonOutput bool) er
 		}
 		return nil
 	}
+	documents := make(map[string]graph.Document, len(response.Documents))
+	for _, document := range response.Documents {
+		documents[document.ID] = document
+	}
+	symbols := make(map[string]graph.Symbol, len(response.Symbols))
 	for _, symbol := range response.Symbols {
-		if _, err := fmt.Fprintf(writer, "%s\t%s\t%s\t%s:%d:%d\n", symbol.ID, symbol.Kind, symbol.DisplayName, symbol.DocumentID, symbol.Definition.Start.Line+1, symbol.Definition.Start.Column+1); err != nil {
+		symbols[symbol.ID] = symbol
+		location := documents[symbol.DocumentID].Path
+		if location != "" {
+			location = fmt.Sprintf("%s:%d:%d", location, symbol.Definition.Start.Line+1, symbol.Definition.Start.Column+1)
+		}
+		if _, err := fmt.Fprintf(writer, "%s\t%s\t%s\t%s\n", symbol.ID, symbol.Kind, symbol.DisplayName, location); err != nil {
 			return err
 		}
 	}
 	for _, occurrence := range response.Occurrences {
-		if _, err := fmt.Fprintf(writer, "%s\t%s\t%s:%d:%d\n", occurrence.SymbolID, occurrence.Role, occurrence.DocumentID, occurrence.Range.Start.Line+1, occurrence.Range.Start.Column+1); err != nil {
+		label := occurrence.SymbolID
+		if symbol, ok := symbols[occurrence.SymbolID]; ok {
+			label = symbol.StableName
+		}
+		location := documents[occurrence.DocumentID].Path
+		if location != "" {
+			location = fmt.Sprintf("%s:%d:%d", location, occurrence.Range.Start.Line+1, occurrence.Range.Start.Column+1)
+		}
+		if _, err := fmt.Fprintf(writer, "%s\t%s\t%s\n", label, occurrence.Role, location); err != nil {
 			return err
 		}
 	}
@@ -1053,6 +1086,59 @@ func render(writer io.Writer, response application.Response, jsonOutput bool) er
 		return err
 	}
 	return nil
+}
+
+func renderRelationships(writer io.Writer, response application.Response) error {
+	symbols := make(map[string]graph.Symbol, len(response.Symbols))
+	for _, symbol := range response.Symbols {
+		symbols[symbol.ID] = symbol
+	}
+	documents := make(map[string]graph.Document, len(response.Documents))
+	for _, document := range response.Documents {
+		documents[document.ID] = document
+	}
+	label := func(id string) string {
+		if symbol, ok := symbols[id]; ok {
+			if symbol.StableName != "" {
+				return symbol.StableName
+			}
+			if symbol.DisplayName != "" {
+				return symbol.DisplayName
+			}
+		}
+		return id
+	}
+	for _, edge := range response.Edges {
+		location := documents[edge.DocumentID].Path
+		if location != "" {
+			location = fmt.Sprintf("%s:%d:%d", location, edge.Range.Start.Line+1, edge.Range.Start.Column+1)
+		}
+		if _, err := fmt.Fprintf(writer, "%s\t%s\t%s\t%s\n", label(edge.From), edge.Kind, label(edge.To), location); err != nil {
+			return err
+		}
+	}
+	if len(response.Edges) == 0 {
+		for _, node := range response.Nodes {
+			if _, err := fmt.Fprintln(writer, label(node)); err != nil {
+				return err
+			}
+		}
+		if response.Command == "path" && len(response.Nodes) == 0 {
+			if _, err := fmt.Fprintln(writer, "no path found within bounds"); err != nil {
+				return err
+			}
+		}
+	}
+	for _, test := range response.Tests {
+		location := documents[test.DocumentID].Path
+		if location != "" {
+			location = fmt.Sprintf("%s:%d:%d", location, test.Definition.Start.Line+1, test.Definition.Start.Column+1)
+		}
+		if _, err := fmt.Fprintf(writer, "test\t%s\t%s\n", test.StableName, location); err != nil {
+			return err
+		}
+	}
+	return renderTruncation(writer, response.Truncated)
 }
 
 func adapterStatusDetail(status application.AdapterStatus) string {

@@ -8,12 +8,12 @@ import (
 	"github.com/TheFellow/weave/internal/graph"
 )
 
-func TestImpactRootsResolveFilesPackagesAndReferencedSymbols(t *testing.T) {
+func TestImpactRootsResolveFilesAndPackagesWithoutUnmaterializedReferences(t *testing.T) {
 	snapshot := graph.Snapshot{
 		Documents: []graph.Document{{ID: "doc", UnitID: "unit", Path: "pkg/service.go"}},
 		Symbols: []graph.Symbol{
 			{ID: "package", UnitID: "unit", StableName: "example.test/pkg", DisplayName: "example.test/pkg", Kind: "package"},
-			{ID: "defined", UnitID: "unit", DocumentID: "doc", DisplayName: "Defined"},
+			{ID: "defined", UnitID: "unit", DocumentID: "doc", DisplayName: "Defined", Kind: "function"},
 		},
 		Occurrences: []graph.Occurrence{{ID: "occ", UnitID: "unit", DocumentID: "doc", SymbolID: "external"}},
 	}
@@ -21,13 +21,13 @@ func TestImpactRootsResolveFilesPackagesAndReferencedSymbols(t *testing.T) {
 	if err != nil || len(diagnostics) != 0 {
 		t.Fatalf("impactRoots error=%v diagnostics=%q", err, diagnostics)
 	}
-	if want := []string{"defined", "external", "package"}; !reflect.DeepEqual(roots, want) {
+	if want := []string{"defined", "package"}; !reflect.DeepEqual(roots, want) {
 		t.Fatalf("roots = %q, want %q", roots, want)
 	}
 }
 
 func TestImpactRootsReportsUnmatchedInputsWithoutDiscardingMatches(t *testing.T) {
-	snapshot := graph.Snapshot{Documents: []graph.Document{{ID: "doc", UnitID: "unit", Path: "found.go"}}, Symbols: []graph.Symbol{{ID: "found", UnitID: "unit", DocumentID: "doc"}}}
+	snapshot := graph.Snapshot{Documents: []graph.Document{{ID: "doc", UnitID: "unit", Path: "found.go"}}, Symbols: []graph.Symbol{{ID: "found", UnitID: "unit", DocumentID: "doc", Kind: "function"}}}
 	roots, diagnostics, err := impactRoots(snapshot, []string{"missing.go", "found.go"}, nil)
 	if err != nil || !reflect.DeepEqual(roots, []string{"found"}) || len(diagnostics) != 1 || !strings.Contains(diagnostics[0], "file:missing.go") {
 		t.Fatalf("roots=%q diagnostics=%q err=%v", roots, diagnostics, err)

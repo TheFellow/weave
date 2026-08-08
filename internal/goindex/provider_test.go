@@ -97,10 +97,20 @@ func TestProviderEmitsCompilerResolvedGoFacts(t *testing.T) {
 	if len(occurrences) == 0 {
 		t.Fatal("no typed occurrences")
 	}
+	materialized := make(map[string]bool, len(symbols))
+	for _, symbol := range symbols {
+		materialized[symbol.ID] = true
+	}
 	for _, occurrence := range occurrences {
 		if occurrence.Range.End.Byte < occurrence.Range.Start.Byte || occurrence.Range.Start.Line < 0 {
 			t.Fatalf("invalid exact source evidence: %#v", occurrence)
 		}
+		if !materialized[occurrence.SymbolID] {
+			t.Fatalf("reference endpoint is not materialized: %#v", occurrence)
+		}
+	}
+	if !hasSymbol(symbols, "fmt") || !hasSymbol(symbols, "testing") {
+		t.Fatalf("external packages were not materialized with readable identities")
 	}
 
 	// A forced rebuild of identical inputs must normalize byte-for-byte.
@@ -132,11 +142,11 @@ func TestProviderReplacesOnlyFingerprintAffectedPackages(t *testing.T) {
 
 	write(t, root, "impl/impl.go", `package impl
 
-import "example.test/weavefixture/api"
+import apiAlias "example.test/weavefixture/api"
 
 type Service struct{}
 func (Service) Handle(value string) string { return value + "!" }
-func Run() string { return api.Invoke(Service{}) }
+func Run() string { return apiAlias.Invoke(Service{}) }
 `)
 	implementation, err := provider.Refresh(context.Background(), request(root, manifest))
 	if err != nil {
@@ -195,6 +205,16 @@ func TestGlobalEdgesHaveDeterministicSingleUnitOwnership(t *testing.T) {
 	}
 }
 
+func TestExternalSymbolsHaveDeterministicSingleUnitOwnership(t *testing.T) {
+	symbol := graph.Symbol{ID: "go-external:same"}
+	first := &packageAnalysis{facts: graph.UnitFacts{Unit: graph.Unit{ID: "a"}, Symbols: []graph.Symbol{symbol}}}
+	second := &packageAnalysis{facts: graph.UnitFacts{Unit: graph.Unit{ID: "b"}, Symbols: []graph.Symbol{symbol, {ID: "go:local"}}}}
+	dedupeGlobalExternalSymbols([]*packageAnalysis{first, second})
+	if len(first.facts.Symbols) != 1 || len(second.facts.Symbols) != 1 || second.facts.Symbols[0].ID != "go:local" {
+		t.Fatalf("symbol ownership = %#v, %#v", first.facts.Symbols, second.facts.Symbols)
+	}
+}
+
 func TestSemanticIDsAreCompactStableAndDomainSeparated(t *testing.T) {
 	first := semanticID("edge", "very-long-semantic-endpoint", "target")
 	if first != semanticID("edge", "very-long-semantic-endpoint", "target") || len(first) != len("edge:")+sha256.Size*2 {
@@ -227,14 +247,25 @@ func fixtureModule(t *testing.T) string {
 type Handler interface { Handle(string) string }
 type Box[T any] struct { Value T }
 func Invoke(handler Handler) string { return handler.Handle("x") }
+func Describe(value any) string {
+    switch value := value.(type) {
+    case string:
+        return value
+    default:
+        return "other"
+    }
+}
 `)
 	write(t, root, "impl/impl.go", `package impl
 
-import "example.test/weavefixture/api"
+import apiAlias "example.test/weavefixture/api"
 
 type Service struct{}
 func (Service) Handle(value string) string { return value }
-func Run() string { return api.Invoke(Service{}) }
+func Run() string {
+    box := apiAlias.Box[string]{Value: apiAlias.Invoke(Service{})}
+    return box.Value
+}
 `)
 	write(t, root, "impl/impl_test.go", `package impl
 
@@ -340,7 +371,7 @@ func batchPaths(batches []graph.UnitFacts) string {
 	var paths []string
 	for _, batch := range batches {
 		for _, symbol := range batch.Symbols {
-			if symbol.Kind == "package" {
+			if symbol.Kind == "package" && !strings.HasPrefix(symbol.ID, "go-external:") {
 				paths = append(paths, symbol.DisplayName)
 				break
 			}

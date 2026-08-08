@@ -393,12 +393,12 @@ func (s *Store) Symbol(ctx context.Context, id string) (graph.Symbol, bool, erro
 // Document returns the canonical materialized document while retaining every
 // repository that supplied the stable document ID as provenance.
 func (s *Store) Document(ctx context.Context, id string) (graph.Document, bool, error) {
-	if s.accelerator != nil {
-		return graph.Document{}, false, fmt.Errorf("machine aggregate does not contain documents")
-	}
 	var result graph.Document
 	found := false
 	for _, member := range s.members {
+		if member.db == nil {
+			continue
+		}
 		document, ok, err := member.db.Document(ctx, id)
 		if err != nil {
 			s.partial = true

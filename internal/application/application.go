@@ -90,6 +90,7 @@ type Response struct {
 	Query        []string               `json:"query,omitempty"`
 	Truncated    bool                   `json:"truncated"`
 	Symbols      []graph.Symbol         `json:"symbols,omitempty"`
+	Documents    []graph.Document       `json:"documents,omitempty"`
 	Occurrences  []graph.Occurrence     `json:"occurrences,omitempty"`
 	Edges        []graph.Edge           `json:"edges,omitempty"`
 	Nodes        []string               `json:"nodes,omitempty"`
@@ -301,7 +302,7 @@ func (app Local) Execute(ctx context.Context, invocation Invocation) (Response, 
 	case "dependencies":
 		var symbol graph.Symbol
 		if symbol, err = query.Resolve(ctx, db, invocation.Arguments[0]); err == nil {
-			response.Edges, response.Truncated, err = db.EdgesFrom(ctx, symbol.ID, []graph.EdgeKind{graph.EdgeDependsOn, graph.EdgeImports}, invocation.Limit)
+			response.Edges, response.Truncated, err = directDependencies(ctx, db, symbol.ID, invocation.Limit)
 		}
 	case "path":
 		var from, to graph.Symbol
@@ -370,6 +371,11 @@ func (app Local) Execute(ctx context.Context, invocation Invocation) (Response, 
 	}
 	if err != nil {
 		return Response{}, fmt.Errorf("%s: %w", invocation.Command, err)
+	}
+	if !strings.HasPrefix(invocation.Command, "workspace ") {
+		if err := enrichResponse(ctx, db, &response); err != nil {
+			return Response{}, fmt.Errorf("%s: enrich result: %w", invocation.Command, err)
+		}
 	}
 	return response, nil
 }
@@ -610,7 +616,7 @@ func (app Local) federated(ctx context.Context, response Response, invocation In
 	case "dependencies":
 		var symbol graph.Symbol
 		if symbol, err = query.Resolve(ctx, store, invocation.Arguments[0]); err == nil {
-			response.Edges, response.Truncated, err = store.EdgesFrom(ctx, symbol.ID, []graph.EdgeKind{graph.EdgeDependsOn, graph.EdgeImports}, invocation.Limit)
+			response.Edges, response.Truncated, err = directDependencies(ctx, store, symbol.ID, invocation.Limit)
 		}
 	case "path":
 		var from, to graph.Symbol
@@ -641,6 +647,11 @@ func (app Local) federated(ctx context.Context, response Response, invocation In
 	if err != nil {
 		return Response{}, fmt.Errorf("%s: %w", invocation.Command, err)
 	}
+	if !strings.HasPrefix(invocation.Command, "workspace ") {
+		if err := enrichResponse(ctx, store, &response); err != nil {
+			return Response{}, fmt.Errorf("%s: enrich result: %w", invocation.Command, err)
+		}
+	}
 	response.Diagnostics = append(freshnessDiagnostics, store.Diagnostics()...)
 	slices.Sort(response.Diagnostics)
 	response.Diagnostics = slices.Compact(response.Diagnostics)
@@ -663,6 +674,135 @@ func aggregateEligible(command string) bool {
 type definitionStore interface {
 	FindSymbols(context.Context, string, int) ([]graph.Symbol, bool, error)
 	Occurrences(context.Context, string, []string, int) ([]graph.Occurrence, bool, error)
+}
+
+type displayStore interface {
+	query.Store
+	Document(context.Context, string) (graph.Document, bool, error)
+}
+
+func directDependencies(ctx context.Context, store query.Store, symbolID string, limit int) ([]graph.Edge, bool, error) {
+	edges, storageTruncated, err := store.EdgesFrom(ctx, symbolID, []graph.EdgeKind{graph.EdgeDependsOn, graph.EdgeImports}, 100_000)
+	if err != nil {
+		return nil, false, err
+	}
+	byEndpoint := make(map[string]graph.Edge, len(edges))
+	for _, edge := range edges {
+		key := edge.From + "\x00" + edge.To
+		current, exists := byEndpoint[key]
+		if !exists || (current.Kind == graph.EdgeImports && edge.Kind == graph.EdgeDependsOn) {
+			byEndpoint[key] = edge
+		}
+	}
+	result := make([]graph.Edge, 0, len(byEndpoint))
+	for _, edge := range byEndpoint {
+		result = append(result, edge)
+	}
+	slices.SortFunc(result, func(a, b graph.Edge) int {
+		if a.To != b.To {
+			return strings.Compare(a.To, b.To)
+		}
+		return strings.Compare(a.ID, b.ID)
+	})
+	truncated := storageTruncated || len(result) > limit
+	if len(result) > limit {
+		result = result[:limit]
+	}
+	return result, truncated, nil
+}
+
+func enrichResponse(ctx context.Context, store displayStore, response *Response) error {
+	symbols := make(map[string]graph.Symbol, len(response.Symbols))
+	symbolIDs := make(map[string]bool, len(response.Nodes)+2*len(response.Edges)+len(response.Occurrences))
+	documents := make(map[string]graph.Document, len(response.Documents))
+	documentIDs := make(map[string]bool, len(response.Occurrences)+len(response.Edges)+len(response.Symbols))
+	for _, symbol := range response.Symbols {
+		symbols[symbol.ID] = symbol
+		if symbol.DocumentID != "" {
+			documentIDs[symbol.DocumentID] = true
+		}
+	}
+	for _, document := range response.Documents {
+		documents[document.ID] = document
+	}
+	for _, id := range response.Nodes {
+		symbolIDs[id] = true
+	}
+	for _, edge := range response.Edges {
+		symbolIDs[edge.From], symbolIDs[edge.To] = true, true
+		if edge.DocumentID != "" {
+			documentIDs[edge.DocumentID] = true
+		}
+	}
+	for _, occurrence := range response.Occurrences {
+		symbolIDs[occurrence.SymbolID] = true
+		if occurrence.DocumentID != "" {
+			documentIDs[occurrence.DocumentID] = true
+		}
+	}
+	ids := make([]string, 0, len(symbolIDs))
+	for id := range symbolIDs {
+		if id != "" {
+			ids = append(ids, id)
+		}
+	}
+	slices.Sort(ids)
+	for _, id := range ids {
+		if _, exists := symbols[id]; exists {
+			continue
+		}
+		symbol, ok, err := store.Symbol(ctx, id)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			continue
+		}
+		symbols[id] = symbol
+		if symbol.DocumentID != "" {
+			documentIDs[symbol.DocumentID] = true
+		}
+	}
+	ids = ids[:0]
+	for id := range documentIDs {
+		if id != "" {
+			ids = append(ids, id)
+		}
+	}
+	slices.Sort(ids)
+	for _, id := range ids {
+		if _, exists := documents[id]; exists {
+			continue
+		}
+		document, ok, err := store.Document(ctx, id)
+		if err != nil {
+			return err
+		}
+		if ok {
+			documents[id] = document
+		}
+	}
+	response.Symbols = response.Symbols[:0]
+	for _, symbol := range symbols {
+		response.Symbols = append(response.Symbols, symbol)
+	}
+	slices.SortFunc(response.Symbols, func(a, b graph.Symbol) int {
+		if a.StableName != b.StableName {
+			return strings.Compare(a.StableName, b.StableName)
+		}
+		return strings.Compare(a.ID, b.ID)
+	})
+	response.Documents = response.Documents[:0]
+	for _, document := range documents {
+		response.Documents = append(response.Documents, document)
+	}
+	slices.SortFunc(response.Documents, func(a, b graph.Document) int {
+		if a.Path != b.Path {
+			return strings.Compare(a.Path, b.Path)
+		}
+		return strings.Compare(a.ID, b.ID)
+	})
+	return nil
 }
 
 func executeGraph(ctx context.Context, store query.Store, response *Response, invocation Invocation) error {
