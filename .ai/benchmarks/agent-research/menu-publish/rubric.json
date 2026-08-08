@@ -2,11 +2,11 @@
   "required": [
     {"id": "gui-and-tui", "pattern": "GUI[\\s\\S]*TUI|TUI[\\s\\S]*GUI"},
     {"id": "module-boundary", "pattern": "Module\\.Publish"},
-    {"id": "command-handler", "pattern": "Commands\\.Publish"},
+    {"id": "command-handler", "pattern": "Commands\\.Publish|internal/commands/publish\\.go"},
     {"id": "middleware", "pattern": "RunCommand"},
     {"id": "authorization", "pattern": "authoriz"},
-    {"id": "readiness", "pattern": "RequireReady|readiness blocker"},
-    {"id": "persistence", "pattern": "dao\\.Update|DAO\\.Update|tx\\.Update"},
+    {"id": "readiness", "pattern": "RequireReady|readiness blocker|requires no blockers|blockers produce"},
+    {"id": "persistence", "pattern": "dao\\.Update|DAO\\.Update|tx\\.Update|DAO update|dao/update\\.go"},
     {"id": "tests", "pattern": "_test\\.go:[0-9]+|Test[A-Za-z0-9_]+"}
   ]
 }
