@@ -249,16 +249,50 @@ func hydrateRelationshipSources(ctx context.Context, store Store, values []Relat
 
 func relationships(ctx context.Context, store Store, focus string, outgoing bool, limit int, locate Locator) ([]Relationship, bool, error) {
 	var edges []graph.Edge
-	var truncated bool
+	var storageTruncated bool
 	var err error
+	// Compiler-backed providers commonly emit both a specific relationship
+	// (calls, implements, imports) and its underlying reference edge. Read a
+	// bounded surplus so those duplicates can be collapsed before the caller's
+	// result limit is applied.
+	queryLimit := min(512, max(limit+1, limit*8))
 	if outgoing {
-		edges, truncated, err = store.EdgesFrom(ctx, focus, nil, limit)
+		edges, storageTruncated, err = store.EdgesFrom(ctx, focus, nil, queryLimit)
 	} else {
-		edges, truncated, err = store.EdgesTo(ctx, focus, nil, limit)
+		edges, storageTruncated, err = store.EdgesTo(ctx, focus, nil, queryLimit)
 	}
 	if err != nil {
 		return nil, false, err
 	}
+	byEndpoint := make(map[string]graph.Edge, len(edges))
+	for _, edge := range edges {
+		adjacent := edge.From
+		if outgoing {
+			adjacent = edge.To
+		}
+		current, exists := byEndpoint[adjacent]
+		if !exists || preferRelationship(edge, current) {
+			byEndpoint[adjacent] = edge
+		}
+	}
+	edges = edges[:0]
+	for _, edge := range byEndpoint {
+		edges = append(edges, edge)
+	}
+	slices.SortFunc(edges, func(left, right graph.Edge) int {
+		if rank := relationshipRank(left.Kind) - relationshipRank(right.Kind); rank != 0 {
+			return rank
+		}
+		leftAdjacent, rightAdjacent := left.From, right.From
+		if outgoing {
+			leftAdjacent, rightAdjacent = left.To, right.To
+		}
+		if leftAdjacent != rightAdjacent {
+			return strings.Compare(leftAdjacent, rightAdjacent)
+		}
+		return strings.Compare(left.ID, right.ID)
+	})
+	truncated := storageTruncated
 	result := make([]Relationship, 0, len(edges))
 	for _, edge := range edges {
 		adjacent := edge.From
@@ -272,9 +306,61 @@ func relationships(ctx context.Context, store Store, focus string, outgoing bool
 			value := entity(symbol, locate)
 			relationship.Entity = &value
 		}
+		if lowValueReference(relationship) {
+			continue
+		}
+		if len(result) == limit {
+			truncated = true
+			break
+		}
 		result = append(result, relationship)
 	}
 	return result, truncated, nil
+}
+
+func lowValueReference(relationship Relationship) bool {
+	if relationship.Edge.Kind != graph.EdgeReferences || relationship.Entity == nil {
+		return false
+	}
+	symbol := relationship.Entity.Symbol
+	if symbol.Kind == "variable" || symbol.Kind == "parameter" {
+		return true
+	}
+	switch symbol.StableName {
+	case "true", "false", "nil", "bool", "byte", "complex64", "complex128", "error", "float32", "float64", "int", "int8", "int16", "int32", "int64", "rune", "string", "uint", "uint8", "uint16", "uint32", "uint64", "uintptr":
+		return true
+	default:
+		return false
+	}
+}
+
+func preferRelationship(candidate, current graph.Edge) bool {
+	candidateRank, currentRank := relationshipRank(candidate.Kind), relationshipRank(current.Kind)
+	return candidateRank < currentRank || (candidateRank == currentRank && candidate.ID < current.ID)
+}
+
+// relationshipRank keeps flow and contract edges ahead of raw references.
+// The latter remain available when they are the only evidence for an endpoint,
+// but no longer crowd calls out of a bounded agent context response.
+func relationshipRank(kind graph.EdgeKind) int {
+	switch kind {
+	case graph.EdgeCalls:
+		return 0
+	case graph.EdgeImplements, graph.EdgeExtends, graph.EdgeInstantiates, graph.EdgeHandles:
+		return 1
+	case graph.EdgeTests, graph.EdgeDependsOn, graph.EdgeImports:
+		return 2
+	case graph.EdgeExposes, graph.EdgeGenerates, graph.EdgeDocuments, graph.EdgeLinksTo, graph.EdgeEmbeds, graph.EdgeResolvesTo:
+		return 3
+	case graph.EdgeReads, graph.EdgeWrites:
+		return 4
+	case graph.EdgeMemberOf, graph.EdgeDefines, graph.EdgeContains:
+		return 5
+	case graph.EdgeReferences:
+		return 6
+	default:
+		return 7
+	}
 }
 
 func entity(symbol graph.Symbol, locate Locator) Entity {

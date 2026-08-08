@@ -71,6 +71,26 @@ func TestResolveUniqueAcceptsExactIDsAndRejectsAmbiguousQueries(t *testing.T) {
 	}
 }
 
+func TestResolveAcceptsHumanQualifiedCompilerNames(t *testing.T) {
+	t.Parallel()
+	symbol := graph.Symbol{
+		ID:          "opaque-readiness-id",
+		StableName:  "example.test/menus/internal/availability.type.AvailabilityCalculator.method.Readiness",
+		DisplayName: "Readiness",
+		Kind:        "method",
+	}
+	store := fakeStore{matchesByQuery: map[string][]graph.Symbol{
+		"AvailabilityCalculator.Readiness": nil,
+		"Readiness":                        {symbol},
+	}}
+	for _, resolve := range []func(context.Context, query.Store, string) (graph.Symbol, error){query.Resolve, query.ResolveUnique} {
+		got, err := resolve(context.Background(), store, "AvailabilityCalculator.Readiness")
+		if err != nil || got.ID != symbol.ID {
+			t.Fatalf("qualified resolution = %#v, %v", got, err)
+		}
+	}
+}
+
 func TestNeighborhoodInterleavesIncomingAndOutgoingWalks(t *testing.T) {
 	t.Parallel()
 	store := fakeStore{
@@ -116,13 +136,18 @@ type fakeStore struct {
 	forward, reverse map[string][]graph.Edge
 	symbols          map[string]graph.Symbol
 	matches          []graph.Symbol
+	matchesByQuery   map[string][]graph.Symbol
 }
 
-func (s fakeStore) FindSymbols(_ context.Context, _ string, limit int) ([]graph.Symbol, bool, error) {
-	if len(s.matches) > limit {
-		return s.matches[:limit], true, nil
+func (s fakeStore) FindSymbols(_ context.Context, value string, limit int) ([]graph.Symbol, bool, error) {
+	matches := s.matches
+	if s.matchesByQuery != nil {
+		matches = s.matchesByQuery[value]
 	}
-	return s.matches, false, nil
+	if len(matches) > limit {
+		return matches[:limit], true, nil
+	}
+	return matches, false, nil
 }
 func (s fakeStore) Symbol(_ context.Context, id string) (graph.Symbol, bool, error) {
 	symbol, ok := s.symbols[id]

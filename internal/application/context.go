@@ -17,6 +17,12 @@ func contextOptions(invocation Invocation) contextquery.Options {
 	}
 }
 
+func exploreOptions(invocation Invocation) contextquery.ExploreOptions {
+	options := contextOptions(invocation)
+	options.Limit = invocation.ContextLimit
+	return contextquery.ExploreOptions{FocusLimit: invocation.Limit, Context: options}
+}
+
 func localLocator(repo repository.Repository) contextquery.Locator {
 	value := contextquery.Repository{Identity: repo.Identity, WorktreeID: repo.WorktreeID, Root: repo.Root}
 	return func(_, _ string) []contextquery.Repository { return []contextquery.Repository{value} }

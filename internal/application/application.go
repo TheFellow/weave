@@ -62,6 +62,7 @@ type Invocation struct {
 	MaxRepos          int
 	ContextLines      int
 	MaxSourceBytes    int
+	ContextLimit      int
 	ImpactFiles       []string
 	ImpactPackages    []string
 	DiffRevision      string
@@ -110,6 +111,7 @@ type Response struct {
 	Links        []bridge.Link          `json:"links,omitempty"`
 	LinkRevision string                 `json:"link_revision,omitempty"`
 	Context      *contextquery.Result   `json:"context,omitempty"`
+	Contexts     []contextquery.Result  `json:"contexts,omitempty"`
 	Diff         *graphdiff.Result      `json:"diff,omitempty"`
 }
 
@@ -277,6 +279,18 @@ func (app Local) Execute(ctx context.Context, invocation Invocation) (Response, 
 				result.Metadata.Freshness.Current = response.Freshness != nil && response.Freshness.Current
 				response.Context = &result
 				response.Truncated = contextTruncated(result.Metadata.Truncation)
+			}
+		}
+	case "explore":
+		var repo repository.Repository
+		if repo, err = app.repository(ctx); err == nil {
+			response.Contexts, response.Truncated, err = contextquery.Explore(ctx, db, invocation.Arguments[0], exploreOptions(invocation), localLocator(repo))
+			if err == nil {
+				for index := range response.Contexts {
+					response.Contexts[index].Metadata.Freshness.Checked = response.Freshness != nil
+					response.Contexts[index].Metadata.Freshness.Current = response.Freshness != nil && response.Freshness.Current
+					response.Truncated = response.Truncated || contextTruncated(response.Contexts[index].Metadata.Truncation)
+				}
 			}
 		}
 	case "graph":
@@ -592,6 +606,16 @@ func (app Local) federated(ctx context.Context, response Response, invocation In
 			result.Metadata.Freshness.Current = true
 			response.Context = &result
 			response.Truncated = contextTruncated(result.Metadata.Truncation)
+		}
+	case "explore":
+		response.Contexts, response.Truncated, err = contextquery.Explore(ctx, store, invocation.Arguments[0], exploreOptions(invocation), federatedLocator(store))
+		if err == nil {
+			for index := range response.Contexts {
+				response.Contexts[index].Metadata.Freshness.Checked = true
+				response.Contexts[index].Metadata.Freshness.Current = true
+				response.Contexts[index].Metadata.Freshness.Partial = store.Partial()
+				response.Truncated = response.Truncated || contextTruncated(response.Contexts[index].Metadata.Truncation)
+			}
 		}
 	case "graph":
 		err = executeGraph(ctx, store, &response, invocation)
@@ -1339,7 +1363,7 @@ func (app Local) databasePath(ctx context.Context) (string, error) {
 
 func requiresDatabase(command string) bool {
 	switch command {
-	case "symbols", "context", "definition", "references", "callers", "callees", "dependencies", "path", "impact", "graph", "export", "verify", "workspace find", "workspace outline", "workspace links", "workspace backlinks":
+	case "symbols", "context", "explore", "definition", "references", "callers", "callees", "dependencies", "path", "impact", "graph", "export", "verify", "workspace find", "workspace outline", "workspace links", "workspace backlinks":
 		return true
 	default:
 		return false

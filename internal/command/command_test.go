@@ -426,13 +426,23 @@ func TestContextCommandForwardsBoundsAndRendersSourceRichResponse(t *testing.T) 
 	if !reflect.DeepEqual(app.invocations, []application.Invocation{want}) {
 		t.Fatalf("invocations = %#v, want %#v", app.invocations, want)
 	}
-	for _, value := range []string{"focus\thandle-id\tfunction\tHandle", "evidence\tdefinition\thandler.go:5:6\tweave-go\texact", "     5 | func Handle() {}", "outgoing\tcalls\tStore\tweave-go\texact"} {
+	for _, value := range []string{"focus\tHandle\tfunction\tHandle", "evidence\tdefinition\thandler.go:5:6\tweave-go\texact", "     5 | func Handle() {}", "outgoing\tcalls\tStore\tweave-go\texact"} {
 		if !strings.Contains(stdout.String(), value) {
 			t.Fatalf("stdout = %q, want %q", stdout.String(), value)
 		}
 	}
 	if stderr.Len() != 0 {
 		t.Fatalf("stderr = %q", stderr.String())
+	}
+
+	app.invocations = nil
+	stdout.Reset()
+	root = command.New(app, command.Streams{Stdin: strings.NewReader(""), Stdout: &stdout, Stderr: &stderr})
+	if err := root.Run(context.Background(), []string{"weave", "explore", "Handle", "flow", "--limit", "5", "--relationship-limit", "4"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(app.invocations) != 1 || app.invocations[0].Command != "explore" || app.invocations[0].Arguments[0] != "Handle flow" || app.invocations[0].Limit != 5 || app.invocations[0].ContextLimit != 4 {
+		t.Fatalf("explore invocation = %#v", app.invocations)
 	}
 
 	app.invocations = nil
@@ -460,6 +470,28 @@ func TestContextErrorsNeverWritePartialOutput(t *testing.T) {
 	}
 	if stdout.Len() != 0 || stderr.Len() != 0 {
 		t.Fatalf("stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+}
+
+func TestExploreRendersRankedContextDossiers(t *testing.T) {
+	t.Parallel()
+	results := []contextquery.Result{
+		{Target: "example.Service.Publish", Focus: contextquery.Entity{Symbol: graph.Symbol{StableName: "example.Service.Publish", DisplayName: "Publish", Kind: "method"}}},
+		{Target: "example.Authorize", Focus: contextquery.Entity{Symbol: graph.Symbol{StableName: "example.Authorize", DisplayName: "Authorize", Kind: "function"}}},
+	}
+	app := &recordingApplication{response: application.Response{Schema: application.QuerySchema, Command: "explore", Contexts: results}}
+	var stdout, stderr bytes.Buffer
+	root := command.New(app, command.Streams{Stdin: strings.NewReader(""), Stdout: &stdout, Stderr: &stderr})
+	if err := root.Run(context.Background(), []string{"weave", "explore", "how", "publish", "is", "authorized", "--limit", "2"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range []string{"result\t1\texample.Service.Publish", "focus\texample.Service.Publish\tmethod\tPublish", "result\t2\texample.Authorize"} {
+		if !strings.Contains(stdout.String(), value) {
+			t.Fatalf("stdout = %q, want %q", stdout.String(), value)
+		}
+	}
+	if len(app.invocations) != 1 || app.invocations[0].Arguments[0] != "how publish is authorized" || stderr.Len() != 0 {
+		t.Fatalf("invocations/stderr = %#v / %q", app.invocations, stderr.String())
 	}
 }
 
@@ -859,9 +891,9 @@ func TestRealQueryCommands(t *testing.T) {
 		contains []string
 		empty    bool
 	}{
-		{name: "symbols", args: []string{"symbols", "handle"}, contains: []string{"fixture:handle\tfunction\tHandleRequest"}},
+		{name: "symbols", args: []string{"symbols", "handle"}, contains: []string{"fixture.HandleRequest\tfunction\tHandleRequest"}},
 		{name: "definition", args: []string{"definition", "authorize"}, contains: []string{"fixture.authorize\tdefinition\tmain.go:2:3", "fixture.authorize\tdefinition\tmain.go:8:3"}},
-		{name: "definition anchor fallback", args: []string{"definition", "HandleRequest"}, contains: []string{"fixture:handle\tfunction\tHandleRequest"}},
+		{name: "definition anchor fallback", args: []string{"definition", "HandleRequest"}, contains: []string{"fixture.HandleRequest\tfunction\tHandleRequest"}},
 		{name: "references", args: []string{"references", "authorize"}, contains: []string{"fixture.authorize\treference\tmain.go:8:3"}},
 		{name: "callers", args: []string{"callers", "authorize"}, contains: []string{"fixture.HandleRequest\tcalls\tfixture.authorize"}},
 		{name: "callees", args: []string{"callees", "HandleRequest"}, contains: []string{"fixture.HandleRequest\tcalls\tfixture.authorize"}},
@@ -1023,14 +1055,14 @@ func TestLifecycleAndQueriesRefreshRepositoryBeforeReading(t *testing.T) {
 		t.Fatalf("init stdout=%q stderr=%q calls=%d", stdout, stderr, provider.calls)
 	}
 	stdout, stderr = run("symbols", "handle")
-	if !strings.Contains(stdout, "fixture:handle") || stderr != "" || provider.calls != 1 {
+	if !strings.Contains(stdout, "fixture.HandleRequest") || stderr != "" || provider.calls != 1 {
 		t.Fatalf("current query stdout=%q stderr=%q calls=%d", stdout, stderr, provider.calls)
 	}
 	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package changed\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	stdout, stderr = run("symbols", "handle")
-	if !strings.Contains(stdout, "fixture:handle") || !strings.Contains(stderr, "index: refreshed 1 changed paths") || provider.calls != 2 {
+	if !strings.Contains(stdout, "fixture.HandleRequest") || !strings.Contains(stderr, "index: refreshed 1 changed paths") || provider.calls != 2 {
 		t.Fatalf("dirty query stdout=%q stderr=%q calls=%d", stdout, stderr, provider.calls)
 	}
 }

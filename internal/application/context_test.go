@@ -60,6 +60,17 @@ func TestFederatedContextRefreshesAndReadsOwningWorktree(t *testing.T) {
 	if len(response.Sources) < 3 {
 		t.Fatalf("fact provenance = %#v", response.Sources)
 	}
+
+	explored, err := app.Execute(ctx, Invocation{
+		Command: "explore", Arguments: []string{"how Shared works"}, Scope: "catalog",
+		Limit: 3, ContextLimit: 4, ContextLines: 0, MaxSourceBytes: 4096, MaxRepos: 4,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(explored.Contexts) != 1 || explored.Contexts[0].Focus.Symbol.ID != "shared-id" || explored.Contexts[0].Evidence[0].Source.Status != contextquery.SourceCurrent {
+		t.Fatalf("explore = %#v", explored)
+	}
 }
 
 type contextProvider struct{}

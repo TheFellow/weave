@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -75,6 +76,98 @@ func TestContextReturnsExactCurrentSourceAndDirectRelationshipsDeterministically
 	right, _ := json.Marshal(again)
 	if string(left) != string(right) {
 		t.Fatalf("context is nondeterministic:\n%s\n%s", left, right)
+	}
+}
+
+func TestContextCollapsesReferenceDuplicatesAndPrioritizesFlowEdges(t *testing.T) {
+	ctx := context.Background()
+	content := "package demo\nfunc Target() { Helper() }\n"
+	root := gitRepository(t, map[string]string{"main.go": content})
+	facts := sourceFacts("main.go", content)
+	facts.Symbols = append(facts.Symbols,
+		symbol("variable-id", "state", "variable", "document-id"),
+		symbol("package-id", "example/pkg", "package", ""),
+	)
+	facts.Edges = append(facts.Edges,
+		edge("helper-reference", "target-id", "helper-id", graph.EdgeReferences),
+		edge("variable-reference-a", "target-id", "variable-id", graph.EdgeReferences),
+		edge("variable-reference-b", "target-id", "variable-id", graph.EdgeReferences),
+		edge("package-reference", "target-id", "package-id", graph.EdgeReferences),
+	)
+	database := filepath.Join(t.TempDir(), "index.db")
+	writeFacts(t, database, facts)
+	db, err := storage.Open(ctx, database, storage.Options{MustExist: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	result, err := contextquery.Build(ctx, db, "target-id", contextquery.Options{
+		Scope: "local", Limit: 3, ContextLines: 0, MaxSourceBytes: 4096,
+	}, fixedLocator(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Outgoing) != 2 {
+		t.Fatalf("outgoing = %#v", result.Outgoing)
+	}
+	if result.Outgoing[0].Edge.To != "helper-id" || result.Outgoing[0].Edge.Kind != graph.EdgeCalls {
+		t.Fatalf("specific call did not win duplicate endpoint: %#v", result.Outgoing[0])
+	}
+	seen := map[string]bool{}
+	for _, relationship := range result.Outgoing {
+		if relationship.Edge.To == "variable-id" {
+			t.Fatalf("low-value local reference survived: %#v", result.Outgoing)
+		}
+		if seen[relationship.Edge.To] {
+			t.Fatalf("duplicate endpoint survived: %#v", result.Outgoing)
+		}
+		seen[relationship.Edge.To] = true
+	}
+}
+
+func TestExploreBuildsBoundedDossiersFromResearchPhrase(t *testing.T) {
+	ctx := context.Background()
+	content := "package demo\nfunc Target() { Helper() }\nfunc Helper() {}\n"
+	root := gitRepository(t, map[string]string{"main.go": content})
+	facts := sourceFacts("main.go", content)
+	database := filepath.Join(t.TempDir(), "index.db")
+	writeFacts(t, database, facts)
+	db, err := storage.Open(ctx, database, storage.Options{MustExist: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	results, truncated, err := contextquery.Explore(ctx, db, "how does Target call Helper", contextquery.ExploreOptions{
+		FocusLimit: 2,
+		Context: contextquery.Options{
+			Scope: "local", Limit: 2, ContextLines: 0, MaxSourceBytes: 4096,
+		},
+	}, fixedLocator(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 2 || !truncated {
+		t.Fatalf("results/truncated = %d/%t: %#v", len(results), truncated, results)
+	}
+	ids := []string{results[0].Focus.Symbol.ID, results[1].Focus.Symbol.ID}
+	slices.Sort(ids)
+	if strings.Join(ids, ",") != "helper-id,target-id" {
+		t.Fatalf("focus IDs = %v", ids)
+	}
+	if results[0].Metadata.SourceBytes+results[1].Metadata.SourceBytes > 4096 {
+		t.Fatalf("shared source budget exceeded: %#v", results)
+	}
+
+	exact, exactTruncated, err := contextquery.Explore(ctx, db, "Target", contextquery.ExploreOptions{
+		FocusLimit: 4,
+		Context: contextquery.Options{
+			Scope: "local", Limit: 2, ContextLines: 0, MaxSourceBytes: 4096,
+		},
+	}, fixedLocator(root))
+	if err != nil || len(exact) != 1 || exact[0].Focus.Symbol.ID != "target-id" || exactTruncated {
+		t.Fatalf("exact explore = %#v, %t, %v", exact, exactTruncated, err)
 	}
 }
 

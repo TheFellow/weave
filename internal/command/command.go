@@ -46,6 +46,7 @@ func New(app application.Service, streams Streams) *cli.Command {
 		lifecycle(app, streams, "status", "show index and freshness status"),
 		lookup(app, streams, "symbols", "find symbols"),
 		contextCommand(app, streams),
+		exploreCommand(app, streams),
 		lookup(app, streams, "definition", "find symbol definitions"),
 		lookup(app, streams, "references", "find symbol references"),
 		lookup(app, streams, "callers", "find callers of a symbol"),
@@ -639,6 +640,51 @@ func contextCommand(app application.Service, streams Streams) *cli.Command {
 	}}
 }
 
+func exploreCommand(app application.Service, streams Streams) *cli.Command {
+	flags := []cli.Flag{
+		jsonFlag(),
+		&cli.IntFlag{Name: "limit", Value: 6, Usage: "maximum relevant entities", Validator: func(value int) error {
+			if value < 1 || value > 32 {
+				return fmt.Errorf("must be between 1 and 32")
+			}
+			return nil
+		}},
+		&cli.IntFlag{Name: "relationship-limit", Value: 6, Usage: "maximum occurrences or relationships per entity", Validator: func(value int) error {
+			if value < 1 || value > 64 {
+				return fmt.Errorf("must be between 1 and 64")
+			}
+			return nil
+		}},
+		&cli.IntFlag{Name: "context-lines", Value: 1, Usage: "source lines before and after each evidence range", Validator: func(value int) error {
+			if value < 0 || value > 100 {
+				return fmt.Errorf("must be between 0 and 100")
+			}
+			return nil
+		}},
+		&cli.IntFlag{Name: "max-source-bytes", Value: 64 << 10, Usage: "maximum source text bytes shared across all entities", Validator: func(value int) error {
+			if value < 1 || value > 4<<20 {
+				return fmt.Errorf("must be between 1 and 4194304")
+			}
+			return nil
+		}},
+	}
+	flags = append(flags, federationFlags()...)
+	return &cli.Command{Name: "explore", Usage: "research a phrase as bounded source-rich semantic dossiers", UsageText: "weave explore QUERY... [options]", Flags: flags, Action: func(ctx context.Context, cmd *cli.Command) error {
+		if cmd.Args().Len() == 0 {
+			return cli.Exit("explore expects a research phrase or entity", 2)
+		}
+		response, err := app.Execute(ctx, application.Invocation{
+			Command: "explore", Arguments: []string{strings.Join(cmd.Args().Slice(), " ")}, JSON: cmd.Bool("json"),
+			Limit: cmd.Int("limit"), ContextLimit: cmd.Int("relationship-limit"), ContextLines: cmd.Int("context-lines"), MaxSourceBytes: cmd.Int("max-source-bytes"),
+			Scope: queryScope(cmd), Repositories: cmd.StringSlice("repo"), CatalogPath: cmd.String("catalog"), MaxRepos: cmd.Int("max-repos"),
+		})
+		if err != nil {
+			return err
+		}
+		return renderInvocation(streams, response, cmd.Bool("json"))
+	}}
+}
+
 func traversal(app application.Service, streams Streams, name, usage string, arguments int) *cli.Command {
 	usageText := "weave " + name + " QUERY [options]"
 	if arguments == 2 {
@@ -956,6 +1002,22 @@ func render(writer io.Writer, response application.Response, jsonOutput bool) er
 	if response.Command == "context" && response.Context != nil {
 		return renderContext(writer, *response.Context)
 	}
+	if response.Command == "explore" {
+		for index, result := range response.Contexts {
+			if index > 0 {
+				if _, err := fmt.Fprintln(writer); err != nil {
+					return err
+				}
+			}
+			if _, err := fmt.Fprintf(writer, "result\t%d\t%s\n", index+1, result.Target); err != nil {
+				return err
+			}
+			if err := renderContext(writer, result); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
 	if strings.HasPrefix(response.Command, "diff ") && response.Diff != nil {
 		return renderDiff(writer, *response.Diff)
 	}
@@ -981,7 +1043,7 @@ func render(writer io.Writer, response application.Response, jsonOutput bool) er
 		if location != "" {
 			location = fmt.Sprintf("%s:%d:%d", location, symbol.Definition.Start.Line+1, symbol.Definition.Start.Column+1)
 		}
-		if _, err := fmt.Fprintf(writer, "%s\t%s\t%s\t%s\n", symbol.ID, symbol.Kind, symbol.DisplayName, location); err != nil {
+		if _, err := fmt.Fprintf(writer, "%s\t%s\t%s\t%s\n", symbolLabel(symbol), symbol.Kind, symbol.DisplayName, location); err != nil {
 			return err
 		}
 	}
@@ -1306,7 +1368,7 @@ func renderDiff(writer io.Writer, result graphdiff.Result) error {
 
 func renderContext(writer io.Writer, result contextquery.Result) error {
 	focus := result.Focus.Symbol
-	if _, err := fmt.Fprintf(writer, "focus\t%s\t%s\t%s\n", focus.ID, focus.Kind, focus.DisplayName); err != nil {
+	if _, err := fmt.Fprintf(writer, "focus\t%s\t%s\t%s\n", contextEntityLabel(result.Focus), focus.Kind, focus.DisplayName); err != nil {
 		return err
 	}
 	for _, evidence := range result.Evidence {
@@ -1334,7 +1396,7 @@ func renderContext(writer io.Writer, result contextquery.Result) error {
 	for _, relationship := range result.Incoming {
 		label := relationship.Edge.From
 		if relationship.Entity != nil {
-			label = relationship.Entity.Symbol.DisplayName
+			label = contextEntityLabel(*relationship.Entity)
 		}
 		if _, err := fmt.Fprintf(writer, "incoming\t%s\t%s\t%s\t%s\n", relationship.Edge.Kind, label, relationship.Edge.Provider, relationship.Edge.Evidence); err != nil {
 			return err
@@ -1343,7 +1405,7 @@ func renderContext(writer io.Writer, result contextquery.Result) error {
 	for _, relationship := range result.Outgoing {
 		label := relationship.Edge.To
 		if relationship.Entity != nil {
-			label = relationship.Entity.Symbol.DisplayName
+			label = contextEntityLabel(*relationship.Entity)
 		}
 		if _, err := fmt.Fprintf(writer, "outgoing\t%s\t%s\t%s\t%s\n", relationship.Edge.Kind, label, relationship.Edge.Provider, relationship.Edge.Evidence); err != nil {
 			return err
@@ -1355,6 +1417,30 @@ func renderContext(writer io.Writer, result contextquery.Result) error {
 		return err
 	}
 	return nil
+}
+
+func symbolLabel(symbol graph.Symbol) string {
+	if symbol.StableName != "" {
+		return symbol.StableName
+	}
+	if symbol.DisplayName != "" {
+		return symbol.DisplayName
+	}
+	return symbol.ID
+}
+
+func contextEntityLabel(entity contextquery.Entity) string {
+	label := symbolLabel(entity.Symbol)
+	for _, repository := range entity.Repositories {
+		if repository.Identity != "" {
+			label = strings.TrimPrefix(label, repository.Identity+"/")
+		}
+	}
+	return strings.NewReplacer(
+		".package.", ".", ".type.", ".", ".interface.", ".",
+		".method.", ".", ".function.", ".", ".field.", ".",
+		".constant.", ".", ".variable.", ".",
+	).Replace(label)
 }
 
 func renderWorkspace(writer io.Writer, response application.Response) error {

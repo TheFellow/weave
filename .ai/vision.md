@@ -954,6 +954,13 @@ Targets are hypotheses until measured and recorded.
 Benchmarks must include `go-modular-monolith`, `arch-lint`, `cedar-dotnet`, and
 `fkyeah` once their adapters exist.
 
+Agent-facing benchmarks must also measure the product outcome, not only query
+latency: answer correctness, tool calls, fallback filesystem searches, source
+files read, response bytes/tokens, and truncation. Representative research on
+an unfamiliar repository should begin with Weave and record every fallback.
+Claims of agent savings require a comparable without-Weave arm; a fast query
+that still forces grep-and-read rediscovery is not a successful result.
+
 ## Approved completion pass
 
 The following work is approved as an ordered completion pass. Each increment

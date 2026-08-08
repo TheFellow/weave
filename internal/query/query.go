@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/TheFellow/weave/internal/graph"
 )
@@ -54,9 +55,16 @@ func Resolve(ctx context.Context, store Store, value string) (graph.Symbol, erro
 	} else if ok {
 		return symbol, nil
 	}
-	symbols, _, err := store.FindSymbols(ctx, value, 2)
+	symbols, _, err := store.FindSymbols(ctx, value, 8)
 	if err != nil {
 		return graph.Symbol{}, err
+	}
+	if terminalName(value) != value {
+		if symbol, ok, err := qualifiedMatch(ctx, store, value, symbols); err != nil {
+			return graph.Symbol{}, err
+		} else if ok {
+			return symbol, nil
+		}
 	}
 	if len(symbols) == 0 {
 		return graph.Symbol{}, fmt.Errorf("%w: %s", ErrNotFound, value)
@@ -73,12 +81,9 @@ func ResolveUnique(ctx context.Context, store Store, value string) (graph.Symbol
 	} else if ok {
 		return symbol, nil
 	}
-	symbols, _, err := store.FindSymbols(ctx, value, 2)
+	symbols, _, err := store.FindSymbols(ctx, value, 8)
 	if err != nil {
 		return graph.Symbol{}, err
-	}
-	if len(symbols) == 0 {
-		return graph.Symbol{}, fmt.Errorf("%w: %s", ErrNotFound, value)
 	}
 	var exact []graph.Symbol
 	for _, symbol := range symbols {
@@ -89,10 +94,85 @@ func ResolveUnique(ctx context.Context, store Store, value string) (graph.Symbol
 	if len(exact) == 1 {
 		return exact[0], nil
 	}
+	if symbol, ok, err := qualifiedMatch(ctx, store, value, symbols); err != nil {
+		return graph.Symbol{}, err
+	} else if ok {
+		return symbol, nil
+	}
+	if len(symbols) == 0 {
+		return graph.Symbol{}, fmt.Errorf("%w: %s", ErrNotFound, value)
+	}
 	if len(symbols) > 1 {
-		return graph.Symbol{}, fmt.Errorf("%w: %q matches %q and %q; pass an exact graph ID", ErrAmbiguous, value, symbols[0].ID, symbols[1].ID)
+		return graph.Symbol{}, ambiguousError(value, symbols)
 	}
 	return symbols[0], nil
+}
+
+// qualifiedMatch accepts the concise Type.Method spelling humans and agents
+// naturally use for compiler-qualified stable names such as
+// "example/pkg.type.Server.method.Serve". It is deliberately a fallback:
+// exact IDs, stable names, and provider search ranking retain precedence.
+func qualifiedMatch(ctx context.Context, store Store, value string, initial []graph.Symbol) (graph.Symbol, bool, error) {
+	matches := filterQualified(initial, value)
+	terminal := terminalName(value)
+	if len(matches) == 0 && terminal != value {
+		candidates, _, err := store.FindSymbols(ctx, terminal, 512)
+		if err != nil {
+			return graph.Symbol{}, false, err
+		}
+		matches = filterQualified(candidates, value)
+	}
+	if len(matches) == 1 {
+		return matches[0], true, nil
+	}
+	if len(matches) > 1 {
+		return graph.Symbol{}, false, ambiguousError(value, matches)
+	}
+	return graph.Symbol{}, false, nil
+}
+
+func filterQualified(symbols []graph.Symbol, value string) []graph.Symbol {
+	var matches []graph.Symbol
+	for _, symbol := range symbols {
+		name := humanStableName(symbol.StableName)
+		if name == value || strings.HasSuffix(name, "."+value) {
+			matches = append(matches, symbol)
+		}
+	}
+	return matches
+}
+
+func humanStableName(value string) string {
+	replacer := strings.NewReplacer(
+		".package.", ".", ".type.", ".", ".interface.", ".",
+		".method.", ".", ".function.", ".", ".field.", ".",
+		".constant.", ".", ".variable.", ".",
+	)
+	return replacer.Replace(value)
+}
+
+func terminalName(value string) string {
+	if index := strings.LastIndex(value, "."); index >= 0 && index+1 < len(value) {
+		return value[index+1:]
+	}
+	return value
+}
+
+func ambiguousError(value string, symbols []graph.Symbol) error {
+	limit := min(len(symbols), 5)
+	candidates := make([]string, 0, limit)
+	for _, symbol := range symbols[:limit] {
+		name := symbol.StableName
+		if name == "" {
+			name = symbol.DisplayName
+		}
+		candidates = append(candidates, fmt.Sprintf("%q (%s, id %s)", name, symbol.Kind, symbol.ID))
+	}
+	detail := strings.Join(candidates, ", ")
+	if len(symbols) > limit {
+		detail += fmt.Sprintf(", and %d more", len(symbols)-limit)
+	}
+	return fmt.Errorf("%w: %q matches %s; pass an exact stable name or graph ID", ErrAmbiguous, value, detail)
 }
 
 // Path returns a shortest directed path using stable neighbor order.

@@ -42,6 +42,7 @@ weave symbols Handle --limit 20
 weave definition Handle
 weave references Handle --json
 weave context Handle
+weave explore how does Handle reach persistence
 weave callers Handle
 weave dependencies github.com/example/project/package
 weave path SymbolA SymbolB --kind calls --max-depth 8
@@ -122,21 +123,51 @@ weave context docs/design.md#storage --json
 weave context SharedType --scope catalog --repo github.com/example/service
 ```
 
+Start with `weave explore RESEARCH PHRASE` for agent code research. It performs
+bounded deterministic lexical retrieval over indexed symbols, ranks a small set
+of relevant entities, and returns an ordinary source-rich context dossier for
+each one under a shared source-byte budget. Exact entities naturally produce a
+single dossier. No model or separate search database is involved.
+
+The dossiers' source excerpts are already-read evidence, while incoming and
+outgoing sections provide the direct semantic neighborhood. Those sections
+collapse duplicate endpoints, prefer calls and contract edges over their
+underlying references, and omit local-variable and language-builtin references
+that are already visible in the source excerpt. The narrower graph commands and
+JSON export retain access to exhaustive facts. Compiler-qualified entities
+accept concise names such as
+`AvailabilityCalculator.Readiness`, `Presenter.loadReadiness`, or
+`ReadinessReport.HasBlockers`; JSON retains the opaque stable graph IDs when a
+consumer needs them. Reach for the narrower `callers`, `callees`, `path`, and
+`impact` commands only when the dossiers do not answer the question.
+
+Weave intentionally keeps natural-language reasoning in the consuming agent.
+Unlike CodeGraph's SQLite/FTS-backed explorer, this command does not add an
+embedded model or a second persisted query engine: it composes deterministic
+compiler, SCIP, content, and authored facts from the same pure-Go bstore index.
+
 The default independently caps occurrences and each relationship direction at
 16, includes two surrounding source lines, and returns at most 64 KiB of source
 text. Use `--limit`, `--context-lines`, and `--max-source-bytes` to lower or
 raise those bounded ceilings. JSON retains the normal `weave.query/v1`
 envelope and carries a `weave.context/v1` result under `context`.
 
+Explore returns at most six ranked entities by default, caps each dossier at
+six occurrences/relationships and one surrounding source line, and shares a
+64 KiB source ceiling across the complete response. Tune those independently
+with `--limit`, `--relationship-limit`, `--context-lines`, and
+`--max-source-bytes`. JSON returns the same `weave.context/v1` records under
+`contexts`; retrieval does not alter their evidence or provenance contract.
+
 Source is re-read from the owning current worktree, not cached in the graph.
 Weave only serves canonical repository-relative, Git-visible, regular UTF-8
 files; it verifies opened-file identity and an indexed content hash when one is
 available. Missing, changed, ignored, external, oversized, non-UTF-8, unsafe,
 or byte-budgeted source is reported with a status and no guessed excerpt.
-Ambiguous names fail with exact graph IDs rather than silently choosing a
-target. Catalog context uses the existing bounded refresh-before-open
-federation and reports partial members through diagnostics and freshness
-metadata.
+Ambiguous exact-context names fail with stable-name candidates and graph IDs
+rather than silently choosing a target. Catalog context uses the existing
+bounded refresh-before-open federation and reports partial members through
+diagnostics and freshness metadata.
 
 ## Graphviz DOT
 
