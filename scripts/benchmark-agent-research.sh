@@ -69,7 +69,8 @@ run_arm() {
 
   : >"$sample_directory/blocked-weave.log"
   local codex_args=(
-    exec --ephemeral --ignore-user-config --json --sandbox read-only
+    exec --ephemeral --ignore-user-config --json --sandbox workspace-write
+    --add-dir "$clone/.git/weave"
     --config shell_environment_policy.inherit=all
     --cd "$clone" --output-last-message "$sample_directory/answer.md"
   )
@@ -89,6 +90,10 @@ run_arm() {
   set -e
 
   git -C "$clone" status --porcelain >"$sample_directory/clone-status.txt"
+  if [[ -s "$sample_directory/clone-status.txt" ]]; then
+    echo "agent changed the disposable source worktree" >>"$sample_directory/stderr.txt"
+    exit_code=1
+  fi
   python3 "$root/scripts/summarize-agent-benchmark.py" \
     --arm "$arm" --events "$sample_directory/events.jsonl" \
     --answer "$sample_directory/answer.md" --sample "$sample_directory/process.json" \
